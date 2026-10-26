@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Run NWorld (release)",
+      "cargo": { "args": ["build", "--release", "--bin=nworld"] },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug NWorld",
+      "cargo": { "args": ["build", "--bin=nworld"] },
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
