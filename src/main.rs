@@ -1,39 +1,43 @@
-mod flight;
+mod camera;
 mod noise;
-mod sky;
-mod terrain;
+mod render;
+mod ui;
+mod world;
 
 use std::time::Duration;
 
 use macroquad::models::draw_mesh;
 use macroquad::prelude::*;
 
-use flight::Flight;
-use sky::Environment;
-use terrain::{Frustum, Terrain};
+use camera::EditorCamera;
+use ui::{EditorUi, UiAction, TOOLBAR_WIDTH};
+use world::{Frustum, World};
 
-const VIEW_DISTANCE: f32 = 2400.0;
-const SUN_AZIMUTH: f32 = 2.4;
+/// Fog distance at sea level; it grows with altitude so the overview shows the whole world.
+const BASE_VIEW_DISTANCE: f32 = 4000.0;
 
 const HELP: &[(&str, &str)] = &[
-    ("W / S  or  Up / Down", "pitch up / down"),
-    ("A / D  or  Left / Right", "turn left / right"),
-    ("Shift / Ctrl  (or + / -)", "throttle up / down"),
-    ("Space (hold)", "boost x3"),
-    ("Tab", "autopilot: terrain follow"),
-    ("I", "invert pitch"),
-    ("[  /  ]", "time of day"),
-    ("N", "new random world"),
-    ("R", "reset position"),
-    ("F", "toggle fullscreen"),
-    ("H", "hide / show help"),
-    ("Esc", "quit"),
+    ("W A S D", "move"),
+    ("E / Q", "up / down"),
+    ("Wheel", "zoom"),
+    ("Right-drag, arrows", "look"),
+    ("Shift", "faster"),
+    ("T", "top-down view / back"),
+    ("R", "reset camera"),
+    ("H", "hide controls"),
+    ("Esc", "close panel, else quit"),
 ];
+
+const HUD_TEXT: Color = Color::new(1.0, 1.0, 1.0, 0.85);
+const HUD_DIM: Color = Color::new(1.0, 1.0, 1.0, 0.45);
+const HUD_SHADOW: Color = Color::new(0.0, 0.0, 0.0, 0.6);
+/// Left edge of the HUD, just past the toolbar.
+const HUD_LEFT: f32 = TOOLBAR_WIDTH + 10.0;
 
 fn window_conf() -> macroquad::conf::Conf {
     macroquad::conf::Conf {
         miniquad_conf: macroquad::miniquad::conf::Conf {
-            window_title: "NWorld - Terrain Flyover".to_owned(),
+            window_title: "NWorld - World Creator".to_owned(),
             window_width: 1600,
             window_height: 900,
             sample_count: 4,
@@ -46,137 +50,169 @@ fn window_conf() -> macroquad::conf::Conf {
     }
 }
 
+/// A map being edited, with its camera and the backdrop sized to it.
+struct OpenMap {
+    world: World,
+    cam: EditorCamera,
+    backdrop: Mesh,
+}
+
+impl OpenMap {
+    fn new(width: f32, height: f32) -> Self {
+        let mut world = World::new(width, height);
+        let cam = EditorCamera::new(&world);
+        world.update(cam.position(), Duration::from_secs(10));
+        let backdrop = render::backdrop_mesh(world.half_extents());
+        Self {
+            world,
+            cam,
+            backdrop,
+        }
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
-    let sky_material = sky::load_sky_material();
-    let terrain_material = sky::load_terrain_material();
+    let terrain_material = render::load_terrain_material();
+    let backdrop_material = render::load_backdrop_material();
 
-    rand::srand(macroquad::miniquad::date::now() as u64);
-    let mut terrain = Terrain::new(1337, VIEW_DISTANCE);
-    let mut flight = Flight::new(&terrain.field);
-    terrain.update(flight.pos, Duration::from_secs(10));
+    let mut ui = EditorUi::new();
+    // The app opens with no map; the New map tool creates one.
+    let mut map: Option<OpenMap> = None;
 
-    let mut sun_elevation: f32 = 0.6;
-    let mut show_help = true;
-    let mut fullscreen = false;
+    let mut show_help = false;
     let mut time = 0.0f32;
 
     loop {
         let dt = get_frame_time().min(0.1);
         time += dt;
 
-        if is_key_pressed(KeyCode::Escape) {
+        if is_key_pressed(KeyCode::Escape) && !ui.escape() {
             break;
         }
-        if is_key_pressed(KeyCode::H) {
+        if let Some(UiAction::CreateMap { width, height }) = ui.update() {
+            map = Some(OpenMap::new(width, height));
+        }
+
+        // Shortcuts and camera keys pause while a text field is being typed into.
+        let shortcuts = !ui.wants_keyboard();
+        if shortcuts && is_key_pressed(KeyCode::H) {
             show_help = !show_help;
         }
-        if is_key_pressed(KeyCode::Tab) {
-            flight.toggle_autopilot(&terrain.field);
+
+        match &mut map {
+            Some(m) => {
+                if shortcuts && is_key_pressed(KeyCode::R) {
+                    m.cam.reset(&m.world);
+                }
+                if (shortcuts && is_key_pressed(KeyCode::T)) || overview_button_clicked() {
+                    m.cam.toggle_overview(&m.world, TOOLBAR_WIDTH);
+                }
+
+                m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over());
+                m.world.update(m.cam.position(), Duration::from_millis(6));
+                draw_world(m, &terrain_material, &backdrop_material, time);
+            }
+            None => {
+                clear_background(BLACK);
+                draw_no_map_label();
+            }
         }
-        if is_key_pressed(KeyCode::I) {
-            flight.invert_pitch = !flight.invert_pitch;
-        }
-        if is_key_pressed(KeyCode::F) {
-            fullscreen = !fullscreen;
-            set_fullscreen(fullscreen);
-        }
-        if is_key_pressed(KeyCode::R) {
-            flight = Flight::new(&terrain.field);
-        }
-        if is_key_pressed(KeyCode::N) {
-            terrain.reseed(rand::gen_range(1, 1_000_000));
-            flight = Flight::new(&terrain.field);
-            terrain.update(flight.pos, Duration::from_secs(10));
-        }
-        let sun_input = is_key_down(KeyCode::RightBracket) as i32 - is_key_down(KeyCode::LeftBracket) as i32;
-        sun_elevation = (sun_elevation + sun_input as f32 * 0.4 * dt).clamp(-0.3, 1.5);
 
-        flight.update(dt, &terrain.field);
-        terrain.update(flight.pos, Duration::from_millis(6));
-
-        let env = Environment::new(sun_elevation, SUN_AZIMUTH);
-        let camera = flight.camera(VIEW_DISTANCE * 1.5);
-        set_camera(&camera);
-        clear_background(Color::new(env.horizon.x, env.horizon.y, env.horizon.z, 1.0));
-
-        env.apply_to_sky(&sky_material, flight.pos);
-        gl_use_material(&sky_material);
-        draw_mesh(&sky::sky_box(flight.pos));
-
-        env.apply_to_terrain(&terrain_material, flight.pos, VIEW_DISTANCE, time);
-        gl_use_material(&terrain_material);
-        let drawn = terrain.draw(&Frustum::from_matrix(camera.matrix()));
-
-        gl_use_default_material();
-        set_default_camera();
-        draw_hud(&flight, &terrain, drawn, show_help);
-
+        // The HUD goes under the editor UI so an open panel covers it.
+        draw_hud(map.as_ref().map(|m| &m.cam), show_help);
+        ui.draw();
         next_frame().await;
     }
 }
 
-fn panel(x: f32, y: f32, w: f32, h: f32) {
-    draw_rectangle(x, y, w, h, Color::new(0.0, 0.0, 0.0, 0.45));
-    draw_rectangle_lines(x, y, w, h, 1.0, Color::new(1.0, 1.0, 1.0, 0.25));
+fn draw_world(map: &OpenMap, terrain_material: &Material, backdrop_material: &Material, time: f32) {
+    let pos = map.cam.position();
+    let view_distance = BASE_VIEW_DISTANCE + pos.y.max(0.0) * 1.5;
+    let camera = map.cam.camera(&map.world, view_distance * 1.5);
+    set_camera(&camera);
+    clear_background(render::background_color());
+
+    let half = map.world.half_extents();
+    render::apply_backdrop_uniforms(backdrop_material, pos, view_distance, half);
+    gl_use_material(backdrop_material);
+    draw_mesh(&map.backdrop);
+
+    render::apply_terrain_uniforms(terrain_material, pos, view_distance, time);
+    gl_use_material(terrain_material);
+    map.world.draw(&Frustum::from_matrix(camera.matrix()), pos, view_distance);
+
+    gl_use_default_material();
+    set_default_camera();
 }
 
-fn draw_hud(flight: &Flight, terrain: &Terrain, drawn: usize, show_help: bool) {
-    let mode = if flight.autopilot {
-        format!("AUTOPILOT  holding {:.0} m AGL", flight.target_agl)
-    } else {
-        "MANUAL".to_owned()
-    };
-    let speed = if flight.boosting {
-        format!("{:.0} m/s  (BOOST)", flight.current_speed())
-    } else {
-        format!("{:.0} m/s", flight.current_speed())
-    };
-    let lines = [
-        format!("FPS {}   chunks {} / drawn {}", get_fps(), terrain.chunk_count(), drawn),
-        format!("Speed     {speed}"),
-        format!(
-            "Altitude  {:.0} m   (AGL {:.0} m)",
-            flight.pos.y,
-            flight.agl(&terrain.field)
-        ),
-        format!(
-            "Heading   {:03.0}   Pitch {:+.0}",
-            flight.heading_degrees(),
-            flight.pitch.to_degrees()
-        ),
-        format!("Mode      {mode}"),
-        format!(
-            "Seed      {}{}",
-            terrain.field.seed,
-            if flight.invert_pitch { "   (pitch inverted)" } else { "" }
-        ),
-    ];
+/// "No map", centered in the area right of the toolbar.
+fn draw_no_map_label() {
+    let text = "No map";
+    let dims = measure_text(text, None, 48, 1.0);
+    let center_x = TOOLBAR_WIDTH + (screen_width() - TOOLBAR_WIDTH) * 0.5;
+    draw_text(
+        text,
+        center_x - dims.width * 0.5,
+        (screen_height() + dims.offset_y) * 0.5,
+        48.0,
+        HUD_TEXT,
+    );
+}
 
-    let line_h = 22.0;
-    panel(12.0, 12.0, 400.0, lines.len() as f32 * line_h + 14.0);
-    for (i, line) in lines.iter().enumerate() {
-        draw_text(line, 24.0, 34.0 + i as f32 * line_h, 22.0, WHITE);
+/// Text with a soft drop shadow so it stays readable over both water and the backdrop.
+fn hud_text(text: &str, x: f32, y: f32, size: f32, color: Color) {
+    draw_text(text, x + 1.0, y + 1.0, size, HUD_SHADOW);
+    draw_text(text, x, y, size, color);
+}
+
+fn overview_button_rect() -> Rect {
+    Rect::new(screen_width() - 118.0, 8.0, 110.0, 26.0)
+}
+
+fn overview_button_clicked() -> bool {
+    is_mouse_button_pressed(MouseButton::Left)
+        && overview_button_rect().contains(mouse_position().into())
+}
+
+fn draw_overview_button(cam: &EditorCamera) {
+    let r = overview_button_rect();
+    let hovered = r.contains(mouse_position().into());
+    let fill = if hovered {
+        Color::new(0.25, 0.45, 0.75, 0.8)
+    } else {
+        Color::new(0.0, 0.0, 0.0, 0.35)
+    };
+    draw_rectangle(r.x, r.y, r.w, r.h, fill);
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, Color::new(1.0, 1.0, 1.0, 0.3));
+    let label = if cam.in_overview() { "Back  (T)" } else { "Top-down  (T)" };
+    let size = measure_text(label, None, 18, 1.0);
+    draw_text(
+        label,
+        r.x + (r.w - size.width) * 0.5,
+        r.y + (r.h + size.offset_y) * 0.5 - 1.0,
+        18.0,
+        HUD_TEXT,
+    );
+}
+
+/// `cam` is the open map's camera, if there is a map.
+fn draw_hud(cam: Option<&EditorCamera>, show_help: bool) {
+    hud_text(&format!("{} FPS", get_fps()), HUD_LEFT, 24.0, 18.0, HUD_TEXT);
+    if let Some(cam) = cam {
+        draw_overview_button(cam);
     }
 
-    // Small reticle so the flight direction is easy to judge.
-    let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
-    let reticle = Color::new(1.0, 1.0, 1.0, 0.6);
-    draw_line(cx - 14.0, cy, cx - 5.0, cy, 2.0, reticle);
-    draw_line(cx + 5.0, cy, cx + 14.0, cy, 2.0, reticle);
-    draw_line(cx, cy + 5.0, cx, cy + 12.0, 2.0, reticle);
-
+    let bottom = screen_height() - 10.0;
     if show_help {
-        let h = HELP.len() as f32 * line_h + 44.0;
-        let y0 = screen_height() - h - 12.0;
-        panel(12.0, y0, 470.0, h);
-        draw_text("CONTROLS", 24.0, y0 + 26.0, 22.0, YELLOW);
+        let line_h = 18.0;
+        let top = bottom - (HELP.len() - 1) as f32 * line_h;
         for (i, (keys, action)) in HELP.iter().enumerate() {
-            let y = y0 + 50.0 + i as f32 * line_h;
-            draw_text(keys, 24.0, y, 20.0, Color::new(0.75, 0.85, 1.0, 1.0));
-            draw_text(action, 270.0, y, 20.0, WHITE);
+            let y = top + i as f32 * line_h;
+            hud_text(keys, HUD_LEFT, y, 16.0, Color::new(0.75, 0.85, 1.0, 0.9));
+            hud_text(action, HUD_LEFT + 140.0, y, 16.0, HUD_TEXT);
         }
     } else {
-        draw_text("H: help", 16.0, screen_height() - 16.0, 20.0, Color::new(1.0, 1.0, 1.0, 0.6));
+        hud_text("H  controls", HUD_LEFT, bottom, 16.0, HUD_DIM);
     }
 }

@@ -1,0 +1,297 @@
+//! The editable world: a finite heightmap rendered as a grid of level-of-detail chunks.
+
+use std::time::{Duration, Instant};
+
+use macroquad::models::{draw_mesh, Mesh, Vertex};
+use macroquad::prelude::*;
+
+use crate::noise::{smoothstep, Perlin};
+
+pub const SEA_LEVEL: f32 = 0.0;
+/// Spacing between heightmap samples, in world units (meters).
+pub const CELL_SIZE: f32 = 4.0;
+/// Every point of a new world starts this far below sea level.
+const INITIAL_DEPTH: f32 = -200.0;
+
+/// Heightmap cells along a chunk side at the finest LOD; each coarser LOD halves the vertex count.
+const CHUNK_CELLS: usize = 16;
+/// Map sides are whole numbers of chunks.
+pub const CHUNK_SIZE: f32 = CELL_SIZE * CHUNK_CELLS as f32;
+pub const MIN_MAP_SIZE: f32 = 256.0;
+pub const MAX_MAP_SIZE: f32 = 8192.0;
+/// Distance thresholds (world units) for LOD 0, 1 and 2; anything farther is LOD 3.
+const LOD_DISTANCES: [f32; 3] = [360.0, 800.0, 1500.0];
+
+/// Rounds a requested map side (meters) to the nearest size the world can be built at.
+pub fn snap_map_size(meters: f32) -> f32 {
+    ((meters / CHUNK_SIZE).round() * CHUNK_SIZE).clamp(MIN_MAP_SIZE, MAX_MAP_SIZE)
+}
+
+fn water_color(depth: f32) -> Vec3 {
+    vec3(0.10, 0.42, 0.48).lerp(vec3(0.02, 0.10, 0.26), smoothstep(0.0, 45.0, depth))
+}
+
+fn rgba8(c: Vec3) -> [u8; 4] {
+    let c = c.clamp(Vec3::ZERO, Vec3::ONE) * 255.0;
+    [c.x as u8, c.y as u8, c.z as u8, 255]
+}
+
+struct Chunk {
+    lod: u8,
+    mesh: Mesh,
+    center: Vec3,
+    radius: f32,
+}
+
+pub struct World {
+    /// Heightmap cells along x (west to east) and z (north to south).
+    cells_x: usize,
+    cells_z: usize,
+    /// (cells_x + 1) × (cells_z + 1) elevation samples, row-major from the north-west corner.
+    heights: Vec<f32>,
+    perlin: Perlin,
+    chunks_x: usize,
+    chunks: Vec<Option<Chunk>>,
+}
+
+impl World {
+    /// A new world of the given size in meters (snapped with [`snap_map_size`]): deep ocean
+    /// everywhere, centered on the origin.
+    pub fn new(width: f32, height: f32) -> Self {
+        let cells = |meters: f32| (snap_map_size(meters) / CELL_SIZE) as usize;
+        let (cells_x, cells_z) = (cells(width), cells(height));
+        let (chunks_x, chunks_z) = (cells_x / CHUNK_CELLS, cells_z / CHUNK_CELLS);
+        Self {
+            cells_x,
+            cells_z,
+            heights: vec![INITIAL_DEPTH; (cells_x + 1) * (cells_z + 1)],
+            perlin: Perlin::new(1337),
+            chunks_x,
+            chunks: (0..chunks_x * chunks_z).map(|_| None).collect(),
+        }
+    }
+
+    /// Width (x) and height (z) of the world in meters.
+    pub fn size(&self) -> Vec2 {
+        vec2(self.cells_x as f32, self.cells_z as f32) * CELL_SIZE
+    }
+
+    pub fn half_extents(&self) -> Vec2 {
+        self.size() * 0.5
+    }
+
+    /// Elevation at a heightmap sample; coordinates outside the world are clamped to its edge.
+    fn sample(&self, gi: i32, gj: i32) -> f32 {
+        let i = gi.clamp(0, self.cells_x as i32) as usize;
+        let j = gj.clamp(0, self.cells_z as i32) as usize;
+        self.heights[j * (self.cells_x + 1) + i]
+    }
+
+    /// Height of the visible surface (land or water) at a world position.
+    pub fn surface_height(&self, x: f32, z: f32) -> f32 {
+        let half = self.half_extents();
+        let fx = ((x + half.x) / CELL_SIZE).clamp(0.0, self.cells_x as f32);
+        let fz = ((z + half.y) / CELL_SIZE).clamp(0.0, self.cells_z as f32);
+        let (i, j) = (fx.floor() as i32, fz.floor() as i32);
+        let (tx, tz) = (fx - i as f32, fz - j as f32);
+        let top = self.sample(i, j) + (self.sample(i + 1, j) - self.sample(i, j)) * tx;
+        let bottom = self.sample(i, j + 1) + (self.sample(i + 1, j + 1) - self.sample(i, j + 1)) * tx;
+        (top + (bottom - top) * tz).max(SEA_LEVEL)
+    }
+
+    /// Highest point of the visible surface anywhere in the world.
+    pub fn max_surface_height(&self) -> f32 {
+        self.heights.iter().copied().fold(SEA_LEVEL, f32::max)
+    }
+
+    fn land_color(&self, h: f32, slope_y: f32, x: f32, z: f32) -> Vec3 {
+        let v = self.perlin.noise(x * 0.03 + 400.0, z * 0.03 - 400.0) * 0.5;
+        let hv = h + v * 25.0;
+
+        let sand = vec3(0.76, 0.70, 0.50);
+        let grass_lo = vec3(0.30, 0.50, 0.19);
+        let grass_hi = vec3(0.20, 0.34, 0.15);
+        let rock = vec3(0.42, 0.38, 0.35);
+        let snow = vec3(0.95, 0.96, 1.0);
+
+        let mut c = grass_lo.lerp(grass_hi, smoothstep(10.0, 140.0, hv));
+        c = sand.lerp(c, smoothstep(0.5, 2.5, h + v * 4.0));
+        let rockiness = smoothstep(0.80, 0.65, slope_y).max(smoothstep(150.0, 210.0, hv));
+        c = c.lerp(rock, rockiness);
+        let snowiness = smoothstep(185.0, 235.0, hv) * smoothstep(0.35, 0.6, slope_y);
+        c = c.lerp(snow, snowiness);
+        c * (1.0 + v * 0.15)
+    }
+
+    fn build_chunk(&self, cx: usize, cz: usize, lod: u8) -> Chunk {
+        let stride = 1i32 << lod;
+        let n = CHUNK_CELLS >> lod;
+        let step = CELL_SIZE * stride as f32;
+        let gi0 = (cx * CHUNK_CELLS) as i32;
+        let gj0 = (cz * CHUNK_CELLS) as i32;
+        let half = self.half_extents();
+        let x0 = gi0 as f32 * CELL_SIZE - half.x;
+        let z0 = gj0 as f32 * CELL_SIZE - half.y;
+        let surf = |gi: i32, gj: i32| self.sample(gi, gj).max(SEA_LEVEL);
+
+        let row = n + 1;
+        let mut vertices = Vec::with_capacity(row * row + 4 * row);
+        let mut indices: Vec<u16> = Vec::with_capacity(n * n * 6 + 4 * n * 6);
+        let (mut y_min, mut y_max) = (f32::MAX, f32::MIN);
+
+        for j in 0..=n {
+            for i in 0..=n {
+                let gi = gi0 + i as i32 * stride;
+                let gj = gj0 + j as i32 * stride;
+                let x = x0 + i as f32 * step;
+                let z = z0 + j as f32 * step;
+                let r = self.sample(gi, gj);
+                let y = r.max(SEA_LEVEL);
+
+                // normal.w carries a "water" flag the fragment shader uses for ripples and glints.
+                let (normal, color, water) = if r < SEA_LEVEL {
+                    (Vec3::Y, water_color(SEA_LEVEL - r), 1.0)
+                } else {
+                    let nrm = vec3(
+                        surf(gi - stride, gj) - surf(gi + stride, gj),
+                        2.0 * step,
+                        surf(gi, gj - stride) - surf(gi, gj + stride),
+                    )
+                    .normalize();
+                    (nrm, self.land_color(r, nrm.y, x, z), 0.0)
+                };
+
+                y_min = y_min.min(y);
+                y_max = y_max.max(y);
+                vertices.push(Vertex {
+                    position: vec3(x, y, z),
+                    uv: Vec2::ZERO,
+                    color: rgba8(color),
+                    normal: normal.extend(water),
+                });
+            }
+        }
+
+        for j in 0..n {
+            for i in 0..n {
+                let a = (j * row + i) as u16;
+                let b = a + 1;
+                let c = a + row as u16;
+                let d = c + 1;
+                indices.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+        }
+
+        // Skirts: a curtain hanging down from every edge hides cracks between chunks of different LOD.
+        let skirt = step * 1.5 + 6.0;
+        let edges: [Vec<usize>; 4] = [
+            (0..=n).collect(),
+            (0..=n).map(|i| n * row + i).collect(),
+            (0..=n).map(|j| j * row).collect(),
+            (0..=n).map(|j| j * row + n).collect(),
+        ];
+        for edge in &edges {
+            let base = vertices.len();
+            for &k in edge {
+                let mut v = vertices[k].clone();
+                v.position.y -= skirt;
+                vertices.push(v);
+            }
+            for t in 0..n {
+                let a = edge[t] as u16;
+                let b = edge[t + 1] as u16;
+                let sa = (base + t) as u16;
+                let sb = sa + 1;
+                indices.extend_from_slice(&[a, sa, b, b, sa, sb]);
+            }
+        }
+
+        let half = CHUNK_SIZE * 0.5;
+        let half_h = (y_max - (y_min - skirt)) * 0.5;
+        Chunk {
+            lod,
+            mesh: Mesh {
+                vertices,
+                indices,
+                texture: None,
+            },
+            center: vec3(x0 + half, y_min - skirt + half_h, z0 + half),
+            radius: (half * half * 2.0 + half_h * half_h).sqrt(),
+        }
+    }
+
+    /// Builds missing chunks and swaps LODs as the camera moves, spending at most `budget`.
+    /// Missing chunks closest to the camera are built first; LOD swaps come after.
+    pub fn update(&mut self, cam: Vec3, budget: Duration) {
+        let start = Instant::now();
+
+        let mut work: Vec<(f32, usize, u8)> = Vec::new();
+        for (idx, chunk) in self.chunks.iter().enumerate() {
+            let d = self.chunk_center(idx).distance(cam);
+            let lod = lod_for(d);
+            match chunk {
+                Some(c) if c.lod == lod => {}
+                Some(_) => work.push((d + 1e6, idx, lod)),
+                None => work.push((d, idx, lod)),
+            }
+        }
+        work.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        for (_, idx, lod) in work {
+            if start.elapsed() > budget {
+                break;
+            }
+            let (cx, cz) = (idx % self.chunks_x, idx / self.chunks_x);
+            self.chunks[idx] = Some(self.build_chunk(cx, cz, lod));
+        }
+    }
+
+    /// Center of a chunk at sea level, used to pick its LOD.
+    fn chunk_center(&self, idx: usize) -> Vec3 {
+        let (cx, cz) = (idx % self.chunks_x, idx / self.chunks_x);
+        let half = self.half_extents();
+        vec3(
+            (cx as f32 + 0.5) * CHUNK_SIZE - half.x,
+            SEA_LEVEL,
+            (cz as f32 + 0.5) * CHUNK_SIZE - half.y,
+        )
+    }
+
+    /// Draws every chunk within `max_distance` that intersects the view frustum.
+    pub fn draw(&self, frustum: &Frustum, cam: Vec3, max_distance: f32) {
+        for chunk in self.chunks.iter().flatten() {
+            if chunk.center.distance(cam) - chunk.radius < max_distance
+                && frustum.sphere_visible(chunk.center, chunk.radius)
+            {
+                draw_mesh(&chunk.mesh);
+            }
+        }
+    }
+}
+
+fn lod_for(distance: f32) -> u8 {
+    LOD_DISTANCES
+        .iter()
+        .position(|&d| distance < d)
+        .unwrap_or(LOD_DISTANCES.len()) as u8
+}
+
+/// View frustum side and near planes, extracted from a view-projection matrix.
+pub struct Frustum {
+    planes: [Vec4; 5],
+}
+
+impl Frustum {
+    pub fn from_matrix(m: Mat4) -> Self {
+        let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
+        let planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2]
+            .map(|p| p / p.truncate().length());
+        Self { planes }
+    }
+
+    pub fn sphere_visible(&self, center: Vec3, radius: f32) -> bool {
+        self.planes
+            .iter()
+            .all(|p| p.truncate().dot(center) + p.w >= -radius)
+    }
+}

@@ -1,4 +1,4 @@
-//! Seeded 2D Perlin noise plus the fractal combinations used to shape the terrain.
+//! Seeded 2D Perlin noise, used for natural-looking color variation.
 
 pub struct Perlin {
     perm: [u8; 512],
@@ -45,43 +45,6 @@ impl Perlin {
         let x1 = lerp(u, grad(aa, x, y), grad(ba, x - 1.0, y));
         let x2 = lerp(u, grad(ab, x, y - 1.0), grad(bb, x - 1.0, y - 1.0));
         lerp(v, x1, x2) * 1.4
-    }
-
-    /// Fractal Brownian motion, normalized to roughly [-1, 1].
-    pub fn fbm(&self, x: f32, y: f32, octaves: u32) -> f32 {
-        let mut sum = 0.0;
-        let mut amp = 1.0;
-        let mut freq = 1.0;
-        let mut norm = 0.0;
-        for o in 0..octaves {
-            // Offset each octave so the lattice points don't line up.
-            let off = o as f32 * 17.31;
-            sum += self.noise(x * freq + off, y * freq - off) * amp;
-            norm += amp;
-            amp *= 0.5;
-            freq *= 2.03;
-        }
-        sum / norm
-    }
-
-    /// Ridged multifractal: sharp crests, smooth valleys. Roughly [0, 1].
-    pub fn ridged(&self, x: f32, y: f32, octaves: u32) -> f32 {
-        let mut sum = 0.0;
-        let mut amp = 1.0;
-        let mut freq = 1.0;
-        let mut norm = 0.0;
-        let mut weight = 1.0;
-        for o in 0..octaves {
-            let off = o as f32 * 31.7;
-            let n = 1.0 - self.noise(x * freq + off, y * freq + off).abs();
-            let n = n * n * weight;
-            weight = (n * 1.8).clamp(0.0, 1.0);
-            sum += n * amp;
-            norm += amp;
-            amp *= 0.5;
-            freq *= 2.1;
-        }
-        sum / norm
     }
 }
 
