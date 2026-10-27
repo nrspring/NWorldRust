@@ -8,6 +8,8 @@ use macroquad::prelude::*;
 use crate::gen_common::ExistingLand;
 use crate::render::TerrainVertex;
 
+static NEXT_WORLD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub const SEA_LEVEL: f32 = 0.0;
 /// Spacing between heightmap samples, in world units (meters).
 pub const CELL_SIZE: f32 = 4.0;
@@ -113,6 +115,9 @@ pub struct World {
     chunks: Vec<Option<Chunk>>,
     blocks_x: usize,
     blocks: Vec<Block>,
+    /// Which world this is, and how many times its terrain has changed; see [`World::revision`].
+    id: u64,
+    version: u64,
 }
 
 impl World {
@@ -131,11 +136,19 @@ impl World {
             near_water: vec![true; samples],
             chunks_x,
             chunks: (0..chunks_x * chunks_z).map(|_| None).collect(),
+            id: NEXT_WORLD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            version: 0,
             blocks_x,
             blocks: (0..blocks_x * blocks_z)
                 .map(|_| Block { dirty: true, mesh: None, center: Vec3::ZERO, radius: 0.0 })
                 .collect(),
         }
+    }
+
+    /// Identifies this world and the state of its terrain: it differs whenever the heights
+    /// have changed since it was last read, or for a different world.
+    pub fn revision(&self) -> (u64, u64) {
+        (self.id, self.version)
     }
 
     /// Width (x) and height (z) of the world in meters.
@@ -163,6 +176,7 @@ impl World {
         assert_eq!(heights.len(), self.heights.len(), "heightmap size mismatch");
         self.near_water = near_water(&heights, self.cells_x + 1, self.cells_z + 1);
         self.heights = heights;
+        self.version += 1;
         self.chunks.iter_mut().for_each(|c| *c = None);
         self.blocks.iter_mut().for_each(|b| b.dirty = true);
     }
@@ -234,6 +248,7 @@ impl World {
     /// Rebuilds the chunks affected by a change to the samples in `region` right away, at the
     /// level of detail they would get with the camera at `cam`.
     pub fn refresh_region(&mut self, region: Region, cam: Vec3) {
+        self.version += 1;
         // A chunk's normals look as far as one stride (up to 8 cells) past its own samples.
         const REACH: usize = 8;
         let cx0 = region.i0.saturating_sub(REACH) / CHUNK_CELLS;

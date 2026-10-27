@@ -61,6 +61,8 @@ struct TerrainUniforms {
     surface_scale: Vec2,
     surface_offset: Vec2,
     pixel_cells: f32,
+    /// 1 to draw a topographic map instead of the lit terrain, 0 for the regular view.
+    topo: f32,
 }
 
 fn terrain_uniform_layout() -> UniformBlockLayout {
@@ -79,6 +81,7 @@ fn terrain_uniform_layout() -> UniformBlockLayout {
             U::new("surface_scale", Float2),
             U::new("surface_offset", Float2),
             U::new("pixel_cells", Float1),
+            U::new("topo", Float1),
         ],
     }
 }
@@ -124,7 +127,7 @@ impl TerrainRenderer {
     /// Draws the terrain of `world`, colored from its `surface` texture, as seen by `camera`
     /// from `cam`, out to `view_distance`. Whatever macroquad has queued is drawn first, so the
     /// terrain lands on top of it.
-    pub fn draw(&self, world: &mut World, surface: &Texture2D, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32) {
+    pub fn draw(&self, world: &mut World, surface: &Texture2D, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
         let mut gl = unsafe { get_internal_gl() };
         gl.flush();
         let ctx: &mut dyn RenderingBackend = gl.quad_context;
@@ -149,6 +152,7 @@ impl TerrainRenderer {
             surface_scale: Vec2::ONE / (texels * CELL_SIZE),
             surface_offset: (world.half_extents() / CELL_SIZE + 0.5) / texels,
             pixel_cells: pixel_angle / CELL_SIZE,
+            topo: if topo { 1.0 } else { 0.0 },
         };
 
         let (width, height) = miniquad::window::screen_size();
@@ -367,6 +371,8 @@ const float NOISE_SIZE = 512.0;
 uniform vec2 surface_scale;
 uniform vec2 surface_offset;
 uniform float pixel_cells;
+// 1 draws a topographic map instead of the lit terrain.
+uniform float topo;
 
 // Hills are drawn in 25 shades of green, one per metre: shade 1 (up to 2 m) is the lightest and
 // shade 25 (25 m) the darkest. Mountains are grey rock from 26 m and snow from 40 m.
@@ -471,6 +477,58 @@ float beach_amount(vec2 p, float coast, float width) {
     return max(closest, 1.0 - smoothstep(0.5, 0.7, coast));
 }
 
+// The topographic map: height bands tinted from green through yellow to brown, contour lines
+// every 5 m with a heavier one every 25 m, and a dark line along the coast. `land` is how much
+// of the pixel is land, `shore` how close it is to the coast line (1 on it), `dist` the distance
+// to the camera.
+const float CELL = 4.0;
+
+// How close the point is to the coast line, 1 on it, over about a pixel: whether the coast
+// value crosses its midpoint within a pixel's reach.
+float shore_line(vec2 p, float dist) {
+    float r = max(dist * pixel_cells * CELL * 0.75, 0.5);
+    float lo = 1.0;
+    float hi = 0.0;
+    for (int k = 0; k < 4; k++) {
+        vec2 o = k == 0 ? vec2(r, 0.0) : k == 1 ? vec2(-r, 0.0) : k == 2 ? vec2(0.0, r) : vec2(0.0, -r);
+        float c = texture2D(surface, (p + o) * surface_scale + surface_offset).r;
+        lo = min(lo, c);
+        hi = max(hi, c);
+    }
+    return smoothstep(0.0, 0.05, min(hi - 0.5, 0.5 - lo));
+}
+
+vec3 topo_color(float land, float shore, float dist) {
+    float h = v_world.y;
+    vec3 n = normalize(v_normal.xyz);
+
+    vec3 tint = mix(vec3(0.62, 0.80, 0.52), vec3(0.93, 0.90, 0.62), smoothstep(2.0, 12.0, h));
+    tint = mix(tint, vec3(0.82, 0.66, 0.45), smoothstep(12.0, 28.0, h));
+    tint = mix(tint, vec3(0.62, 0.48, 0.38), smoothstep(28.0, 45.0, h));
+    // A little relief shading so ridges read at a glance.
+    tint *= mix(1.0, 0.75 + 0.5 * max(dot(n, normalize(sun_dir)), 0.0), 0.35);
+    vec3 col = mix(vec3(0.70, 0.84, 0.93), tint, land);
+
+    // How much height one pixel spans, which sets the width of the contour lines so they stay
+    // about a pixel wide whatever the slope, and where they would crowd into a smudge.
+    float footprint = dist * pixel_cells * CELL;
+    float slope = sqrt(max(1.0 - n.y * n.y, 0.0)) / max(n.y, 0.2);
+    float w = max(slope * footprint * 0.75, 0.002);
+    float on_land = land * smoothstep(1.0, 2.5, h);
+
+    float d_minor = abs(fract(h / 5.0 + 0.5) - 0.5) * 5.0;
+    float spacing_minor = 5.0 / max(slope, 0.001) / max(footprint, 0.001);
+    float minor = (1.0 - smoothstep(0.5 * w, 1.5 * w, d_minor)) * smoothstep(2.0, 5.0, spacing_minor);
+    col = mix(col, vec3(0.55, 0.38, 0.25), minor * 0.75 * on_land);
+
+    float d_index = abs(fract(h / 25.0 + 0.5) - 0.5) * 25.0;
+    float spacing_index = 25.0 / max(slope, 0.001) / max(footprint, 0.001);
+    float index = (1.0 - smoothstep(w, 2.5 * w, d_index)) * smoothstep(2.0, 5.0, spacing_index);
+    col = mix(col, vec3(0.33, 0.20, 0.11), index * on_land);
+
+    return mix(col, vec3(0.16, 0.34, 0.52), shore);
+}
+
 void main() {
     float dist = length(v_world - cam_pos);
     vec3 sun = normalize(sun_dir);
@@ -484,6 +542,10 @@ void main() {
     float aa = clamp(dist * pixel_cells * 0.5, 0.0001, 0.5);
     float land = smoothstep(0.5 - aa, 0.5 + aa, coast);
     float elevation = terrain.g * ELEVATION_RANGE;
+    if (topo > 0.5) {
+        gl_FragColor = vec4(topo_color(land, shore_line(v_world.xz, dist), dist), 1.0);
+        return;
+    }
     // The small offset absorbs 8-bit rounding so a whole-metre height lands in its own shade.
     float shade = clamp(floor(elevation + 0.2), 1.0, GREEN_SHADES);
     vec3 grass = mix(GRASS, HIGH_GRASS, (shade - 1.0) / (GREEN_SHADES - 1.0));
