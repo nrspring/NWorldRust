@@ -7,13 +7,31 @@ use crate::world::CELL_SIZE;
 /// Baseline land height, in meters, before lowland relief is added.
 pub const LAND_HEIGHT: f32 = 1.0;
 
-/// Add rolling lowland terrain to newly generated land, fading it in over 60 m from the
-/// shoreline. The coast and existing land stay untouched, including the first land sample.
-pub fn add_lowland_relief(heights: &mut [f32], existing: &[f32], nx: usize, nz: usize, seed: u32) {
+/// How much new land rises above the shore.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Relief {
+    /// Rolling lowlands up to 10 m.
+    Lowlands,
+    /// Ground that climbs from the coast toward the interior, between 1 and 25 m, with
+    /// variation along the way.
+    Continental,
+}
+
+/// How far inland a continent takes to reach its full height, at most, in meters.
+const CONTINENT_REACH: f32 = 700.0;
+/// The tallest continental ground, in meters.
+const CONTINENT_TOP: f32 = 25.0;
+
+/// Add rolling terrain to newly generated land, fading it in over 60 m from the shoreline. The
+/// coast and existing land stay untouched, including the first land sample.
+pub fn add_relief(heights: &mut [f32], existing: &[f32], nx: usize, nz: usize, seed: u32, relief: Relief) {
     let water: Vec<f32> = heights.iter().map(|&h| if h < 0.0 { 0.0 } else { -1.0 }).collect();
     let longest = (nx - 1).max(nz - 1) as f32;
     let Some(distance) = ExistingLand::new(&water, nx, nz, longest) else { return };
     let noise = Simplex::new(seed ^ 0xA4B1_C293);
+    // Continental ground climbs over the distance to the deepest interior, up to a limit.
+    let deepest = distance.dist.iter().copied().fold(0.0f32, |m, d| if d.is_finite() { m.max(d) } else { m });
+    let reach = (deepest * longest * CELL_SIZE * 0.8).clamp(120.0, CONTINENT_REACH);
     for (idx, h) in heights.iter_mut().enumerate() {
         if *h < 0.0 || existing[idx] >= 0.0 {
             continue;
@@ -21,10 +39,23 @@ pub fn add_lowland_relief(heights: &mut [f32], existing: &[f32], nx: usize, nz: 
         let x = (idx % nx) as f32 * CELL_SIZE;
         let z = (idx / nx) as f32 * CELL_SIZE;
         let inland = (distance.dist[idx] * longest - 1.0).max(0.0) * CELL_SIZE;
-        let broad = noise.fbm(x / 180.0, z / 180.0, 3, 0.5).clamp(-1.0, 1.0);
-        let detail = noise.fbm(x / 65.0 + 31.0, z / 65.0 - 47.0, 2, 0.45).clamp(-1.0, 1.0);
-        let hills = (4.0 + 3.3 * broad + 1.7 * detail).clamp(0.0, 9.0);
-        *h += smoothstep(0.0, 60.0, inland) * hills;
+        let fade = smoothstep(0.0, 60.0, inland);
+        *h += match relief {
+            Relief::Lowlands => {
+                let broad = noise.fbm(x / 180.0, z / 180.0, 3, 0.5).clamp(-1.0, 1.0);
+                let detail = noise.fbm(x / 65.0 + 31.0, z / 65.0 - 47.0, 2, 0.45).clamp(-1.0, 1.0);
+                fade * (4.0 + 3.3 * broad + 1.7 * detail).clamp(0.0, 9.0)
+            }
+            Relief::Continental => {
+                // The coast stays low and the interior high; broad swells and finer bumps
+                // make some stretches climb sooner and others later.
+                let climb = smoothstep(0.0, reach, inland);
+                let broad = noise.fbm(x / 320.0, z / 320.0, 3, 0.5).clamp(-1.0, 1.0);
+                let detail = noise.fbm(x / 90.0 + 31.0, z / 90.0 - 47.0, 2, 0.45).clamp(-1.0, 1.0);
+                let swing = (0.5 + 0.5 * climb) * (6.5 * broad + 3.0 * detail);
+                fade * (2.0 + 15.0 * climb + swing).clamp(0.0, CONTINENT_TOP - LAND_HEIGHT)
+            }
+        };
     }
 }
 
@@ -131,6 +162,49 @@ mod tests {
     use super::*;
     use crate::{continents::{self, ContinentParams}, islands::{self, IslandParams}, world::DEEP_OCEAN};
 
+    fn range(heights: &[f32]) -> (f32, f32) {
+        let inland: Vec<f32> = heights.iter().copied().filter(|&h| h >= LAND_HEIGHT).collect();
+        assert!(!inland.is_empty());
+        (
+            inland.iter().copied().fold(f32::INFINITY, f32::min),
+            inland.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+        )
+    }
+
+    #[test]
+    fn continents_rise_from_low_coasts_to_higher_interiors() {
+        let cells = 512;
+        let n = cells + 1;
+        let ocean = vec![DEEP_OCEAN; n * n];
+        let heights = continents::generate(&ContinentParams {
+            coverage: 0.3, count: 2, roughness: 0.4, regularity: 0.4,
+            edge_buffer: 0.05, seed: 42,
+        }, cells, cells, &ocean);
+        let (min, max) = range(&heights);
+        assert!(min < 2.0, "coasts should be low, got {min}");
+        assert!(max <= 25.0, "continents top out at 25 m, got {max}");
+        assert!(max > 15.0, "interiors should climb well above the coast, got {max}");
+
+        // Compare the average height of land by how far it is from the water.
+        let water: Vec<f32> = heights.iter().map(|&h| if h < 0.0 { 0.0 } else { -1.0 }).collect();
+        let distance = ExistingLand::new(&water, n, n, (n - 1) as f32).unwrap();
+        let (mut near, mut far) = ((0.0, 0), (0.0, 0));
+        for (idx, &h) in heights.iter().enumerate() {
+            let meters = distance.dist[idx] * (n - 1) as f32 * CELL_SIZE;
+            if h < 0.0 {
+                continue;
+            }
+            if meters < 100.0 {
+                near = (near.0 + h, near.1 + 1);
+            } else if meters > 200.0 {
+                far = (far.0 + h, far.1 + 1);
+            }
+        }
+        assert!(near.1 > 0 && far.1 > 0, "expected both coastal and deep inland land");
+        let (near, far) = (near.0 / near.1 as f32, far.0 / far.1 as f32);
+        assert!(far > near + 5.0, "inland {far} m should stand well above the coast {near} m");
+    }
+
     #[test]
     fn both_generators_make_varied_lowlands() {
         let cells = 256;
@@ -143,13 +217,10 @@ mod tests {
             count: 10, size: 0.08, variety: 0.4, scatter: 0.5,
             roughness: 0.4, edge_buffer: 0.05, seed: 42,
         }, cells, cells, &ocean);
-        for heights in [&continents, &islands] {
-            let inland: Vec<f32> = heights.iter().copied().filter(|&h| h >= LAND_HEIGHT).collect();
-            assert!(!inland.is_empty());
-            let min = inland.iter().copied().fold(f32::INFINITY, f32::min);
-            let max = inland.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        for (heights, top) in [(&continents, 25.0), (&islands, 10.0)] {
+            let (min, max) = range(heights);
             assert!(max - min > 2.0, "lowlands should vary in elevation");
-            assert!(max <= 10.0, "lowlands should stay at or below 10 m");
+            assert!(max <= top, "land should stay at or below {top} m");
         }
     }
 
@@ -162,7 +233,7 @@ mod tests {
         let mut existing = vec![DEEP_OCEAN; nx * nz];
         existing[20 * nx + 20] = 3.0;
         heights[20 * nx + 20] = 3.0;
-        add_lowland_relief(&mut heights, &existing, nx, nz, 42);
+        add_relief(&mut heights, &existing, nx, nz, 42, Relief::Lowlands);
         assert_eq!(heights[20 * nx], -1.0);
         assert_eq!(heights[20 * nx + 1], LAND_HEIGHT);
         assert_eq!(heights[20 * nx + 20], 3.0);

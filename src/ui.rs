@@ -20,13 +20,10 @@ const PAD: f32 = 16.0;
 const INNER_WIDTH: f32 = PANEL_WIDTH - PAD * 2.0;
 const CONTROL_HEIGHT: f32 = 36.0;
 const CONTROL_RADIUS: f32 = 6.0;
-const DEFAULT_MAP_SIZE: u32 = 4096;
+const DEFAULT_MAP_WIDTH: u32 = 10000;
+const DEFAULT_MAP_HEIGHT: u32 = 6000;
 const MAX_CONTINENTS: u32 = 12;
-/// Hills brush width in meters.
-const BRUSH_MIN: f32 = 10.0;
-const BRUSH_MAX: f32 = 100.0;
-const BRUSH_DEFAULT: f32 = 40.0;
-/// Mountains need a wider brush to rise gently; widths in meters.
+/// Mountains brush width in meters.
 const MOUNTAIN_BRUSH_MIN: f32 = 20.0;
 const MOUNTAIN_BRUSH_MAX: f32 = 100.0;
 const MOUNTAIN_BRUSH_DEFAULT: f32 = 50.0;
@@ -36,19 +33,17 @@ enum Tool {
     NewMap,
     Continents,
     Islands,
-    Hills,
     Mountains,
 }
 
 impl Tool {
-    const ALL: [Tool; 5] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Hills, Tool::Mountains];
+    const ALL: [Tool; 4] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Mountains];
 
     fn label(self) -> &'static str {
         match self {
             Tool::NewMap => "New map",
             Tool::Continents => "Continents",
             Tool::Islands => "Islands",
-            Tool::Hills => "Hills",
             Tool::Mountains => "Mountains",
         }
     }
@@ -88,7 +83,6 @@ enum SliderId {
     IslandVariety,
     IslandScatter,
     IslandRoughness,
-    BrushSize,
     MountainBrush,
 }
 
@@ -245,13 +239,13 @@ impl IslandsLayout {
     }
 }
 
-/// Where everything in the Hills panel sits.
-struct HillsLayout {
+/// Where everything in the Mountains panel sits.
+struct MountainsLayout {
     panel: Rect,
     brush: Rect,
 }
 
-impl HillsLayout {
+impl MountainsLayout {
     fn new(origin: Vec2) -> Self {
         let x = origin.x + PAD;
         let brush = Rect::new(x, origin.y + 92.0, INNER_WIDTH, 22.0);
@@ -266,8 +260,7 @@ enum Layout {
     NewMap(NewMapLayout),
     Continents(ContinentsLayout),
     Islands(IslandsLayout),
-    Hills(HillsLayout),
-    Mountains(HillsLayout),
+    Mountains(MountainsLayout),
 }
 
 impl Layout {
@@ -276,7 +269,7 @@ impl Layout {
             Layout::NewMap(l) => l.panel,
             Layout::Continents(l) => l.panel,
             Layout::Islands(l) => l.panel,
-            Layout::Hills(l) | Layout::Mountains(l) => l.panel,
+            Layout::Mountains(l) => l.panel,
         }
     }
 }
@@ -297,8 +290,6 @@ pub struct EditorUi {
     island_scatter: Slider,
     island_roughness: Slider,
     island_seed: NumberField,
-    /// Width of the hills brush in meters.
-    brush_size: Slider,
     /// Width of the mountains brush in meters.
     mountain_brush: Slider,
     focused: Option<FieldId>,
@@ -351,8 +342,8 @@ impl EditorUi {
         rand::srand(macroquad::miniquad::date::now() as u64);
         Self {
             open_tool: None,
-            width: NumberField::new("Width", DEFAULT_MAP_SIZE, "m", 1, 5),
-            height: NumberField::new("Height", DEFAULT_MAP_SIZE, "m", 1, 5),
+            width: NumberField::new("Width", DEFAULT_MAP_WIDTH, "m", 1, 5),
+            height: NumberField::new("Height", DEFAULT_MAP_HEIGHT, "m", 1, 5),
             coverage: Slider {
                 label: "Land to add",
                 value: 30.0,
@@ -433,14 +424,6 @@ impl EditorUi {
                 ends: Some(("Smooth", "Ragged")),
             },
             island_seed: NumberField::new("Seed", random_seed(), "", 0, 9),
-            brush_size: Slider {
-                label: "Brush size",
-                value: BRUSH_DEFAULT,
-                min: BRUSH_MIN,
-                max: BRUSH_MAX,
-                unit: " m",
-                ends: None,
-            },
             mountain_brush: Slider {
                 label: "Brush size",
                 value: MOUNTAIN_BRUSH_DEFAULT,
@@ -463,8 +446,7 @@ impl EditorUi {
             Tool::NewMap => Layout::NewMap(NewMapLayout::new(origin)),
             Tool::Continents => Layout::Continents(ContinentsLayout::new(origin)),
             Tool::Islands => Layout::Islands(IslandsLayout::new(origin)),
-            Tool::Hills => Layout::Hills(HillsLayout::new(origin)),
-            Tool::Mountains => Layout::Mountains(HillsLayout::new(origin)),
+            Tool::Mountains => Layout::Mountains(MountainsLayout::new(origin)),
         })
     }
 
@@ -497,7 +479,6 @@ impl EditorUi {
             SliderId::IslandVariety => &mut self.island_variety,
             SliderId::IslandScatter => &mut self.island_scatter,
             SliderId::IslandRoughness => &mut self.island_roughness,
-            SliderId::BrushSize => &mut self.brush_size,
             SliderId::MountainBrush => &mut self.mountain_brush,
         }
     }
@@ -508,15 +489,13 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Hills) | Some(Tool::Mountains) | None => &[],
+            Some(Tool::Mountains) | None => &[],
         }
     }
 
-    /// The radius in meters and what it grows while the Hills or Mountains tool is open, else
-    /// `None`.
+    /// The radius in meters and what it grows while the Mountains tool is open, else `None`.
     pub fn brush(&self) -> Option<(f32, Peak)> {
         match self.open_tool {
-            Some(Tool::Hills) => Some((self.brush_size.value * 0.5, Peak::Hills)),
             Some(Tool::Mountains) => Some((self.mountain_brush.value * 0.5, Peak::Mountains)),
             _ => None,
         }
@@ -597,12 +576,8 @@ impl EditorUi {
         let layout = self.layout()?;
         let mut submit = false;
         match &layout {
-            Layout::Hills(l) | Layout::Mountains(l) => {
-                let id = if self.open_tool == Some(Tool::Mountains) {
-                    SliderId::MountainBrush
-                } else {
-                    SliderId::BrushSize
-                };
+            Layout::Mountains(l) => {
+                let id = SliderId::MountainBrush;
                 if clicked && l.brush.contains(mouse) {
                     self.dragging = Some(id);
                 }
@@ -728,7 +703,7 @@ impl EditorUi {
             Layout::NewMap(_) => self.submit_new_map(),
             Layout::Continents(_) => self.submit_continents(has_map),
             Layout::Islands(_) => self.submit_islands(has_map),
-            Layout::Hills(_) | Layout::Mountains(_) => None,
+            Layout::Mountains(_) => None,
         }
     }
 
@@ -817,8 +792,7 @@ impl EditorUi {
                 Layout::NewMap(l) => self.draw_new_map_panel(style, l, mouse),
                 Layout::Continents(l) => self.draw_continents_panel(style, l, mouse, has_map),
                 Layout::Islands(l) => self.draw_islands_panel(style, l, mouse, has_map),
-                Layout::Hills(l) => self.draw_brush_panel(style, l, mouse, has_map, Peak::Hills),
-                Layout::Mountains(l) => self.draw_brush_panel(style, l, mouse, has_map, Peak::Mountains),
+                Layout::Mountains(l) => self.draw_mountains_panel(style, l, mouse, has_map),
             }
         }
     }
@@ -882,38 +856,21 @@ impl EditorUi {
         draw_primary_button(style, l.button, "Create map", true, mouse);
     }
 
-    fn draw_brush_panel(&self, style: &Style, l: &HillsLayout, mouse: Vec2, has_map: bool, peak: Peak) {
-        let (title, id, slider, lines) = match peak {
-            Peak::Hills => (
-                "Hills",
-                SliderId::BrushSize,
-                &self.brush_size,
-                [
-                    "Hold left to grow hills (10 to 25 m)",
-                    "easing down into the lowlands.",
-                    "Hold right to lower ground, down to 1 m.",
-                    "[ and ] resize the brush.",
-                ],
-            ),
-            Peak::Mountains => (
-                "Mountains",
-                SliderId::MountainBrush,
-                &self.mountain_brush,
-                [
-                    "Hold left to grow mountains (26 to 50 m).",
-                    "Hills form around them as foothills.",
-                    "Hold right to lower ground, down to 1 m.",
-                    "[ and ] resize the brush.",
-                ],
-            ),
-        };
+    fn draw_mountains_panel(&self, style: &Style, l: &MountainsLayout, mouse: Vec2, has_map: bool) {
+        let id = SliderId::MountainBrush;
+        let lines = [
+            "Hold left to grow mountains (26 to 50 m).",
+            "Hills form around them as foothills.",
+            "Hold right to lower ground, down to 1 m.",
+            "[ and ] resize the brush.",
+        ];
         let subtitle = if has_map {
             "Paint on land, or wear the ground down."
         } else {
             "Create a map first."
         };
-        self.draw_header(style, l.panel, title, subtitle);
-        draw_slider(style, l.brush, slider, self.dragging == Some(id), mouse);
+        self.draw_header(style, l.panel, "Mountains", subtitle);
+        draw_slider(style, l.brush, &self.mountain_brush, self.dragging == Some(id), mouse);
 
         let x = l.panel.x + PAD;
         let mut y = l.brush.bottom() + 30.0;
@@ -1223,17 +1180,6 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             for pair in line.windows(2) {
                 draw_line(pair[0].x, pair[0].y, pair[1].x, pair[1].y, 1.3, color);
             }
-        }
-        Tool::Hills => {
-            // Two overlapping peaks on a ground line.
-            let ground = c.y + 8.0;
-            let peak = |x: f32, top: f32, half: f32| {
-                [(vec2(x - half, ground), vec2(x, top)), (vec2(x, top), vec2(x + half, ground))]
-            };
-            for (a, b) in peak(c.x - 4.0, c.y - 8.0, 8.0).into_iter().chain(peak(c.x + 5.0, c.y - 2.0, 6.0)) {
-                draw_line(a.x, a.y, b.x, b.y, t, color);
-            }
-            draw_line(c.x - 12.0, ground, c.x + 11.0, ground, t, color);
         }
         Tool::Islands => {
             // Three islands of different sizes.

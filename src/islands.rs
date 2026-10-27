@@ -10,7 +10,7 @@ use std::f32::consts::PI;
 
 use macroquad::prelude::{vec2, Vec2};
 
-use crate::gen_common::{add_lowland_relief, ExistingLand, Rng, EXISTING_MIN_GAP, LAND_HEIGHT};
+use crate::gen_common::{add_relief, ExistingLand, Relief, Rng, EXISTING_MIN_GAP, LAND_HEIGHT};
 use crate::noise::Simplex;
 use crate::world::{CELL_SIZE, DEEP_OCEAN};
 
@@ -328,7 +328,7 @@ pub fn generate(params: &IslandParams, cells_x: usize, cells_z: usize, existing:
             added += 1;
         }
     }
-    add_lowland_relief(&mut heights, existing, nx, nz, params.seed);
+    add_relief(&mut heights, existing, nx, nz, params.seed, Relief::Lowlands);
     (heights, added)
 }
 

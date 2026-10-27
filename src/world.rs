@@ -38,7 +38,7 @@ const CHUNK_CELLS: usize = 16;
 /// Map sides are whole numbers of chunks.
 pub const CHUNK_SIZE: f32 = CELL_SIZE * CHUNK_CELLS as f32;
 pub const MIN_MAP_SIZE: f32 = 256.0;
-pub const MAX_MAP_SIZE: f32 = 8192.0;
+pub const MAX_MAP_SIZE: f32 = 12288.0;
 /// Distance thresholds (world units) for LOD 0, 1 and 2; anything farther is LOD 3.
 /// Generous enough that coastlines stay crisp in the top-down view of a 4 km map.
 const LOD_DISTANCES: [f32; 3] = [500.0, 1300.0, 4000.0];
@@ -402,5 +402,33 @@ impl Frustum {
         self.planes
             .iter()
             .all(|p| p.truncate().dot(center) + p.w >= -radius)
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn large_maps_snap_to_whole_chunks_instead_of_being_cut_to_a_smaller_cap() {
+        assert_eq!(snap_map_size(10000.0), 9984.0);
+        assert_eq!(snap_map_size(6000.0), 6016.0);
+        assert_eq!(snap_map_size(20000.0), MAX_MAP_SIZE);
+        assert!(cells_valid((9984.0 / CELL_SIZE) as usize));
+    }
+
+    #[test]
+    fn a_10000_by_6000_world_builds_and_generates() {
+        use crate::continents::{self, ContinentParams};
+        let t = std::time::Instant::now();
+        let world = World::new(snap_map_size(10000.0), snap_map_size(6000.0));
+        let (nx, nz) = ((9984.0 / CELL_SIZE) as usize, (6016.0 / CELL_SIZE) as usize);
+        let heights = continents::generate(&ContinentParams {
+            coverage: 0.3, count: 4, roughness: 0.4, regularity: 0.4,
+            edge_buffer: 0.05, seed: 7,
+        }, nx, nz, &vec![DEEP_OCEAN; (nx + 1) * (nz + 1)]);
+        assert_eq!(heights.len(), (nx + 1) * (nz + 1));
+        assert!(world.size().x > 9900.0);
+        eprintln!("10000x6000 built and generated in {:?}", t.elapsed());
     }
 }

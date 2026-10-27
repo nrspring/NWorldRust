@@ -14,7 +14,7 @@ use std::f32::consts::PI;
 
 use macroquad::prelude::{vec2, Vec2};
 
-use crate::gen_common::{add_lowland_relief, ExistingLand, Rng, EXISTING_MIN_GAP, LAND_HEIGHT};
+use crate::gen_common::{add_relief, ExistingLand, Relief, Rng, EXISTING_MIN_GAP, LAND_HEIGHT};
 use crate::noise::{smoothstep, Simplex};
 use crate::world::DEEP_OCEAN;
 
@@ -367,6 +367,6 @@ pub fn generate(params: &ContinentParams, cells_x: usize, cells_z: usize, existi
             new.max(old)
         })
         .collect();
-    add_lowland_relief(&mut heights, existing, nx, nz, params.seed);
+    add_relief(&mut heights, existing, nx, nz, params.seed, Relief::Continental);
     heights
 }

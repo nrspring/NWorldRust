@@ -244,12 +244,15 @@ const vec3 SNOW = vec3(0.96, 0.97, 1.0);
 const vec3 GRASS = vec3(0.62, 0.80, 0.30);
 const vec3 HIGH_GRASS = vec3(0.03, 0.14, 0.05);
 const vec3 WATER = vec3(0.02, 0.10, 0.26);
+const vec3 SAND = vec3(0.86, 0.77, 0.53);
+const vec3 WET_SAND = vec3(0.60, 0.52, 0.34);
+// Beaches reach about this far from the water, in meters (varied along the shore).
+const float BEACH_WIDTH = 9.0;
 
 // Small-scale detail so grassland isn't one flat color up close. Everything is a function of
 // world position, so it stays put as the camera moves, and each layer fades out with distance
 // before it would shimmer.
 const vec3 DRY_GRASS = vec3(0.58, 0.52, 0.26);
-const float SCRUB_CELL = 7.0;
 
 float hash21(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -270,7 +273,6 @@ vec3 grass_detail(vec3 grass, vec2 p, float dist, float elevation, float up) {
     float far_fade = 1.0 - smoothstep(600.0, 2500.0, dist);
     float mid_fade = 1.0 - smoothstep(120.0, 700.0, dist);
     float near_fade = 1.0 - smoothstep(25.0, 140.0, dist);
-    float scrub_fade = 1.0 - smoothstep(70.0, 260.0, dist);
     float speck_fade = 1.0 - smoothstep(15.0, 60.0, dist);
     float grain_fade = 1.0 - smoothstep(4.0, 30.0, dist);
 
@@ -289,46 +291,6 @@ vec3 grass_detail(vec3 grass, vec2 p, float dist, float elevation, float up) {
     float spot = (1.0 - smoothstep(ROCK_START - 6.0, ROCK_START - 1.0, elevation))
         * smoothstep(1.5, 4.0, elevation) * smoothstep(0.80, 0.93, up);
 
-    // Scrub: clumps of low bushes scattered on a jittered grid, thicker in some places.
-    if (scrub_fade * spot > 0.001) {
-        vec2 g = p / SCRUB_CELL;
-        vec2 cell = floor(g);
-        vec2 f = fract(g);
-        float density = 0.08 + 0.45 * smoothstep(0.40, 0.72, vnoise(p / 50.0 + 90.0));
-        float best = 0.0;
-        float shadow = 0.0;
-        vec3 best_col = col;
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                vec2 o = vec2(float(dx), float(dy));
-                vec2 id = cell + o;
-                if (hash21(id) > density) {
-                    continue;
-                }
-                vec2 centre = o + vec2(hash21(id + 17.3), hash21(id + 91.7));
-                float d = length((f - centre) * SCRUB_CELL);
-                float r = mix(0.6, 2.0, hash21(id + 3.1)) * (0.8 + 0.4 * vnoise(p * 2.5));
-                float cover = 1.0 - smoothstep(r * 0.65, r, d);
-                // A soft shadow on the ground, thrown away from the sun.
-                float offset = length((f - centre) * SCRUB_CELL - vec2(0.3, 0.35) * r);
-                shadow = max(shadow, 1.0 - smoothstep(r * 0.6, r * 1.4, offset));
-                if (cover > best) {
-                    best = cover;
-                    float kind = hash21(id + 55.0);
-                    vec3 bush = kind < 0.5 ? vec3(0.17, 0.33, 0.11)
-                              : kind < 0.8 ? vec3(0.36, 0.42, 0.16)
-                              : vec3(0.45, 0.28, 0.14);
-                    // Lighter toward the middle so each bush reads as a mound.
-                    best_col = bush * (0.75 + 0.6 * clamp(1.0 - d / r, 0.0, 1.0));
-                    // Leafy mottling.
-                    best_col *= 0.8 + 0.4 * mix(vnoise(p * 9.0), vnoise(p * 23.0), 0.5);
-                }
-            }
-        }
-        col *= 1.0 - 0.35 * shadow * scrub_fade * spot;
-        col = mix(col, best_col, best * scrub_fade * spot);
-    }
-
     // Wildflowers: tiny pale and yellow specks, only seen from close up.
     if (speck_fade * spot > 0.001) {
         vec2 g = p / 1.6;
@@ -341,6 +303,25 @@ vec3 grass_detail(vec3 grass, vec2 p, float dist, float elevation, float up) {
         }
     }
     return col;
+}
+
+// How close the point is to open water, from 0 (further than a beach is wide) to 1 (at the
+// water's edge). Looks for water in rings around the point in the surface texture, which
+// interpolates smoothly so the beach edge follows the coastline between samples.
+float beach_amount(vec2 p, float coast, float width) {
+    float closest = 0.0;
+    for (int ring = 1; ring <= 3; ring++) {
+        float r = width * float(ring) / 3.0;
+        float water = 0.0;
+        for (int k = 0; k < 8; k++) {
+            float a = float(k) * 0.7853982 + float(ring);
+            vec2 at = (p + r * vec2(cos(a), sin(a))) * surface_scale + surface_offset;
+            water = max(water, 1.0 - smoothstep(0.46, 0.54, texture2D(surface, at).r));
+        }
+        closest = max(closest, water * (1.0 - (float(ring) - 1.0) / 3.0));
+    }
+    // Right at the shoreline the ground itself is within a hair of sea level.
+    return max(closest, 1.0 - smoothstep(0.5, 0.7, coast));
 }
 
 void main() {
@@ -368,6 +349,16 @@ void main() {
         + (vnoise(v_world.xz / 1.8) - 0.5) * 0.25 * (1.0 - smoothstep(25.0, 140.0, dist));
     vec3 ground = mix(grass, rock, smoothstep(ROCK_START - 1.0, ROCK_START, elevation));
     ground = mix(ground, SNOW, smoothstep(SNOW_START - 1.0, SNOW_START, elevation));
+    // A narrow sandy beach along every shore, damp where it meets the water. Far away it would
+    // only be a hair-thin line, so it fades out with distance.
+    float beach_fade = (1.0 - smoothstep(500.0, 1500.0, dist)) * (1.0 - smoothstep(3.0, 6.0, elevation));
+    if (land > 0.001 && beach_fade > 0.001) {
+        float width = BEACH_WIDTH * (0.65 + 0.7 * vnoise(v_world.xz / 23.0 + 40.0));
+        float beach = smoothstep(0.15, 0.6, beach_amount(v_world.xz, coast, width)) * beach_fade;
+        vec3 sand = mix(SAND, WET_SAND, 1.0 - smoothstep(0.5, 0.62, coast));
+        sand *= 1.0 + (vnoise(v_world.xz / 1.7) - 0.5) * 0.12 * (1.0 - smoothstep(20.0, 150.0, dist));
+        ground = mix(ground, sand, beach);
+    }
     vec3 base = mix(WATER, ground, land);
 
     vec3 n = mix(vec3(0.0, 1.0, 0.0), normalize(v_normal.xyz), land);

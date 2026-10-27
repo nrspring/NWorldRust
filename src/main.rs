@@ -235,7 +235,7 @@ async fn main() {
 }
 
 /// Slowly raises hills or mountains with the left button, or lowers the ground with the right,
-/// while the Hills or Mountains tool is open and the mouse is held over the map. Returns where the brush ring should be drawn: its center and radius.
+/// while the Mountains tool is open and the mouse is held over the map. Returns where the brush ring should be drawn: its center and radius.
 fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2, f32)> {
     let Some((radius, peak)) = ui.brush() else {
         map.end_stroke();
