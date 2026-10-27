@@ -226,18 +226,18 @@ uniform vec3 ambient;
 uniform vec3 fog_color;
 uniform vec2 fog_range;
 uniform float time;
-// Height around sea level in red, and land elevation (0-100 m) in green.
+// Height around sea level in red, and land elevation (0-50 m) in green.
 uniform sampler2D surface;
 uniform vec2 surface_scale;
 uniform vec2 surface_offset;
 uniform float pixel_cells;
 
 // Hills are drawn in 25 shades of green, one per metre: shade 1 (up to 2 m) is the lightest and
-// shade 25 (25 m) the darkest. Mountains are grey rock from 26 m and snow from 50 m.
+// shade 25 (25 m) the darkest. Mountains are grey rock from 26 m and snow from 40 m.
 const float GREEN_SHADES = 25.0;
 const float ROCK_START = 26.0;
-const float SNOW_START = 50.0;
-const float ELEVATION_RANGE = 100.0;
+const float SNOW_START = 40.0;
+const float ELEVATION_RANGE = 50.0;
 const vec3 ROCK = vec3(0.42, 0.42, 0.43);
 const vec3 HIGH_ROCK = vec3(0.60, 0.60, 0.62);
 const vec3 SNOW = vec3(0.96, 0.97, 1.0);
@@ -261,7 +261,7 @@ void main() {
     // The small offset absorbs 8-bit rounding so a whole-metre height lands in its own shade.
     float shade = clamp(floor(elevation + 0.2), 1.0, GREEN_SHADES);
     vec3 grass = mix(GRASS, HIGH_GRASS, (shade - 1.0) / (GREEN_SHADES - 1.0));
-    // Rock is fully in by 26 m and snow by 50 m, each blended in over the metre below; the rock
+    // Rock is fully in by 26 m and snow by 40 m, each blended in over the metre below; the rock
     // lightens toward the snow line.
     vec3 rock = mix(ROCK, HIGH_ROCK, smoothstep(ROCK_START, SNOW_START, elevation));
     vec3 ground = mix(grass, rock, smoothstep(ROCK_START - 1.0, ROCK_START, elevation));

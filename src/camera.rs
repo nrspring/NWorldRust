@@ -13,6 +13,10 @@ const LOOK_RATE: f32 = 1.4;
 const MOUSE_LOOK: f32 = 0.004;
 const FAST_MULTIPLIER: f32 = 4.0;
 const TRANSITION_SECONDS: f32 = 0.9;
+/// The angled view looks this far below the horizon.
+const ANGLED_PITCH_DEGREES: f32 = 20.0;
+/// The angled view keeps at least this far from what it looks at.
+const MIN_ANGLED_DISTANCE: f32 = 40.0;
 /// Extra room around the world when framing it from above.
 const OVERVIEW_MARGIN: f32 = 1.08;
 
@@ -46,6 +50,38 @@ fn axis(positive: &[KeyCode], negative: &[KeyCode]) -> f32 {
 /// Signed shortest angular difference from `a` to `b`.
 fn angle_delta(a: f32, b: f32) -> f32 {
     (b - a + PI).rem_euclid(TAU) - PI
+}
+
+/// The unit vector a camera with this yaw and pitch looks along.
+fn look_direction(yaw: f32, pitch: f32) -> Vec3 {
+    vec3(yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos())
+}
+
+/// Where the angled view goes from `from`: looking at the same ground, from the same distance,
+/// but 20 degrees below the horizon and kept inside the map's limits.
+fn angled_pose(from: Pose, world: &World) -> Pose {
+    let forward = look_direction(from.yaw, from.pitch);
+    // The ground point at the center of the view; with the camera looking level or up there
+    // isn't one, so pivot around a spot ahead of it.
+    let mut focus = from.pos + forward * 500.0;
+    if forward.y < -0.01 {
+        let mut ground = 0.0;
+        for _ in 0..4 {
+            let t = ((from.pos.y - ground) / -forward.y).max(0.0);
+            focus = from.pos + forward * t;
+            ground = world.surface_height(focus.x, focus.z);
+        }
+    }
+    let distance = from.pos.distance(focus).max(MIN_ANGLED_DISTANCE);
+
+    let pitch = -ANGLED_PITCH_DEGREES.to_radians();
+    let mut pos = focus - look_direction(from.yaw, pitch) * distance;
+    let limit = world.half_extents() * 1.5;
+    pos.x = pos.x.clamp(-limit.x, limit.x);
+    pos.z = pos.z.clamp(-limit.y, limit.y);
+    let floor = world.surface_height(pos.x, pos.z) + MIN_CLEARANCE;
+    pos.y = pos.y.clamp(floor, world.size().max_element() * 2.0);
+    Pose { pos, yaw: from.yaw, pitch }
 }
 
 impl EditorCamera {
@@ -124,6 +160,16 @@ impl EditorCamera {
         }
         self.before_overview = Some(self.transition.as_ref().map_or(self.pose, |t| t.to));
         self.fly_to(Self::overview_pose(world, side_inset));
+    }
+
+    /// Flies to a low angled view: the camera drops back and down so it looks 20 degrees below
+    /// the horizon at the same spot as now, from the same distance as far as the map's limits
+    /// allow. The next [`toggle_overview`](Self::toggle_overview) goes to the overview, and the
+    /// one after returns here.
+    pub fn angled_view(&mut self, world: &World) {
+        let from = self.transition.as_ref().map_or(self.pose, |t| t.to);
+        self.fly_to(angled_pose(from, world));
+        self.before_overview = None;
     }
 
     /// `keyboard` and `mouse` say whether those devices drive the camera this frame; they are
@@ -224,5 +270,43 @@ impl EditorCamera {
             z_far,
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn angled_view_looks_20_degrees_down_at_the_same_ground() {
+        let world = World::new(1024.0, 1024.0);
+        let overview = Pose {
+            pos: vec3(100.0, 300.0, -50.0),
+            yaw: 0.0,
+            pitch: -FRAC_PI_2,
+        };
+        let angled = angled_pose(overview, &world);
+        assert!((angled.pitch + 20f32.to_radians()).abs() < 1e-5);
+        assert_eq!(angled.yaw, overview.yaw);
+        // Still looking at the ground the overview was centered on.
+        let forward = look_direction(angled.yaw, angled.pitch);
+        let t = angled.pos.y / -forward.y;
+        let hit = angled.pos + forward * t;
+        assert!((hit.x - 100.0).abs() < 1.0 && (hit.z + 50.0).abs() < 1.0, "looking at {hit}");
+        assert!(angled.pos.y > 0.0);
+    }
+
+    #[test]
+    fn angled_view_stays_inside_the_map_limits() {
+        let world = World::new(1024.0, 1024.0);
+        let far = Pose {
+            pos: vec3(0.0, 5000.0, 0.0),
+            yaw: 0.0,
+            pitch: -FRAC_PI_2,
+        };
+        let angled = angled_pose(far, &world);
+        let limit = world.half_extents() * 1.5;
+        assert!(angled.pos.z.abs() <= limit.y && angled.pos.x.abs() <= limit.x);
+        assert!(angled.pos.y > 0.0 && angled.pos.y <= world.size().max_element() * 2.0);
     }
 }

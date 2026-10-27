@@ -900,8 +900,8 @@ impl EditorUi {
                 SliderId::MountainBrush,
                 &self.mountain_brush,
                 [
-                    "Hold left to grow mountains (26 to 100 m).",
-                    "Rock shows from 26 m, snow from 50 m.",
+                    "Hold left to grow mountains (26 to 50 m).",
+                    "Hills form around them as foothills.",
                     "Hold right to lower ground, down to 1 m.",
                     "[ and ] resize the brush.",
                 ],

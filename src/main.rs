@@ -42,6 +42,7 @@ const HELP: &[(&[&str], &str)] = &[
     (&["Arrows"], "Look"),
     (&["Shift"], "Faster"),
     (&["T"], "Top-down view / back"),
+    (&["V"], "Angled view (20 degrees)"),
     (&["R"], "Reset camera"),
     (&["Ctrl", "Z"], "Undo"),
     (&["Ctrl", "S"], "Save"),
@@ -202,6 +203,9 @@ async fn main() {
                 if (shortcuts && is_key_pressed(KeyCode::T)) || overview_button_clicked(&style) {
                     m.cam.toggle_overview(&m.world, TOOLBAR_WIDTH);
                 }
+                if (shortcuts && is_key_pressed(KeyCode::V)) || angled_button_clicked(&style) {
+                    m.cam.angled_view(&m.world);
+                }
 
                 m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush().is_none());
                 m.world.update(m.cam.position(), Duration::from_millis(6));
@@ -344,6 +348,27 @@ fn overview_button_clicked(style: &Style) -> bool {
         && overview_button_rect(style).contains(mouse_position().into())
 }
 
+/// The "Angled" button, just left of the overview button.
+fn angled_button_rect(style: &Style) -> Rect {
+    let label_w = style.measure("Angled", 13, Weight::Semibold).width;
+    let w = 12.0 + label_w + 10.0 + 18.0 + 8.0;
+    let overview = overview_button_rect(style);
+    Rect::new(overview.x - 6.0 - w, overview.y, w, overview.h)
+}
+
+fn angled_button_clicked(style: &Style) -> bool {
+    is_mouse_button_pressed(MouseButton::Left)
+        && angled_button_rect(style).contains(mouse_position().into())
+}
+
+fn draw_angled_button(style: &Style) {
+    let r = angled_button_rect(style);
+    glass(r, r.contains(mouse_position().into()));
+    let mid = r.center().y;
+    style.text_mid("Angled", r.x + 12.0, mid, 13, Weight::Semibold, style::TEXT);
+    style.keycap("V", r.right() - 8.0 - 18.0, mid);
+}
+
 fn draw_overview_button(style: &Style, cam: &EditorCamera) {
     let r = overview_button_rect(style);
     glass(r, r.contains(mouse_position().into()));
@@ -368,7 +393,8 @@ impl HudPills {
     /// Whether the pointer is over a HUD control, rather than the map beneath.
     fn covers(&self, mouse: Vec2, style: &Style) -> bool {
         self.height.is_some_and(|r| r.contains(mouse))
-            || (self.name.is_some() && overview_button_rect(style).contains(mouse))
+            || (self.name.is_some()
+                && (overview_button_rect(style).contains(mouse) || angled_button_rect(style).contains(mouse)))
     }
 }
 
@@ -378,7 +404,8 @@ fn map_label(map: &OpenMap) -> String {
 }
 
 fn hud_pills(style: &Style, map: Option<&OpenMap>) -> HudPills {
-    let fps_w = style.measure(&format!("{} FPS", get_fps()), 12, Weight::Semibold).width + 20.0;
+    // Sized for the widest reading so the pills beside it don't shift as the number changes.
+    let fps_w = style.measure("888 FPS", 12, Weight::Semibold).width + 20.0;
     let fps = Rect::new(HUD_LEFT, HUD_MARGIN, fps_w, PILL_HEIGHT);
     let Some(map) = map else {
         return HudPills { fps, name: None, height: None };
@@ -433,6 +460,7 @@ fn draw_hud(style: &Style, pills: &HudPills, map: Option<&OpenMap>, show_help: b
         draw_height_switch(style, height_rect, show_height);
 
         draw_overview_button(style, &map.cam);
+        draw_angled_button(style);
     }
 
     let bottom = screen_height() - HUD_MARGIN;

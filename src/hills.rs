@@ -1,5 +1,5 @@
-//! The hills and mountains brushes: grow rolling 10 to 25 m hills or 26 to 100 m mountains on
-//! land, easing them into the lowlands, and slowly wear ground back down.
+//! The hills and mountains brushes: grow rolling 10 to 25 m hills, or jagged 26 to 50 m mountains
+//! with foothills around them, on land, and slowly wear ground back down.
 
 use macroquad::prelude::*;
 
@@ -10,14 +10,16 @@ use crate::world::{Region, World, CELL_SIZE};
 pub const MIN_HILL: f32 = 10.0;
 pub const MAX_HILL: f32 = 25.0;
 pub const MIN_MOUNTAIN: f32 = 26.0;
-pub const MAX_MOUNTAIN: f32 = 100.0;
-/// How far the height noise is stretched toward the ends of the range.
+pub const MAX_MOUNTAIN: f32 = 50.0;
+/// How far the hill noise is stretched toward the ends of the range.
 const HILL_CONTRAST: f32 = 2.4;
-/// The brush is at full strength inside this share of its radius and eases off to nothing at
-/// the rim.
-const BRUSH_CORE: f32 = 0.3;
-/// How many times the rim of a finished stroke is smoothed, and how strongly each time.
-const SMOOTH_PASSES: usize = 4;
+/// How narrow mountain ridges are: higher drops the ground away from a ridge line faster.
+const MOUNTAIN_RIDGE_SHARPNESS: f32 = 2.4;
+/// How much the crags roughen mountain tops, as a share of their height range.
+const MOUNTAIN_CRAGS: f32 = 0.3;
+/// A mountain stroke also grows hills this many times as far out as the brush reaches.
+const FOOTHILL_REACH: f32 = 2.5;
+/// How strongly each smoothing pass of a finished stroke's rim pulls toward the neighbors.
 const SMOOTH_STRENGTH: f32 = 0.8;
 
 /// What a raising brush grows.
@@ -40,7 +42,26 @@ impl Peak {
     fn rate(self) -> f32 {
         match self {
             Peak::Hills => 5.0,
-            Peak::Mountains => 12.0,
+            Peak::Mountains => 20.0,
+        }
+    }
+
+    /// The brush is at full strength inside this share of its radius and eases off to nothing
+    /// at the rim. Mountains have a short rim, so their sides rise steeply from the ground
+    /// around them.
+    fn core(self) -> f32 {
+        match self {
+            Peak::Hills => 0.3,
+            Peak::Mountains => 0.85,
+        }
+    }
+
+    /// How many times the rim of a finished stroke is smoothed. Hills melt into the lowlands;
+    /// mountains keep their steep sides, and the foothills around them are already gentle.
+    fn smooth_passes(self) -> usize {
+        match self {
+            Peak::Hills => 4,
+            Peak::Mountains => 0,
         }
     }
 
@@ -58,17 +79,10 @@ impl Peak {
     fn shore_fade(self) -> f32 {
         match self {
             Peak::Hills => 120.0,
-            Peak::Mountains => 240.0,
+            Peak::Mountains => 24.0,
         }
     }
 
-    /// Size in meters of the broad and the finer swells in their heights.
-    fn swells(self) -> (f32, f32) {
-        match self {
-            Peak::Hills => (260.0, 140.0),
-            Peak::Mountains => (420.0, 220.0),
-        }
-    }
 }
 
 /// One press-drag-release of the hills or mountains brush, painted onto the map's heights as it
@@ -108,7 +122,7 @@ impl HillStroke {
             coverage: vec![0.0; heights.len()],
             shore: ExistingLand::new(&water, nx, nz, longest),
             longest,
-            noise: Simplex::new(seed ^ 0x5A17_E3D9 ^ (peak as u32).wrapping_mul(0x9E37_79B9)),
+            noise: Simplex::new(seed ^ 0x5A17_E3D9),
             nx,
             nz,
             last: None,
@@ -136,17 +150,47 @@ impl HillStroke {
         }
     }
 
-    /// The height the peaks reach at a spot where the brush is at full strength, rolling like
-    /// the lowlands do but over longer distances.
-    fn target(&self, x: f32, z: f32) -> f32 {
-        let (broad_size, detail_size) = self.peak.swells();
-        let broad = self.noise.fbm(x / broad_size, z / broad_size, 3, 0.5);
-        let detail = self.noise.fbm(x / detail_size + 31.0, z / detail_size - 47.0, 2, 0.45);
-        // Noise rarely strays far from its middle, so stretch it until the tallest peaks reach
-        // the top of the range and the lowest reach the bottom, flattening there.
-        let mix = (HILL_CONTRAST * (0.6 * broad + 0.4 * detail)).clamp(-1.0, 1.0);
-        let (low, high) = self.peak.range();
-        (low + (high - low) * (0.5 + 0.5 * mix)).clamp(low, high)
+    /// The height `peak`s reach at a spot where the brush is at full strength.
+    ///
+    /// Hills roll like the lowlands do but over longer distances. Mountains run along sharp
+    /// ridge lines and change height every few dozen meters, so they come out jagged.
+    fn target(&self, peak: Peak, x: f32, z: f32) -> f32 {
+        let (low, high) = peak.range();
+        let unit = match peak {
+            Peak::Hills => {
+                let broad = self.noise.fbm(x / 260.0, z / 260.0, 3, 0.5);
+                let detail = self.noise.fbm(x / 140.0 + 31.0, z / 140.0 - 47.0, 2, 0.45);
+                // Noise rarely strays far from its middle, so stretch it until the tallest hills
+                // reach the top of the range and the lowest reach the bottom, flattening there.
+                let mix = (HILL_CONTRAST * (0.6 * broad + 0.4 * detail)).clamp(-1.0, 1.0);
+                0.5 + 0.5 * mix
+            }
+            Peak::Mountains => {
+                // Ridge lines run where the noise crosses zero, with the ground falling away
+                // steeply to either side; rough noise on top breaks them into crags.
+                let n = self.noise.fbm(x / 130.0 + 7.0, z / 130.0 - 3.0, 4, 0.55);
+                let ridge = (1.0 - n.abs() * MOUNTAIN_RIDGE_SHARPNESS).clamp(0.0, 1.0);
+                let crags = self.noise.fbm(x / 28.0 + 11.0, z / 28.0 - 23.0, 2, 0.5);
+                0.4 + 0.6 * ridge * ridge + MOUNTAIN_CRAGS * crags
+            }
+        };
+        (low + (high - low) * unit.clamp(0.0, 1.0)).clamp(low, high)
+    }
+
+    /// Raises the sample at `idx` (at world `x`, `z`) by up to `amount` meters toward the
+    /// ceiling a `peak` brush of this `weight` allows there, and returns its new height. The
+    /// ceiling eases from the stroke's starting ground up to the peak's height as the brush
+    /// and the distance from the shore allow, and never goes past the top of the range.
+    fn grow(&self, peak: Peak, idx: usize, (x, z): (f32, f32), weight: f32, amount: f32, current: f32) -> f32 {
+        let base = self.base[idx];
+        let grown = weight * smoothstep(0.0, peak.shore_fade(), self.inland(idx));
+        let top = peak.range().1;
+        let ceiling = base.max(base + (self.target(peak, x, z) - base) * grown).min(base.max(top));
+        if current >= ceiling {
+            current
+        } else {
+            (current + amount * weight).min(ceiling)
+        }
     }
 
     /// Paints with a brush of `radius` meters centered on `center` (world x and z, with the map
@@ -161,13 +205,15 @@ impl HillStroke {
 
         let spacing = (radius * 0.25).max(CELL_SIZE);
         let dabs = ((center - from).length() / spacing).ceil().max(1.0) as usize;
-        // Spread a frame's change over the dabs along the path.
+        // Spread a frame's change over the dabs along the path. Foothills grow more slowly
+        // than the mountains they surround.
         let rate = if self.erase { self.peak.erase_rate() } else { self.peak.rate() };
-        let amount = rate * dt / dabs as f32;
+        let foothill_rate = Peak::Mountains.rate() * 0.5;
+        let amounts = (rate * dt / dabs as f32, foothill_rate * dt / dabs as f32);
         let mut changed: Option<Region> = None;
         for k in 1..=dabs {
             let at = from.lerp(center, k as f32 / dabs as f32);
-            if let Some(region) = self.dab(heights, half, at, radius, amount) {
+            if let Some(region) = self.dab(heights, half, at, radius, amounts) {
                 changed = Some(changed.map_or(region, |c| c.union(region)));
             }
         }
@@ -177,13 +223,19 @@ impl HillStroke {
         changed
     }
 
-    fn dab(&mut self, heights: &mut [f32], half: Vec2, at: Vec2, radius: f32, amount: f32) -> Option<Region> {
+    /// One dab of the brush at `at`. `amounts` is how many meters to raise (or, erasing, lower)
+    /// the ground at the brush's center, and how many to raise foothills around mountains.
+    fn dab(&mut self, heights: &mut [f32], half: Vec2, at: Vec2, radius: f32, amounts: (f32, f32)) -> Option<Region> {
+        // Mountains also grow foothills out beyond the brush.
+        let foothills = !self.erase && self.peak == Peak::Mountains;
+        let reach = if foothills { radius * FOOTHILL_REACH } else { radius };
+
         // Samples sit at (index * CELL_SIZE - half); find the ones the brush can reach.
         let to_index = |v: f32, h: f32, n: usize| ((v + h) / CELL_SIZE).clamp(0.0, (n - 1) as f32);
-        let i0 = to_index(at.x - radius, half.x, self.nx).ceil() as usize;
-        let i1 = to_index(at.x + radius, half.x, self.nx).floor() as usize;
-        let j0 = to_index(at.y - radius, half.y, self.nz).ceil() as usize;
-        let j1 = to_index(at.y + radius, half.y, self.nz).floor() as usize;
+        let i0 = to_index(at.x - reach, half.x, self.nx).ceil() as usize;
+        let i1 = to_index(at.x + reach, half.x, self.nx).floor() as usize;
+        let j0 = to_index(at.y - reach, half.y, self.nz).ceil() as usize;
+        let j1 = to_index(at.y + reach, half.y, self.nz).floor() as usize;
         if i0 > i1 || j0 > j1 {
             return None;
         }
@@ -193,37 +245,37 @@ impl HillStroke {
             let z = j as f32 * CELL_SIZE - half.y;
             for i in i0..=i1 {
                 let x = i as f32 * CELL_SIZE - half.x;
-                let t = (vec2(x, z) - at).length() / radius;
-                if t >= 1.0 {
+                let distance = (vec2(x, z) - at).length();
+                if distance >= reach {
                     continue;
                 }
                 let idx = j * self.nx + i;
-                let weight = 1.0 - smoothstep(BRUSH_CORE, 1.0, t);
+                let current = heights[idx];
+                let t = distance / radius;
                 let height = if self.erase {
+                    let weight = 1.0 - smoothstep(self.peak.core(), 1.0, t);
                     self.coverage[idx] = self.coverage[idx].max(weight);
                     // Wear land down toward the lowest ground; water and ground already at that
                     // level stay as they are.
-                    let current = heights[idx];
                     if current <= LAND_HEIGHT {
                         continue;
                     }
-                    (current - amount * weight).max(LAND_HEIGHT)
-                } else {
-                    self.coverage[idx] = self.coverage[idx].max(weight);
-                    // Grow toward a ceiling that eases from the old ground up to the peak's
-                    // height as the brush and the distance from the shore allow.
-                    let base = self.base[idx];
-                    let grown = weight * smoothstep(0.0, self.peak.shore_fade(), self.inland(idx));
-                    // Nothing grows past the top of its range, whatever the ground started at.
-                    let top = self.peak.range().1;
-                    let ceiling = base.max(base + (self.target(x, z) - base) * grown).min(base.max(top));
-                    let current = heights[idx];
-                    if current >= ceiling {
-                        continue;
+                    (current - amounts.0 * weight).max(LAND_HEIGHT)
+                } else if foothills {
+                    let hill_weight = 1.0 - smoothstep(Peak::Hills.core(), 1.0, distance / reach);
+                    self.coverage[idx] = self.coverage[idx].max(hill_weight);
+                    let mut height = self.grow(Peak::Hills, idx, (x, z), hill_weight, amounts.1, current);
+                    if t < 1.0 {
+                        let weight = 1.0 - smoothstep(Peak::Mountains.core(), 1.0, t);
+                        height = height.max(self.grow(Peak::Mountains, idx, (x, z), weight, amounts.0, current));
                     }
-                    (current + amount * weight).min(ceiling)
+                    height
+                } else {
+                    let weight = 1.0 - smoothstep(self.peak.core(), 1.0, t);
+                    self.coverage[idx] = self.coverage[idx].max(weight);
+                    self.grow(self.peak, idx, (x, z), weight, amounts.0, current)
                 };
-                if height != heights[idx] {
+                if height != current {
                     heights[idx] = height;
                     let sample = Region { i0: i, j0: j, i1: i, j1: j };
                     changed = Some(changed.map_or(sample, |c| c.union(sample)));
@@ -240,6 +292,9 @@ impl HillStroke {
         let (i0, j0) = (touched.i0.saturating_sub(1), touched.j0.saturating_sub(1));
         let (i1, j1) = ((touched.i1 + 1).min(self.nx - 1), (touched.j1 + 1).min(self.nz - 1));
         let region = Region { i0, j0, i1, j1 };
+        if self.peak.smooth_passes() == 0 {
+            return Some(region);
+        }
 
         // Only the rim moves: samples the brush touched but didn't reach at full strength, and
         // far enough inland that smoothing can't disturb the coast.
@@ -254,7 +309,7 @@ impl HillStroke {
             })
             .collect();
 
-        for _ in 0..SMOOTH_PASSES {
+        for _ in 0..self.peak.smooth_passes() {
             for &idx in &rim {
                 let old = heights[idx];
                 let (i, j) = (idx % self.nx, idx / self.nx);
@@ -375,7 +430,7 @@ mod tests {
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
         for j in 0..300 {
             for i in 0..300 {
-                let t = stroke.target(i as f32 * 10.0, j as f32 * 10.0);
+                let t = stroke.target(Peak::Hills, i as f32 * 10.0, j as f32 * 10.0);
                 lo = lo.min(t);
                 hi = hi.max(t);
             }
@@ -487,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn mountains_climb_to_100_m_and_no_further() {
+    fn mountains_climb_to_50_m_and_no_further() {
         let cells = 160;
         let n = cells + 1;
         let mut heights = island(cells, 10);
@@ -503,7 +558,7 @@ mod tests {
         }
         stroke.finish(&mut heights);
         let top = heights.iter().copied().fold(f32::MIN, f32::max);
-        assert!(top <= MAX_MOUNTAIN, "mountains stop at 100 m, got {top}");
+        assert!(top <= MAX_MOUNTAIN, "mountains stop at 50 m, got {top}");
         assert!(heights[centre] >= MIN_MOUNTAIN, "the middle is a mountain, got {}", heights[centre]);
         for (h, s) in heights.iter().zip(island(cells, 10)) {
             if s < 0.0 {
@@ -513,17 +568,93 @@ mod tests {
     }
 
     #[test]
-    fn mountain_heights_span_26_to_100() {
+    fn mountains_rise_steeply_where_hills_do_not() {
+        let cells = 160;
+        let n = cells + 1;
+        let half = Vec2::splat(cells as f32 * CELL_SIZE * 0.5);
+        let steepest = |peak: Peak| {
+            let mut heights = island(cells, 10);
+            let mut stroke = HillStroke::begin(&heights, n, n, 9, false, peak);
+            for _ in 0..600 {
+                stroke.paint(&mut heights, half, vec2(0.0, 0.0), 60.0, 0.1);
+            }
+            stroke.finish(&mut heights);
+            let mut steepest: f32 = 0.0;
+            for j in 0..n - 1 {
+                for i in 0..n - 1 {
+                    let h = heights[j * n + i];
+                    if h < 0.0 {
+                        continue;
+                    }
+                    for other in [heights[j * n + i + 1], heights[(j + 1) * n + i]] {
+                        if other >= 0.0 {
+                            steepest = steepest.max((h - other).abs() / CELL_SIZE);
+                        }
+                    }
+                }
+            }
+            steepest
+        };
+        let (hills, mountains) = (steepest(Peak::Hills), steepest(Peak::Mountains));
+        assert!(mountains > 2.0, "mountain sides should be steep, got {mountains}");
+        assert!(mountains > hills * 2.0, "mountains {mountains} vs hills {hills}");
+    }
+
+    #[test]
+    fn mountains_are_ringed_by_foothills_that_ease_into_the_lowlands() {
+        let cells = 200;
+        let n = cells + 1;
+        let half = Vec2::splat(cells as f32 * CELL_SIZE * 0.5);
+        let mut heights = island(cells, 10);
+        let mut stroke = HillStroke::begin(&heights, n, n, 9, false, Peak::Mountains);
+        for _ in 0..600 {
+            stroke.paint(&mut heights, half, vec2(0.0, 0.0), 60.0, 0.1);
+        }
+        stroke.finish(&mut heights);
+        let (mut ring, mut far) = (Vec::new(), Vec::new());
+        for j in 0..n {
+            for i in 0..n {
+                let d = (vec2(i as f32 * CELL_SIZE, j as f32 * CELL_SIZE) - half).length();
+                if d > 66.0 && d < 100.0 {
+                    ring.push(heights[j * n + i]);
+                } else if d > 190.0 && heights[j * n + i] >= 0.0 {
+                    far.push(heights[j * n + i]);
+                }
+            }
+        }
+        let mean = ring.iter().sum::<f32>() / ring.len() as f32;
+        assert!(ring.iter().all(|&h| h <= MAX_HILL + 0.01), "foothills are hills, not mountains");
+        assert!(mean >= MIN_HILL, "the ring around the mountain stands at hill height, got {mean}");
+        assert!(far.iter().all(|&h| h <= 10.0), "beyond the foothills the ground is untouched");
+    }
+
+    #[test]
+    fn most_mountain_tops_stand_near_the_top_of_the_range() {
+        let stroke = HillStroke::begin(&[0.0; 4], 2, 2, 11, false, Peak::Mountains);
+        let mut tops = Vec::new();
+        for j in 0..200 {
+            for i in 0..200 {
+                tops.push(stroke.target(Peak::Mountains, i as f32 * 15.0, j as f32 * 15.0));
+            }
+        }
+        let mean = tops.iter().sum::<f32>() / tops.len() as f32;
+        let high = tops.iter().filter(|&&t| t >= 45.0).count() as f32 / tops.len() as f32;
+        assert!(mean > 40.0, "mountain tops average {mean} m");
+        assert!(high > 0.15, "only {high} of mountain tops reach 45 m");
+    }
+
+    #[test]
+    fn mountain_heights_span_26_to_50() {
         let stroke = HillStroke::begin(&[0.0; 4], 2, 2, 11, false, Peak::Mountains);
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
         for j in 0..300 {
             for i in 0..300 {
-                let t = stroke.target(i as f32 * 20.0, j as f32 * 20.0);
+                let t = stroke.target(Peak::Mountains, i as f32 * 20.0, j as f32 * 20.0);
                 lo = lo.min(t);
                 hi = hi.max(t);
             }
         }
-        assert!(lo >= MIN_MOUNTAIN && lo < MIN_MOUNTAIN + 2.0, "lowest was {lo}");
+        assert!(lo >= MIN_MOUNTAIN && lo < MIN_MOUNTAIN + 6.0, "lowest was {lo}");
         assert!(hi <= MAX_MOUNTAIN && hi > MAX_MOUNTAIN - 1.0, "tallest was {hi}");
     }
 }

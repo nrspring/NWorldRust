@@ -28,7 +28,7 @@ mod surface_tests {
         assert_eq!(pixels[1][1], 0);
         assert!(pixels[2][1] < pixels[3][1]);
         assert!(pixels[3][1] < pixels[4][1]);
-        assert!(pixels[4][1] < pixels[5][1]);
+        assert_eq!(pixels[4][1], 255);
         assert_eq!(pixels[5][1], 255);
     }
 }
@@ -148,8 +148,8 @@ impl World {
     /// Red is height around sea level, from 0 (1 m or more under water) through 128 (sea
     /// level) to 255 (1 m or more above); the shader traces the coast where it crosses the
     /// middle, which follows a smooth curve between samples. Green encodes
-    /// elevation from 0 to 100 m, which the shader colors: 25 shades of green up to 25 m, grey
-    /// rock from 26 m and snow from 50 m.
+    /// elevation from 0 to 50 m, which the shader colors: 25 shades of green up to 25 m, grey
+    /// rock from 26 m and snow from 40 m.
     pub fn surface_texels(&self) -> Vec<u8> {
         self.heights.iter().flat_map(|&h| surface_texel(h)).collect()
     }
@@ -339,7 +339,7 @@ impl World {
 
 /// Elevations up to this many meters are told apart in the surface texture; higher ground
 /// reads as this.
-pub const MAX_SURFACE_ELEVATION: f32 = 100.0;
+pub const MAX_SURFACE_ELEVATION: f32 = 50.0;
 
 /// A texel for the terrain shader: the coast in red and elevation in green, as described on
 /// [`World::surface_texels`].
