@@ -49,11 +49,14 @@ fn angle_delta(a: f32, b: f32) -> f32 {
 }
 
 impl EditorCamera {
-    pub fn new(world: &World) -> Self {
+    /// A camera for a freshly opened map: already in the top-down overview, so the whole map is
+    /// in view, with the free-camera starting pose to return to. `side_inset` is as for
+    /// [`toggle_overview`](Self::toggle_overview).
+    pub fn new(world: &World, side_inset: f32) -> Self {
         Self {
-            pose: Self::start_pose(world),
+            pose: Self::overview_pose(world, side_inset),
             transition: None,
-            before_overview: None,
+            before_overview: Some(Self::start_pose(world)),
             last_mouse: mouse_position().into(),
         }
     }
@@ -93,14 +96,10 @@ impl EditorCamera {
         });
     }
 
-    /// Flies to a straight-down view that frames the whole world, or back to where the camera
-    /// was if it is still sitting in that overview. `side_inset` is the width in pixels covered
-    /// by UI along a side of the screen, which the framing keeps the world clear of.
-    pub fn toggle_overview(&mut self, world: &World, side_inset: f32) {
-        if let Some(previous) = self.before_overview.take() {
-            self.fly_to(previous);
-            return;
-        }
+    /// A straight-down view, north up, that frames the whole world. `side_inset` is the width in
+    /// pixels covered by UI along a side of the screen, which the framing keeps the world clear
+    /// of.
+    fn overview_pose(world: &World, side_inset: f32) -> Pose {
         // Looking straight down with north up, the world's height fills the screen vertically
         // and its width horizontally; climb until both fit.
         let tan_half = (FOV_DEGREES.to_radians() * 0.5).tan();
@@ -109,13 +108,22 @@ impl EditorCamera {
         let half = world.half_extents() * OVERVIEW_MARGIN;
         let height = (half.y / tan_half).max(half.x / (tan_half * aspect))
             + world.max_surface_height();
-
-        self.before_overview = Some(self.transition.as_ref().map_or(self.pose, |t| t.to));
-        self.fly_to(Pose {
+        Pose {
             pos: vec3(0.0, height, 0.0),
             yaw: 0.0,
             pitch: -FRAC_PI_2,
-        });
+        }
+    }
+
+    /// Flies to the top-down overview, or back to where the camera was if it is still sitting
+    /// in that overview.
+    pub fn toggle_overview(&mut self, world: &World, side_inset: f32) {
+        if let Some(previous) = self.before_overview.take() {
+            self.fly_to(previous);
+            return;
+        }
+        self.before_overview = Some(self.transition.as_ref().map_or(self.pose, |t| t.to));
+        self.fly_to(Self::overview_pose(world, side_inset));
     }
 
     /// `keyboard` and `mouse` say whether those devices drive the camera this frame; they are
@@ -152,8 +160,8 @@ impl EditorCamera {
         let forward = keys(&[KeyCode::W], &[KeyCode::S]);
         let strafe = keys(&[KeyCode::D], &[KeyCode::A]);
         let lift = keys(
-            &[KeyCode::E, KeyCode::Space, KeyCode::PageUp],
-            &[KeyCode::Q, KeyCode::LeftControl, KeyCode::PageDown],
+            &[KeyCode::E, KeyCode::PageUp],
+            &[KeyCode::Q, KeyCode::PageDown],
         );
         // Windows reports the wheel in 120-unit notches, other platforms in single steps.
         let wheel = if mouse { mouse_wheel().1 } else { 0.0 };

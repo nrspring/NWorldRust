@@ -1,0 +1,231 @@
+//! Saving and loading maps.
+//!
+//! A map file is a small header followed by the heightmap, compressed:
+//!
+//! | bytes | meaning |
+//! | --- | --- |
+//! | 8 | magic, `NWORLDMP` |
+//! | 4 | format version (little endian) |
+//! | 4, 4 | heightmap cells along x and z |
+//! | 4 | how many times continents have been generated on the map |
+//! | rest | the (cells_x + 1) × (cells_z + 1) heights as `f32`, byte-shuffled and deflated |
+//!
+//! Shuffling groups the first bytes of every height together, then the second bytes, and so
+//! on, which makes the flat stretches of ocean and land compress far better.
+
+use std::fs;
+use std::path::Path;
+
+use miniz_oxide::deflate::compress_to_vec;
+use miniz_oxide::inflate::decompress_to_vec_with_limit;
+
+use crate::world::{cells_valid, DEEP_OCEAN};
+
+/// File extension of saved maps, without the dot.
+pub const EXTENSION: &str = "nworld";
+
+const MAGIC: &[u8; 8] = b"NWORLDMP";
+const VERSION: u32 = 1;
+const HEADER_LEN: usize = 8 + 4 + 4 + 4 + 4;
+/// Deflate effort; 6 is the usual balance of speed and size.
+const COMPRESSION: u8 = 6;
+/// Heights outside this range can't come from the editor, so they mean a damaged file.
+const MAX_HEIGHT: f32 = 10_000.0;
+
+/// Everything about a map that is written to a file.
+#[derive(Debug)]
+pub struct SavedMap {
+    pub cells_x: usize,
+    pub cells_z: usize,
+    pub generations: u32,
+    /// (cells_x + 1) × (cells_z + 1) samples, row-major from the north-west corner.
+    pub heights: Vec<f32>,
+}
+
+/// The file contents for a map.
+pub fn encode(map: &SavedMap) -> Vec<u8> {
+    let n = map.heights.len();
+    let mut shuffled = vec![0u8; n * 4];
+    for (i, h) in map.heights.iter().enumerate() {
+        for (plane, byte) in h.to_le_bytes().into_iter().enumerate() {
+            shuffled[plane * n + i] = byte;
+        }
+    }
+
+    let mut out = Vec::with_capacity(HEADER_LEN + n);
+    out.extend_from_slice(MAGIC);
+    for value in [VERSION, map.cells_x as u32, map.cells_z as u32, map.generations] {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend(compress_to_vec(&shuffled, COMPRESSION));
+    out
+}
+
+/// Reads a map back from file contents, checking everything that could be wrong with them.
+pub fn decode(bytes: &[u8]) -> Result<SavedMap, String> {
+    if bytes.len() < HEADER_LEN || &bytes[..8] != MAGIC {
+        return Err("This is not an NWorld map file.".to_owned());
+    }
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let version = word(8);
+    if version != VERSION {
+        return Err(format!(
+            "This map was saved by {} version of NWorld (file format {version}).",
+            if version > VERSION { "a newer" } else { "an unknown" }
+        ));
+    }
+    let (cells_x, cells_z, generations) = (word(12) as usize, word(16) as usize, word(20));
+    if !cells_valid(cells_x) || !cells_valid(cells_z) {
+        return Err(format!("The map size in this file ({cells_x} × {cells_z} cells) is not valid."));
+    }
+
+    let n = (cells_x + 1) * (cells_z + 1);
+    let shuffled = decompress_to_vec_with_limit(&bytes[HEADER_LEN..], n * 4)
+        .map_err(|_| "The map data in this file is damaged.".to_owned())?;
+    if shuffled.len() != n * 4 {
+        return Err("The map data in this file is incomplete.".to_owned());
+    }
+
+    let mut heights = Vec::with_capacity(n);
+    for i in 0..n {
+        let h = f32::from_le_bytes([shuffled[i], shuffled[n + i], shuffled[2 * n + i], shuffled[3 * n + i]]);
+        if !h.is_finite() || !(DEEP_OCEAN - 1.0..=MAX_HEIGHT).contains(&h) {
+            return Err("The map data in this file is damaged.".to_owned());
+        }
+        heights.push(h);
+    }
+    Ok(SavedMap {
+        cells_x,
+        cells_z,
+        generations,
+        heights,
+    })
+}
+
+/// Writes a map to `path`. The data goes to a temporary file first and replaces the real one
+/// only once it is fully written, so a failed save never damages an existing map.
+pub fn save(path: &Path, map: &SavedMap) -> Result<(), String> {
+    let temp = path.with_extension(format!("{EXTENSION}.tmp"));
+    let result = fs::write(&temp, encode(map)).and_then(|()| fs::rename(&temp, path));
+    if let Err(e) = result {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Couldn't save the map: {e}."));
+    }
+    Ok(())
+}
+
+pub fn load(path: &Path) -> Result<SavedMap, String> {
+    let bytes = fs::read(path).map_err(|e| format!("The file can't be read ({e})."))?;
+    decode(&bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A map of 64 × 80 cells (256 × 320 m) with ocean, land and sloping shallows.
+    fn sample_map() -> SavedMap {
+        let (cells_x, cells_z) = (64, 80);
+        let mut heights = vec![DEEP_OCEAN; (cells_x + 1) * (cells_z + 1)];
+        for (i, h) in heights.iter_mut().enumerate() {
+            match i % 11 {
+                0..=2 => *h = 1.0,
+                3..=5 => *h = -2.5 - (i % 97) as f32 * 0.7,
+                6 => *h = 0.25,
+                _ => {}
+            }
+        }
+        SavedMap {
+            cells_x,
+            cells_z,
+            generations: 7,
+            heights,
+        }
+    }
+
+    #[test]
+    fn round_trip_is_exact() {
+        let map = sample_map();
+        let back = decode(&encode(&map)).unwrap();
+        assert_eq!((back.cells_x, back.cells_z, back.generations), (64, 80, 7));
+        assert_eq!(back.heights, map.heights);
+    }
+
+    #[test]
+    fn mostly_flat_maps_compress_well() {
+        let (cells_x, cells_z) = (256, 256);
+        let map = SavedMap {
+            cells_x,
+            cells_z,
+            generations: 0,
+            heights: vec![DEEP_OCEAN; (cells_x + 1) * (cells_z + 1)],
+        };
+        let bytes = encode(&map);
+        assert!(bytes.len() * 50 < map.heights.len() * 4, "{} bytes", bytes.len());
+        assert_eq!(decode(&bytes).unwrap().heights, map.heights);
+    }
+
+    #[test]
+    fn rejects_files_that_are_not_maps() {
+        assert!(decode(b"").is_err());
+        assert!(decode(b"hello, this is just some text").is_err());
+        let mut bytes = encode(&sample_map());
+        bytes[0] = b'X';
+        assert!(decode(&bytes).unwrap_err().contains("not an NWorld map"));
+    }
+
+    #[test]
+    fn rejects_newer_versions() {
+        let mut bytes = encode(&sample_map());
+        bytes[8..12].copy_from_slice(&99u32.to_le_bytes());
+        assert!(decode(&bytes).unwrap_err().contains("newer"));
+    }
+
+    #[test]
+    fn rejects_invalid_sizes() {
+        for (x, z) in [(0u32, 80u32), (65, 80), (64, 100_000), (16, 16), (64, 4096)] {
+            let mut bytes = encode(&sample_map());
+            bytes[12..16].copy_from_slice(&x.to_le_bytes());
+            bytes[16..20].copy_from_slice(&z.to_le_bytes());
+            assert!(decode(&bytes).is_err(), "size {x} x {z} should be rejected");
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_and_corrupt_data() {
+        let bytes = encode(&sample_map());
+        for cut in [HEADER_LEN, HEADER_LEN + 5, bytes.len() / 2, bytes.len() - 1] {
+            assert!(decode(&bytes[..cut]).is_err(), "cut at {cut} should be rejected");
+        }
+        let mut corrupt = bytes.clone();
+        for b in &mut corrupt[HEADER_LEN + 8..] {
+            *b = b.wrapping_add(0x5B);
+        }
+        assert!(decode(&corrupt).is_err());
+    }
+
+    #[test]
+    fn rejects_heights_that_cannot_come_from_the_editor() {
+        let mut map = sample_map();
+        map.heights[10] = f32::NAN;
+        assert!(decode(&encode(&map)).is_err());
+        map.heights[10] = 1.0e9;
+        assert!(decode(&encode(&map)).is_err());
+    }
+
+    #[test]
+    fn saving_replaces_the_file_and_leaves_no_temporary() {
+        let dir = std::env::temp_dir().join(format!("nworld-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("map.nworld");
+        fs::write(&path, b"old contents").unwrap();
+        save(&path, &sample_map()).unwrap();
+        assert_eq!(load(&path).unwrap().heights, sample_map().heights);
+        assert!(!dir.join("map.nworld.tmp").exists());
+
+        // A path in a folder that doesn't exist fails cleanly with a readable message.
+        let missing = dir.join("no-such-folder").join("map.nworld");
+        assert!(save(&missing, &sample_map()).unwrap_err().starts_with("Couldn't save"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

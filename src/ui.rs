@@ -3,41 +3,40 @@
 
 use macroquad::prelude::*;
 
+use crate::continents::ContinentParams;
+use crate::islands::IslandParams;
+use crate::style::{self, Style, Weight};
 use crate::world::{snap_map_size, CHUNK_SIZE, MAX_MAP_SIZE, MIN_MAP_SIZE};
 
-pub const TOOLBAR_WIDTH: f32 = 44.0;
-const ICON_SIZE: f32 = 34.0;
-const ICON_GAP: f32 = 5.0;
-const PANEL_GAP: f32 = 4.0;
-const PANEL_WIDTH: f32 = 250.0;
-const NEW_MAP_PANEL_HEIGHT: f32 = 184.0;
+pub const TOOLBAR_WIDTH: f32 = 52.0;
+const ICON_SIZE: f32 = 38.0;
+const ICON_GAP: f32 = 6.0;
+const TOOLBAR_TOP: f32 = 10.0;
+const PANEL_GAP: f32 = 8.0;
+const PANEL_WIDTH: f32 = 288.0;
+const PANEL_RADIUS: f32 = 10.0;
+const PAD: f32 = 16.0;
+const INNER_WIDTH: f32 = PANEL_WIDTH - PAD * 2.0;
+const CONTROL_HEIGHT: f32 = 36.0;
+const CONTROL_RADIUS: f32 = 6.0;
 const DEFAULT_MAP_SIZE: u32 = 4096;
-const MAX_DIGITS: usize = 5;
-
-const TOOLBAR_BG: Color = Color::new(0.11, 0.11, 0.12, 1.0);
-const PANEL_BG: Color = Color::new(0.15, 0.15, 0.16, 1.0);
-const BORDER: Color = Color::new(1.0, 1.0, 1.0, 0.12);
-const ICON: Color = Color::new(0.85, 0.85, 0.87, 1.0);
-const HOVER_BG: Color = Color::new(1.0, 1.0, 1.0, 0.10);
-const ACCENT: Color = Color::new(0.24, 0.47, 0.85, 1.0);
-const ACCENT_HOVER: Color = Color::new(0.32, 0.56, 0.95, 1.0);
-const TEXT: Color = Color::new(0.92, 0.92, 0.94, 1.0);
-const TEXT_DIM: Color = Color::new(0.62, 0.62, 0.66, 1.0);
-const FIELD_BG: Color = Color::new(0.08, 0.08, 0.09, 1.0);
-const SELECTION: Color = Color::new(0.24, 0.47, 0.85, 0.55);
-const ERROR: Color = Color::new(0.90, 0.30, 0.30, 1.0);
+const MAX_CONTINENTS: u32 = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
     NewMap,
+    Continents,
+    Islands,
 }
 
 impl Tool {
-    const ALL: [Tool; 1] = [Tool::NewMap];
+    const ALL: [Tool; 3] = [Tool::NewMap, Tool::Continents, Tool::Islands];
 
     fn label(self) -> &'static str {
         match self {
             Tool::NewMap => "New map",
+            Tool::Continents => "Continents",
+            Tool::Islands => "Islands",
         }
     }
 }
@@ -45,79 +44,413 @@ impl Tool {
 pub enum UiAction {
     /// Build a new map of this size in meters (already snapped to a buildable size).
     CreateMap { width: f32, height: f32 },
+    /// Lay out land and sea on the open map.
+    GenerateContinents(ContinentParams),
+    /// Sprinkle islands into the open water on the open map.
+    AddIslands(IslandParams),
+    /// Undo the most recent edit.
+    Undo,
+    /// Save the map; `save_as` asks for a new file name even if the map already has a file.
+    Save { save_as: bool },
+    /// Open a map from a file.
+    Open,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldId {
+    Width,
+    Height,
+    Seed,
+    IslandSeed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SliderId {
+    Coverage,
+    Roughness,
+    Regularity,
+    EdgeBuffer,
+    IslandCount,
+    IslandSize,
+    IslandVariety,
+    IslandScatter,
+    IslandRoughness,
 }
 
 struct NumberField {
     label: &'static str,
     text: String,
+    /// Shown inside the field on the right, e.g. "m".
+    unit: &'static str,
+    min: u32,
+    max_digits: usize,
     /// The whole value is selected, so the next digit typed replaces it.
     selected: bool,
     invalid: bool,
 }
 
 impl NumberField {
-    fn new(label: &'static str, value: u32) -> Self {
+    fn new(label: &'static str, value: u32, unit: &'static str, min: u32, max_digits: usize) -> Self {
         Self {
             label,
             text: value.to_string(),
+            unit,
+            min,
+            max_digits,
             selected: false,
             invalid: false,
         }
     }
 
     fn value(&self) -> Option<u32> {
-        self.text.parse().ok().filter(|&v| v > 0)
+        self.text.parse().ok().filter(|&v| v >= self.min)
+    }
+}
+
+/// A whole-number value picked by dragging along a track.
+struct Slider {
+    label: &'static str,
+    value: f32,
+    min: f32,
+    max: f32,
+    unit: &'static str,
+    /// Short captions for the two ends of the track, for sliders whose direction isn't obvious.
+    ends: Option<(&'static str, &'static str)>,
+}
+
+impl Slider {
+    fn fraction(&self) -> f32 {
+        (self.value - self.min) / (self.max - self.min)
+    }
+
+    fn set_from_x(&mut self, track: Rect, x: f32) {
+        let t = ((x - track.x) / track.w).clamp(0.0, 1.0);
+        self.value = (self.min + t * (self.max - self.min)).round();
+    }
+}
+
+/// Where everything in the New map panel sits; shared by input handling and drawing.
+struct NewMapLayout {
+    panel: Rect,
+    width: Rect,
+    height: Rect,
+    button: Rect,
+}
+
+impl NewMapLayout {
+    fn new(origin: Vec2) -> Self {
+        let field_w = (INNER_WIDTH - 12.0) * 0.5;
+        let y = origin.y + 88.0;
+        let x = origin.x + PAD;
+        let button = Rect::new(x, y + CONTROL_HEIGHT + 40.0, INNER_WIDTH, CONTROL_HEIGHT);
+        Self {
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, button.bottom() + PAD - origin.y),
+            width: Rect::new(x, y, field_w, CONTROL_HEIGHT),
+            height: Rect::new(x + field_w + 12.0, y, field_w, CONTROL_HEIGHT),
+            button,
+        }
+    }
+}
+
+/// Where everything in the Continents panel sits.
+struct ContinentsLayout {
+    panel: Rect,
+    coverage: Rect,
+    roughness: Rect,
+    regularity: Rect,
+    edge_buffer: Rect,
+    count: Rect,
+    minus: Rect,
+    plus: Rect,
+    seed: Rect,
+    dice: Rect,
+    button: Rect,
+}
+
+impl ContinentsLayout {
+    fn new(origin: Vec2) -> Self {
+        let x = origin.x + PAD;
+        // Slider rects are the draggable hit areas; the visible track runs through their middle.
+        let slider = |y: f32| Rect::new(x, origin.y + y, INNER_WIDTH, 22.0);
+        let coverage = slider(92.0);
+        let roughness = slider(154.0);
+        let regularity = slider(216.0);
+        let edge_buffer = slider(278.0);
+        let count = Rect::new(x + INNER_WIDTH - 116.0, origin.y + 322.0, 116.0, 32.0);
+        let seed = Rect::new(x, origin.y + 390.0, INNER_WIDTH - CONTROL_HEIGHT - 8.0, CONTROL_HEIGHT);
+        let button = Rect::new(x, seed.bottom() + 20.0, INNER_WIDTH, CONTROL_HEIGHT);
+        Self {
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, button.bottom() + PAD - origin.y),
+            coverage,
+            roughness,
+            regularity,
+            edge_buffer,
+            count,
+            minus: Rect::new(count.x, count.y, 32.0, count.h),
+            plus: Rect::new(count.right() - 32.0, count.y, 32.0, count.h),
+            seed,
+            dice: Rect::new(seed.right() + 8.0, seed.y, CONTROL_HEIGHT, CONTROL_HEIGHT),
+            button,
+        }
+    }
+}
+
+/// Where everything in the Islands panel sits.
+struct IslandsLayout {
+    panel: Rect,
+    count: Rect,
+    size: Rect,
+    variety: Rect,
+    scatter: Rect,
+    roughness: Rect,
+    edge_buffer: Rect,
+    seed: Rect,
+    dice: Rect,
+    button: Rect,
+}
+
+impl IslandsLayout {
+    fn new(origin: Vec2) -> Self {
+        let x = origin.x + PAD;
+        let slider = |y: f32| Rect::new(x, origin.y + y, INNER_WIDTH, 22.0);
+        let seed = Rect::new(x, origin.y + 464.0, INNER_WIDTH - CONTROL_HEIGHT - 8.0, CONTROL_HEIGHT);
+        let button = Rect::new(x, seed.bottom() + 20.0, INNER_WIDTH, CONTROL_HEIGHT);
+        Self {
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, button.bottom() + PAD - origin.y),
+            count: slider(92.0),
+            size: slider(154.0),
+            variety: slider(216.0),
+            scatter: slider(278.0),
+            roughness: slider(340.0),
+            edge_buffer: slider(402.0),
+            seed,
+            dice: Rect::new(seed.right() + 8.0, seed.y, CONTROL_HEIGHT, CONTROL_HEIGHT),
+            button,
+        }
+    }
+}
+
+enum Layout {
+    NewMap(NewMapLayout),
+    Continents(ContinentsLayout),
+    Islands(IslandsLayout),
+}
+
+impl Layout {
+    fn panel(&self) -> Rect {
+        match self {
+            Layout::NewMap(l) => l.panel,
+            Layout::Continents(l) => l.panel,
+            Layout::Islands(l) => l.panel,
+        }
     }
 }
 
 pub struct EditorUi {
     open_tool: Option<Tool>,
-    /// The New map panel's width and height fields.
-    fields: [NumberField; 2],
-    focused: Option<usize>,
+    width: NumberField,
+    height: NumberField,
+    coverage: Slider,
+    roughness: Slider,
+    regularity: Slider,
+    edge_buffer: Slider,
+    continent_count: u32,
+    seed: NumberField,
+    island_count: Slider,
+    island_size: Slider,
+    island_variety: Slider,
+    island_scatter: Slider,
+    island_roughness: Slider,
+    island_seed: NumberField,
+    focused: Option<FieldId>,
+    dragging: Option<SliderId>,
+    /// Continents are being generated; the Generate button waits until they're done.
+    busy: bool,
+}
+
+/// The buttons for actions rather than tools, stacked up from the bottom of the toolbar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActionButton {
+    Undo,
+    Save,
+    Open,
+}
+
+impl ActionButton {
+    const ALL: [ActionButton; 3] = [ActionButton::Open, ActionButton::Save, ActionButton::Undo];
+
+    fn rect(self) -> Rect {
+        let slot = match self {
+            ActionButton::Undo => 0.0,
+            ActionButton::Save => 1.0,
+            ActionButton::Open => 2.0,
+        };
+        Rect::new(
+            (TOOLBAR_WIDTH - ICON_SIZE) * 0.5,
+            screen_height() - TOOLBAR_TOP - ICON_SIZE - slot * (ICON_SIZE + ICON_GAP),
+            ICON_SIZE,
+            ICON_SIZE,
+        )
+    }
 }
 
 fn icon_rect(index: usize) -> Rect {
     Rect::new(
         (TOOLBAR_WIDTH - ICON_SIZE) * 0.5,
-        ICON_GAP + index as f32 * (ICON_SIZE + ICON_GAP),
+        TOOLBAR_TOP + index as f32 * (ICON_SIZE + ICON_GAP),
         ICON_SIZE,
         ICON_SIZE,
     )
 }
 
-fn field_rect(panel: Rect, index: usize) -> Rect {
-    Rect::new(panel.x + 76.0, panel.y + 44.0 + index as f32 * 36.0, 120.0, 28.0)
-}
-
-fn create_button_rect(panel: Rect) -> Rect {
-    Rect::new(panel.x + 12.0, panel.y + 140.0, panel.w - 24.0, 32.0)
+fn random_seed() -> u32 {
+    rand::gen_range(1, 999_999_999)
 }
 
 impl EditorUi {
     pub fn new() -> Self {
+        rand::srand(macroquad::miniquad::date::now() as u64);
         Self {
             open_tool: None,
-            fields: [
-                NumberField::new("Width", DEFAULT_MAP_SIZE),
-                NumberField::new("Height", DEFAULT_MAP_SIZE),
-            ],
+            width: NumberField::new("Width", DEFAULT_MAP_SIZE, "m", 1, 5),
+            height: NumberField::new("Height", DEFAULT_MAP_SIZE, "m", 1, 5),
+            coverage: Slider {
+                label: "Land to add",
+                value: 30.0,
+                min: 5.0,
+                max: 95.0,
+                unit: "%",
+                ends: None,
+            },
+            roughness: Slider {
+                label: "Coastline roughness",
+                value: 50.0,
+                min: 0.0,
+                max: 100.0,
+                unit: "",
+                ends: Some(("Smooth", "Ragged")),
+            },
+            // 0 gives stretched, lobed continents full of bays and peninsulas; 100 gives
+            // compact, rounded ones. The default is well short of the rounded end.
+            regularity: Slider {
+                label: "Shape regularity",
+                value: 35.0,
+                min: 0.0,
+                max: 100.0,
+                unit: "",
+                ends: Some(("Irregular", "Regular")),
+            },
+            // Share of the map's shorter side kept as open water around the edge.
+            edge_buffer: Slider {
+                label: "Edge buffer",
+                value: 6.0,
+                // Never zero: continents must not touch the map edge.
+                min: 2.0,
+                max: 25.0,
+                unit: "%",
+                ends: None,
+            },
+            continent_count: 4,
+            seed: NumberField::new("Seed", random_seed(), "", 0, 9),
+            island_count: Slider {
+                label: "Islands",
+                value: 20.0,
+                min: 1.0,
+                max: 200.0,
+                unit: "",
+                ends: None,
+            },
+            // Typical island width as a share of the map's shorter side.
+            island_size: Slider {
+                label: "Island size",
+                value: 5.0,
+                min: 1.0,
+                max: 15.0,
+                unit: "%",
+                ends: None,
+            },
+            island_variety: Slider {
+                label: "Size variety",
+                value: 50.0,
+                min: 0.0,
+                max: 100.0,
+                unit: "",
+                ends: Some(("Even", "Varied")),
+            },
+            island_scatter: Slider {
+                label: "Scatter",
+                value: 60.0,
+                min: 0.0,
+                max: 100.0,
+                unit: "",
+                ends: Some(("Clustered", "Scattered")),
+            },
+            island_roughness: Slider {
+                label: "Coastline roughness",
+                value: 60.0,
+                min: 0.0,
+                max: 100.0,
+                unit: "",
+                ends: Some(("Smooth", "Ragged")),
+            },
+            island_seed: NumberField::new("Seed", random_seed(), "", 0, 9),
             focused: None,
+            dragging: None,
+            busy: false,
         }
     }
 
-    fn panel_rect(&self) -> Option<Rect> {
+    fn layout(&self) -> Option<Layout> {
         let tool = self.open_tool?;
         let index = Tool::ALL.iter().position(|&t| t == tool)?;
-        let height = match tool {
-            Tool::NewMap => NEW_MAP_PANEL_HEIGHT,
-        };
-        Some(Rect::new(
-            TOOLBAR_WIDTH + PANEL_GAP,
-            icon_rect(index).y,
-            PANEL_WIDTH,
-            height,
-        ))
+        let origin = vec2(TOOLBAR_WIDTH + PANEL_GAP, icon_rect(index).y);
+        Some(match tool {
+            Tool::NewMap => Layout::NewMap(NewMapLayout::new(origin)),
+            Tool::Continents => Layout::Continents(ContinentsLayout::new(origin)),
+            Tool::Islands => Layout::Islands(IslandsLayout::new(origin)),
+        })
+    }
+
+    fn field(&self, id: FieldId) -> &NumberField {
+        match id {
+            FieldId::Width => &self.width,
+            FieldId::Height => &self.height,
+            FieldId::Seed => &self.seed,
+            FieldId::IslandSeed => &self.island_seed,
+        }
+    }
+
+    fn field_mut(&mut self, id: FieldId) -> &mut NumberField {
+        match id {
+            FieldId::Width => &mut self.width,
+            FieldId::Height => &mut self.height,
+            FieldId::Seed => &mut self.seed,
+            FieldId::IslandSeed => &mut self.island_seed,
+        }
+    }
+
+    fn slider_mut(&mut self, id: SliderId) -> &mut Slider {
+        match id {
+            SliderId::Coverage => &mut self.coverage,
+            SliderId::Roughness => &mut self.roughness,
+            SliderId::Regularity => &mut self.regularity,
+            SliderId::EdgeBuffer => &mut self.edge_buffer,
+            SliderId::IslandCount => &mut self.island_count,
+            SliderId::IslandSize => &mut self.island_size,
+            SliderId::IslandVariety => &mut self.island_variety,
+            SliderId::IslandScatter => &mut self.island_scatter,
+            SliderId::IslandRoughness => &mut self.island_roughness,
+        }
+    }
+
+    /// Text fields in the open panel, in Tab order.
+    fn panel_fields(&self) -> &'static [FieldId] {
+        match self.open_tool {
+            Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
+            Some(Tool::Continents) => &[FieldId::Seed],
+            Some(Tool::Islands) => &[FieldId::IslandSeed],
+            None => &[],
+        }
     }
 
     /// True while a text field has focus, so keyboard shortcuts and camera keys should pause.
@@ -125,10 +458,17 @@ impl EditorUi {
         self.focused.is_some()
     }
 
-    /// True while the pointer is over the toolbar or an open panel.
+    /// True while the pointer is over the toolbar or an open panel, or dragging a slider.
     pub fn mouse_over(&self) -> bool {
         let mouse: Vec2 = mouse_position().into();
-        mouse.x < TOOLBAR_WIDTH || self.panel_rect().is_some_and(|p| p.contains(mouse))
+        self.dragging.is_some()
+            || mouse.x < TOOLBAR_WIDTH
+            || self.layout().is_some_and(|l| l.panel().contains(mouse))
+    }
+
+    /// Call once a requested continent generation has been applied.
+    pub fn finish_generating(&mut self) {
+        self.busy = false;
     }
 
     /// Handles Esc: drops field focus first, then closes the open panel. Returns false when
@@ -140,14 +480,16 @@ impl EditorUi {
         self.open_tool.take().is_some()
     }
 
-    fn focus(&mut self, index: Option<usize>) {
-        self.focused = index;
-        if let Some(i) = index {
-            self.fields[i].selected = true;
+    fn focus(&mut self, id: Option<FieldId>) {
+        self.focused = id;
+        if let Some(id) = id {
+            self.field_mut(id).selected = true;
         }
     }
 
-    pub fn update(&mut self) -> Option<UiAction> {
+    /// `has_map` enables the tools that work on an open map; `undo_steps` is how many edits
+    /// can be undone.
+    pub fn update(&mut self, has_map: bool, undo_steps: usize) -> Option<UiAction> {
         // Always drain typed characters so keys pressed outside a field never show up later.
         let mut typed = Vec::new();
         while let Some(c) = get_char_pressed() {
@@ -155,6 +497,22 @@ impl EditorUi {
         }
         let mouse: Vec2 = mouse_position().into();
         let clicked = is_mouse_button_pressed(MouseButton::Left);
+        if !is_mouse_button_down(MouseButton::Left) {
+            self.dragging = None;
+        }
+
+        if clicked {
+            if ActionButton::Undo.rect().contains(mouse) {
+                return (undo_steps > 0).then_some(UiAction::Undo);
+            }
+            if ActionButton::Save.rect().contains(mouse) {
+                let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+                return has_map.then_some(UiAction::Save { save_as: shift });
+            }
+            if ActionButton::Open.rect().contains(mouse) {
+                return Some(UiAction::Open);
+            }
+        }
 
         if clicked {
             if let Some(i) = (0..Tool::ALL.len()).find(|&i| icon_rect(i).contains(mouse)) {
@@ -162,27 +520,93 @@ impl EditorUi {
                 let opening = self.open_tool != Some(tool);
                 self.open_tool = opening.then_some(tool);
                 // Opening New map puts the cursor straight into the width field.
-                self.focus(opening.then_some(0));
+                self.focus((opening && tool == Tool::NewMap).then_some(FieldId::Width));
                 return None;
             }
         }
 
-        let panel = self.panel_rect()?;
+        let layout = self.layout()?;
         let mut submit = false;
-        if clicked {
-            let hit = (0..self.fields.len()).find(|&i| field_rect(panel, i).contains(mouse));
-            self.focus(hit);
-            submit = create_button_rect(panel).contains(mouse);
+        match &layout {
+            Layout::NewMap(l) => {
+                if clicked {
+                    let hit = [(l.width, FieldId::Width), (l.height, FieldId::Height)]
+                        .into_iter()
+                        .find(|(r, _)| r.contains(mouse));
+                    self.focus(hit.map(|(_, id)| id));
+                    submit = l.button.contains(mouse);
+                }
+            }
+            Layout::Continents(l) => {
+                if clicked {
+                    self.focus(l.seed.contains(mouse).then_some(FieldId::Seed));
+                    let slider_hit = [
+                        (l.coverage, SliderId::Coverage),
+                        (l.roughness, SliderId::Roughness),
+                        (l.regularity, SliderId::Regularity),
+                        (l.edge_buffer, SliderId::EdgeBuffer),
+                    ]
+                    .into_iter()
+                    .find(|(r, _)| r.contains(mouse));
+                    if let Some((_, id)) = slider_hit {
+                        self.dragging = Some(id);
+                    } else if l.minus.contains(mouse) {
+                        self.continent_count = (self.continent_count - 1).max(1);
+                    } else if l.plus.contains(mouse) {
+                        self.continent_count = (self.continent_count + 1).min(MAX_CONTINENTS);
+                    } else if l.dice.contains(mouse) {
+                        self.seed.text = random_seed().to_string();
+                        self.seed.invalid = false;
+                    }
+                    submit = l.button.contains(mouse);
+                }
+                if let Some(id) = self.dragging {
+                    let tracks = [
+                        (l.coverage, SliderId::Coverage),
+                        (l.roughness, SliderId::Roughness),
+                        (l.regularity, SliderId::Regularity),
+                        (l.edge_buffer, SliderId::EdgeBuffer),
+                    ];
+                    if let Some((track, _)) = tracks.iter().find(|(_, s)| *s == id) {
+                        self.slider_mut(id).set_from_x(*track, mouse.x);
+                    }
+                }
+            }
+            Layout::Islands(l) => {
+                let sliders = [
+                    (l.count, SliderId::IslandCount),
+                    (l.size, SliderId::IslandSize),
+                    (l.variety, SliderId::IslandVariety),
+                    (l.scatter, SliderId::IslandScatter),
+                    (l.roughness, SliderId::IslandRoughness),
+                    (l.edge_buffer, SliderId::EdgeBuffer),
+                ];
+                if clicked {
+                    self.focus(l.seed.contains(mouse).then_some(FieldId::IslandSeed));
+                    if let Some((_, id)) = sliders.iter().find(|(r, _)| r.contains(mouse)) {
+                        self.dragging = Some(*id);
+                    } else if l.dice.contains(mouse) {
+                        self.island_seed.text = random_seed().to_string();
+                        self.island_seed.invalid = false;
+                    }
+                    submit = l.button.contains(mouse);
+                }
+                if let Some(id) = self.dragging {
+                    if let Some((track, _)) = sliders.iter().find(|(_, s)| *s == id) {
+                        self.slider_mut(id).set_from_x(*track, mouse.x);
+                    }
+                }
+            }
         }
 
-        if let Some(i) = self.focused {
-            let field = &mut self.fields[i];
+        if let Some(id) = self.focused {
+            let field = self.field_mut(id);
             for c in typed.into_iter().filter(char::is_ascii_digit) {
                 if field.selected {
                     field.text.clear();
                     field.selected = false;
                 }
-                if field.text.len() < MAX_DIGITS {
+                if field.text.len() < field.max_digits {
                     field.text.push(c);
                 }
                 field.invalid = false;
@@ -197,140 +621,483 @@ impl EditorUi {
                 field.invalid = false;
             }
             if is_key_pressed(KeyCode::Tab) {
-                self.focus(Some((i + 1) % self.fields.len()));
+                let order = self.panel_fields();
+                let next = order.iter().position(|&f| f == id).map_or(0, |p| (p + 1) % order.len());
+                self.focus(Some(order[next]));
             }
             if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
                 submit = true;
             }
         }
 
-        if submit { self.submit() } else { None }
+        if !submit {
+            return None;
+        }
+        match layout {
+            Layout::NewMap(_) => self.submit_new_map(),
+            Layout::Continents(_) => self.submit_continents(has_map),
+            Layout::Islands(_) => self.submit_islands(has_map),
+        }
     }
 
-    fn submit(&mut self) -> Option<UiAction> {
-        for field in &mut self.fields {
-            field.invalid = field.value().is_none();
-        }
-        let width = snap_map_size(self.fields[0].value()? as f32);
-        let height = snap_map_size(self.fields[1].value()? as f32);
+    fn submit_new_map(&mut self) -> Option<UiAction> {
+        self.width.invalid = self.width.value().is_none();
+        self.height.invalid = self.height.value().is_none();
+        let width = snap_map_size(self.width.value()? as f32);
+        let height = snap_map_size(self.height.value()? as f32);
         // Show the size actually built, in case it was rounded or clamped.
-        self.fields[0].text = format!("{width}");
-        self.fields[1].text = format!("{height}");
+        self.width.text = format!("{width}");
+        self.height.text = format!("{height}");
         self.open_tool = None;
         self.focused = None;
         Some(UiAction::CreateMap { width, height })
     }
 
-    pub fn draw(&self) {
+    fn submit_continents(&mut self, has_map: bool) -> Option<UiAction> {
+        if !has_map || self.busy {
+            return None;
+        }
+        self.seed.invalid = self.seed.value().is_none();
+        let seed = self.seed.value()?;
+        self.focused = None;
+        self.busy = true;
+        // The panel stays open so settings can be tweaked and regenerated.
+        Some(UiAction::GenerateContinents(ContinentParams {
+            coverage: self.coverage.value / 100.0,
+            count: self.continent_count,
+            roughness: self.roughness.value / 100.0,
+            regularity: self.regularity.value / 100.0,
+            edge_buffer: self.edge_buffer.value / 100.0,
+            seed,
+        }))
+    }
+
+    fn submit_islands(&mut self, has_map: bool) -> Option<UiAction> {
+        if !has_map || self.busy {
+            return None;
+        }
+        self.island_seed.invalid = self.island_seed.value().is_none();
+        let seed = self.island_seed.value()?;
+        self.focused = None;
+        self.busy = true;
+        Some(UiAction::AddIslands(IslandParams {
+            count: self.island_count.value as u32,
+            size: self.island_size.value / 100.0,
+            variety: self.island_variety.value / 100.0,
+            scatter: self.island_scatter.value / 100.0,
+            roughness: self.island_roughness.value / 100.0,
+            edge_buffer: self.edge_buffer.value / 100.0,
+            seed,
+        }))
+    }
+
+    pub fn draw(&self, style: &Style, has_map: bool, undo_steps: usize) {
         let mouse: Vec2 = mouse_position().into();
 
-        draw_rectangle(0.0, 0.0, TOOLBAR_WIDTH, screen_height(), TOOLBAR_BG);
-        draw_line(TOOLBAR_WIDTH, 0.0, TOOLBAR_WIDTH, screen_height(), 1.0, BORDER);
+        draw_rectangle(0.0, 0.0, TOOLBAR_WIDTH, screen_height(), style::SURFACE);
+        draw_line(TOOLBAR_WIDTH - 0.5, 0.0, TOOLBAR_WIDTH - 0.5, screen_height(), 1.0, style::BORDER);
 
         for (i, &tool) in Tool::ALL.iter().enumerate() {
             let r = icon_rect(i);
             let hovered = r.contains(mouse);
             let active = self.open_tool == Some(tool);
             if active {
-                draw_rectangle(r.x, r.y, r.w, r.h, ACCENT);
+                style::rounded_rect(r, 8.0, style::ACCENT_SOFT);
+                // Accent bar on the toolbar's edge marks the active tool.
+                style::rounded_rect(Rect::new(0.0, r.y + 8.0, 3.0, r.h - 16.0), 1.5, style::ACCENT);
             } else if hovered {
-                draw_rectangle(r.x, r.y, r.w, r.h, HOVER_BG);
+                style::rounded_rect(r, 8.0, style::HOVER);
             }
-            draw_tool_icon(tool, r);
+            let color = if active || hovered { style::TEXT } else { style::TEXT_MUTED };
+            draw_tool_icon(tool, r, color);
             if hovered && !active {
-                draw_tooltip(tool.label(), r.right() + 10.0, r.center().y);
+                draw_tooltip(style, tool.label(), r.right() + 10.0, r.center().y);
             }
         }
 
-        if let Some(panel) = self.panel_rect() {
-            draw_rectangle(panel.x, panel.y, panel.w, panel.h, PANEL_BG);
-            draw_rectangle_lines(panel.x, panel.y, panel.w, panel.h, 1.0, BORDER);
-            self.draw_new_map_panel(panel, mouse);
+        for button in ActionButton::ALL {
+            self.draw_action_button(style, mouse, button, has_map, undo_steps);
+        }
+
+        if let Some(layout) = self.layout() {
+            style::card(layout.panel(), PANEL_RADIUS, style::PANEL);
+            match &layout {
+                Layout::NewMap(l) => self.draw_new_map_panel(style, l, mouse),
+                Layout::Continents(l) => self.draw_continents_panel(style, l, mouse, has_map),
+                Layout::Islands(l) => self.draw_islands_panel(style, l, mouse, has_map),
+            }
         }
     }
 
-    fn draw_new_map_panel(&self, panel: Rect, mouse: Vec2) {
-        draw_text("New map", panel.x + 12.0, panel.y + 26.0, 22.0, TEXT);
-
-        for (i, field) in self.fields.iter().enumerate() {
-            let r = field_rect(panel, i);
-            let focused = self.focused == Some(i);
-            draw_text(field.label, panel.x + 12.0, r.y + 19.0, 20.0, TEXT_DIM);
-
-            draw_rectangle(r.x, r.y, r.w, r.h, FIELD_BG);
-            let outline = if field.invalid {
-                ERROR
-            } else if focused {
-                ACCENT
-            } else {
-                BORDER
-            };
-            draw_rectangle_lines(r.x, r.y, r.w, r.h, if focused { 2.0 } else { 1.0 }, outline);
-
-            let text_x = r.x + 8.0;
-            let baseline = r.y + 19.0;
-            let text_w = measure_text(&field.text, None, 20, 1.0).width;
-            if focused && field.selected && !field.text.is_empty() {
-                draw_rectangle(text_x - 2.0, r.y + 5.0, text_w + 4.0, r.h - 10.0, SELECTION);
-            }
-            draw_text(&field.text, text_x, baseline, 20.0, TEXT);
-            let caret_on = (get_time() * 2.0) as i64 % 2 == 0;
-            if focused && !field.selected && caret_on {
-                let cx = text_x + text_w + 1.0;
-                draw_line(cx, r.y + 6.0, cx, r.bottom() - 6.0, 1.5, TEXT);
-            }
-            draw_text("m", r.right() + 8.0, baseline, 20.0, TEXT_DIM);
+    fn draw_action_button(&self, style: &Style, mouse: Vec2, button: ActionButton, has_map: bool, undo_steps: usize) {
+        let r = button.rect();
+        let enabled = match button {
+            ActionButton::Undo => undo_steps > 0,
+            ActionButton::Save => has_map,
+            ActionButton::Open => true,
+        };
+        let hovered = r.contains(mouse);
+        if enabled && hovered {
+            style::rounded_rect(r, 8.0, style::HOVER);
         }
+        let color = if !enabled {
+            Color::new(1.0, 1.0, 1.0, 0.22)
+        } else if hovered {
+            style::TEXT
+        } else {
+            style::TEXT_MUTED
+        };
+        match button {
+            ActionButton::Undo => draw_undo_icon(r, color),
+            ActionButton::Save => draw_save_icon(r, color),
+            ActionButton::Open => draw_open_icon(r, color),
+        }
+        if hovered {
+            let text = match button {
+                ActionButton::Undo => match undo_steps {
+                    0 => "Nothing to undo".to_owned(),
+                    1 => "Undo (Ctrl+Z), 1 step left".to_owned(),
+                    n => format!("Undo (Ctrl+Z), {n} steps left"),
+                },
+                ActionButton::Save if has_map => "Save (Ctrl+S), Save as (Ctrl+Shift+S)".to_owned(),
+                ActionButton::Save => "Nothing to save".to_owned(),
+                ActionButton::Open => "Open map (Ctrl+O)".to_owned(),
+            };
+            draw_tooltip(style, &text, r.right() + 10.0, r.center().y);
+        }
+    }
 
+    fn draw_header(&self, style: &Style, panel: Rect, title: &str, subtitle: &str) {
+        let x = panel.x + PAD;
+        style.text(title, x, panel.y + 32.0, 16, Weight::Semibold, style::TEXT);
+        style.text(subtitle, x, panel.y + 52.0, 13, Weight::Regular, style::TEXT_MUTED);
+    }
+
+    fn draw_new_map_panel(&self, style: &Style, l: &NewMapLayout, mouse: Vec2) {
+        self.draw_header(style, l.panel, "New map", "Starts as deep ocean.");
+        for (r, id) in [(l.width, FieldId::Width), (l.height, FieldId::Height)] {
+            let field = self.field(id);
+            style.text(field.label, r.x, r.y - 8.0, 12, Weight::Semibold, style::TEXT_MUTED);
+            draw_field(style, r, field, self.focused == Some(id), mouse);
+        }
         let hint = format!(
-            "{:.0} - {:.0} m, rounded to {:.0} m",
+            "{:.0} to {:.0} m, in steps of {:.0} m",
             MIN_MAP_SIZE, MAX_MAP_SIZE, CHUNK_SIZE
         );
-        draw_text(&hint, panel.x + 12.0, panel.y + 128.0, 16.0, TEXT_DIM);
+        style.text(&hint, l.panel.x + PAD, l.width.bottom() + 22.0, 12, Weight::Regular, style::TEXT_MUTED);
+        draw_primary_button(style, l.button, "Create map", true, mouse);
+    }
 
-        let b = create_button_rect(panel);
-        let fill = if b.contains(mouse) { ACCENT_HOVER } else { ACCENT };
-        draw_rectangle(b.x, b.y, b.w, b.h, fill);
-        let label = "Create map";
-        let size = measure_text(label, None, 20, 1.0);
-        draw_text(
-            label,
-            b.x + (b.w - size.width) * 0.5,
-            b.y + (b.h + size.offset_y) * 0.5 - 1.0,
-            20.0,
-            TEXT,
-        );
+    fn draw_islands_panel(&self, style: &Style, l: &IslandsLayout, mouse: Vec2, has_map: bool) {
+        let subtitle = if has_map {
+            "Sprinkles islands into open water."
+        } else {
+            "Create a map first."
+        };
+        self.draw_header(style, l.panel, "Islands", subtitle);
+
+        for (r, slider, id) in [
+            (l.count, &self.island_count, SliderId::IslandCount),
+            (l.size, &self.island_size, SliderId::IslandSize),
+            (l.variety, &self.island_variety, SliderId::IslandVariety),
+            (l.scatter, &self.island_scatter, SliderId::IslandScatter),
+            (l.roughness, &self.island_roughness, SliderId::IslandRoughness),
+            (l.edge_buffer, &self.edge_buffer, SliderId::EdgeBuffer),
+        ] {
+            draw_slider(style, r, slider, self.dragging == Some(id), mouse);
+        }
+
+        style.text("Seed", l.seed.x, l.seed.y - 8.0, 12, Weight::Semibold, style::TEXT_MUTED);
+        draw_field(style, l.seed, &self.island_seed, self.focused == Some(FieldId::IslandSeed), mouse);
+        draw_icon_button(l.dice, mouse);
+        draw_dice(l.dice.center(), style::TEXT_MUTED);
+        if l.dice.contains(mouse) {
+            draw_tooltip(style, "Random seed", l.dice.right() + 10.0, l.dice.center().y);
+        }
+
+        let label = if self.busy { "Generating..." } else { "Add islands" };
+        draw_primary_button(style, l.button, label, has_map && !self.busy, mouse);
+    }
+
+    fn draw_continents_panel(&self, style: &Style, l: &ContinentsLayout, mouse: Vec2, has_map: bool) {
+        let subtitle = if has_map {
+            "Adds to any land already there."
+        } else {
+            "Create a map first."
+        };
+        self.draw_header(style, l.panel, "Continents", subtitle);
+
+        for (r, slider, id) in [
+            (l.coverage, &self.coverage, SliderId::Coverage),
+            (l.roughness, &self.roughness, SliderId::Roughness),
+            (l.regularity, &self.regularity, SliderId::Regularity),
+            (l.edge_buffer, &self.edge_buffer, SliderId::EdgeBuffer),
+        ] {
+            draw_slider(style, r, slider, self.dragging == Some(id), mouse);
+        }
+
+        style.text_mid("Continents", l.panel.x + PAD, l.count.center().y, 13, Weight::Regular, style::TEXT);
+        draw_stepper(style, l, self.continent_count, mouse);
+
+        style.text("Seed", l.seed.x, l.seed.y - 8.0, 12, Weight::Semibold, style::TEXT_MUTED);
+        draw_field(style, l.seed, &self.seed, self.focused == Some(FieldId::Seed), mouse);
+        draw_icon_button(l.dice, mouse);
+        draw_dice(l.dice.center(), style::TEXT_MUTED);
+        if l.dice.contains(mouse) {
+            draw_tooltip(style, "Random seed", l.dice.right() + 10.0, l.dice.center().y);
+        }
+
+        let label = if self.busy { "Generating..." } else { "Add continents" };
+        draw_primary_button(style, l.button, label, has_map && !self.busy, mouse);
     }
 }
 
-fn draw_tooltip(text: &str, x: f32, center_y: f32) {
-    let size = measure_text(text, None, 18, 1.0);
-    let (w, h) = (size.width + 16.0, 24.0);
-    let y = center_y - h * 0.5;
-    draw_rectangle(x, y, w, h, Color::new(0.05, 0.05, 0.06, 0.95));
-    draw_rectangle_lines(x, y, w, h, 1.0, BORDER);
-    draw_text(text, x + 8.0, y + 17.0, 18.0, TEXT);
+fn draw_field(style: &Style, r: Rect, field: &NumberField, focused: bool, mouse: Vec2) {
+    if focused {
+        // Soft focus ring around the field.
+        let ring = Rect::new(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0);
+        style::rounded_rect(ring, CONTROL_RADIUS + 3.0, style::ACCENT_SOFT);
+    }
+    style::rounded_rect(r, CONTROL_RADIUS, style::FIELD);
+    let border = if field.invalid {
+        style::ERROR
+    } else if focused {
+        style::ACCENT
+    } else if r.contains(mouse) {
+        style::BORDER_STRONG
+    } else {
+        style::BORDER
+    };
+    style::rounded_rect_lines(r, CONTROL_RADIUS, 1.0, border);
+
+    let text_x = r.x + 12.0;
+    let mid = r.center().y;
+    let text_w = style.measure(&field.text, 14, Weight::Regular).width;
+    if focused && field.selected && !field.text.is_empty() {
+        let sel = Rect::new(text_x - 3.0, mid - 10.0, text_w + 6.0, 20.0);
+        style::rounded_rect(sel, 3.0, Color::new(0.302, 0.553, 1.0, 0.45));
+    }
+    style.text_mid(&field.text, text_x, mid, 14, Weight::Regular, style::TEXT);
+    let caret_on = (get_time() * 2.0) as i64 % 2 == 0;
+    if focused && !field.selected && caret_on {
+        let cx = (text_x + text_w + 1.5).round();
+        draw_line(cx, mid - 8.0, cx, mid + 8.0, 1.5, style::TEXT);
+    }
+    if !field.unit.is_empty() {
+        let unit_w = style.measure(field.unit, 13, Weight::Regular).width;
+        style.text_mid(field.unit, r.right() - 12.0 - unit_w, mid, 13, Weight::Regular, style::TEXT_MUTED);
+    }
 }
 
-fn draw_tool_icon(tool: Tool, r: Rect) {
+/// Label and value above, track and knob below; `r` is the draggable area.
+fn draw_slider(style: &Style, r: Rect, slider: &Slider, dragging: bool, mouse: Vec2) {
+    let label_y = r.y - 6.0;
+    style.text(slider.label, r.x, label_y, 13, Weight::Regular, style::TEXT);
+    let value = format!("{:.0}{}", slider.value, slider.unit);
+    let value_w = style.measure(&value, 13, Weight::Semibold).width;
+    style.text(&value, r.right() - value_w, label_y, 13, Weight::Semibold, style::TEXT);
+
+    let mid = r.center().y;
+    let track = Rect::new(r.x, mid - 2.0, r.w, 4.0);
+    style::rounded_rect(track, 2.0, Color::new(1.0, 1.0, 1.0, 0.12));
+    let knob_x = r.x + r.w * slider.fraction();
+    style::rounded_rect(Rect::new(r.x, track.y, knob_x - r.x, 4.0), 2.0, style::ACCENT);
+
+    let hovered = dragging || r.contains(mouse);
+    if hovered {
+        draw_circle(knob_x, mid, 11.0, style::ACCENT_SOFT);
+    }
+    draw_circle(knob_x, mid, 7.0, WHITE);
+    draw_circle_lines(knob_x, mid, 7.0, 1.0, Color::new(0.0, 0.0, 0.0, 0.25));
+
+    if let Some((left, right)) = slider.ends {
+        // Right under the track, well clear of the next slider's label.
+        let y = r.bottom() + 5.0;
+        style.text(left, r.x, y, 11, Weight::Regular, style::TEXT_MUTED);
+        let w = style.measure(right, 11, Weight::Regular).width;
+        style.text(right, r.right() - w, y, 11, Weight::Regular, style::TEXT_MUTED);
+    }
+}
+
+/// A "−  value  +" control for small whole numbers.
+fn draw_stepper(style: &Style, l: &ContinentsLayout, value: u32, mouse: Vec2) {
+    let r = l.count;
+    style::rounded_rect(r, CONTROL_RADIUS, style::FIELD);
+    style::rounded_rect_lines(r, CONTROL_RADIUS, 1.0, style::BORDER);
+    for (b, enabled) in [(l.minus, value > 1), (l.plus, value < MAX_CONTINENTS)] {
+        if enabled && b.contains(mouse) {
+            style::rounded_rect(b, CONTROL_RADIUS, style::HOVER);
+        }
+        let color = if enabled { style::TEXT } else { Color::new(1.0, 1.0, 1.0, 0.2) };
+        let c = b.center();
+        draw_line(c.x - 5.0, c.y, c.x + 5.0, c.y, 1.6, color);
+        if b == l.plus {
+            draw_line(c.x, c.y - 5.0, c.x, c.y + 5.0, 1.6, color);
+        }
+    }
+    style.text_centered(&value.to_string(), r, 14, Weight::Semibold, style::TEXT);
+}
+
+fn draw_primary_button(style: &Style, r: Rect, label: &str, enabled: bool, mouse: Vec2) {
+    let (fill, text) = if !enabled {
+        (Color::new(1.0, 1.0, 1.0, 0.08), Color::new(1.0, 1.0, 1.0, 0.35))
+    } else if r.contains(mouse) {
+        (style::ACCENT_HOVER, WHITE)
+    } else {
+        (style::ACCENT, WHITE)
+    };
+    style::rounded_rect(r, CONTROL_RADIUS, fill);
+    style.text_centered(label, r, 14, Weight::Semibold, text);
+}
+
+fn draw_icon_button(r: Rect, mouse: Vec2) {
+    let fill = if r.contains(mouse) { Color::new(1.0, 1.0, 1.0, 0.10) } else { style::FIELD };
+    style::rounded_rect(r, CONTROL_RADIUS, fill);
+    style::rounded_rect_lines(r, CONTROL_RADIUS, 1.0, style::BORDER);
+}
+
+fn draw_tooltip(style: &Style, text: &str, x: f32, center_y: f32) {
+    let w = style.measure(text, 13, Weight::Regular).width + 20.0;
+    let r = Rect::new(x, center_y - 14.0, w, 28.0);
+    style::card(r, 6.0, Color::new(0.07, 0.07, 0.08, 1.0));
+    style.text_mid(text, r.x + 10.0, r.center().y, 13, Weight::Regular, style::TEXT);
+}
+
+/// Draws a closed outline through `points`.
+fn draw_outline(points: &[Vec2], color: Color) {
+    for (i, p) in points.iter().enumerate() {
+        let q = points[(i + 1) % points.len()];
+        draw_line(p.x, p.y, q.x, q.y, 1.6, color);
+    }
+}
+
+/// An open folder: "open".
+fn draw_open_icon(r: Rect, color: Color) {
     let c = r.center();
+    draw_outline(
+        &[
+            c + vec2(-9.0, 8.0),
+            c + vec2(-9.0, -7.0),
+            c + vec2(-3.0, -7.0),
+            c + vec2(-1.0, -4.0),
+            c + vec2(9.0, -4.0),
+            c + vec2(9.0, 8.0),
+        ],
+        color,
+    );
+}
+
+/// A floppy disk: "save".
+fn draw_save_icon(r: Rect, color: Color) {
+    let c = r.center();
+    draw_outline(
+        &[
+            c + vec2(-9.0, -9.0),
+            c + vec2(5.0, -9.0),
+            c + vec2(9.0, -5.0),
+            c + vec2(9.0, 9.0),
+            c + vec2(-9.0, 9.0),
+        ],
+        color,
+    );
+    // The metal shutter at the top and the label at the bottom.
+    draw_outline(
+        &[c + vec2(-5.0, -9.0), c + vec2(-5.0, -3.5), c + vec2(3.0, -3.5), c + vec2(3.0, -9.0)],
+        color,
+    );
+    draw_outline(
+        &[c + vec2(-6.0, 9.0), c + vec2(-6.0, 2.0), c + vec2(6.0, 2.0), c + vec2(6.0, 9.0)],
+        color,
+    );
+}
+
+/// A curved arrow pointing back: "undo".
+fn draw_undo_icon(r: Rect, color: Color) {
+    let c = r.center() + vec2(0.0, 2.0);
+    let radius = 7.5;
+    let (start, end) = (-2.4f32, 1.35f32);
+    let point = |a: f32| c + vec2(a.cos(), a.sin()) * radius;
+    let steps = 18;
+    for k in 0..steps {
+        let a0 = start + (end - start) * k as f32 / steps as f32;
+        let a1 = start + (end - start) * (k + 1) as f32 / steps as f32;
+        let (p0, p1) = (point(a0), point(a1));
+        draw_line(p0.x, p0.y, p1.x, p1.y, 1.8, color);
+    }
+    // Arrowhead at the start of the arc, pointing the way the arc runs backwards.
+    let tip = point(start);
+    let heading = vec2(start.sin(), -start.cos());
+    let tip = tip + heading * 2.0;
+    for wing in [2.55f32, -2.55] {
+        let (s, co) = wing.sin_cos();
+        let dir = vec2(heading.x * co - heading.y * s, heading.x * s + heading.y * co);
+        let end = tip + dir * 5.0;
+        draw_line(tip.x, tip.y, end.x, end.y, 1.8, color);
+    }
+}
+
+/// A die showing five pips: "random".
+fn draw_dice(c: Vec2, color: Color) {
+    let r = Rect::new(c.x - 8.0, c.y - 8.0, 16.0, 16.0);
+    style::rounded_rect_lines(r, 3.5, 1.5, color);
+    for (dx, dy) in [(-4.0, -4.0), (4.0, -4.0), (0.0, 0.0), (-4.0, 4.0), (4.0, 4.0)] {
+        draw_circle(c.x + dx, c.y + dy, 1.4, color);
+    }
+}
+
+fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
+    let c = r.center();
+    let t = 1.6;
     match tool {
         Tool::NewMap => {
-            // A sheet of paper with a folded corner and a plus: "new document".
-            let (w, h, fold) = (16.0, 20.0, 5.0);
-            let (left, top) = (c.x - w * 0.5, c.y - h * 0.5);
-            let (right, bottom) = (left + w, top + h);
-            let t = 1.5;
-            draw_line(left, top, right - fold, top, t, ICON);
-            draw_line(right - fold, top, right, top + fold, t, ICON);
-            draw_line(right, top + fold, right, bottom, t, ICON);
-            draw_line(right, bottom, left, bottom, t, ICON);
-            draw_line(left, bottom, left, top, t, ICON);
-            draw_line(right - fold, top, right - fold, top + fold, t, ICON);
-            draw_line(right - fold, top + fold, right, top + fold, t, ICON);
-            let (px, py) = (c.x - 1.0, c.y + 2.0);
-            draw_line(px - 4.0, py, px + 4.0, py, t, ICON);
-            draw_line(px, py - 4.0, px, py + 4.0, t, ICON);
+            // A folded map with a plus badge: "new map".
+            let (left, right) = (c.x - 10.0, c.x + 10.0);
+            let (top, bottom) = (c.y - 8.0, c.y + 8.0);
+            let (f1, f2) = (c.x - 3.3, c.x + 3.3);
+            let outline = [
+                (vec2(left, top + 2.0), vec2(f1, top)),
+                (vec2(f1, top), vec2(f2, top + 2.0)),
+                (vec2(f2, top + 2.0), vec2(right, top)),
+                (vec2(right, top), vec2(right, bottom - 2.0)),
+                (vec2(right, bottom - 2.0), vec2(f2, bottom)),
+                (vec2(f2, bottom), vec2(f1, bottom - 2.0)),
+                (vec2(f1, bottom - 2.0), vec2(left, bottom)),
+                (vec2(left, bottom), vec2(left, top + 2.0)),
+                (vec2(f1, top), vec2(f1, bottom - 2.0)),
+                (vec2(f2, top + 2.0), vec2(f2, bottom)),
+            ];
+            for (a, b) in outline {
+                draw_line(a.x, a.y, b.x, b.y, t, color);
+            }
+            let badge = vec2(right, bottom);
+            draw_circle(badge.x, badge.y, 7.0, style::SURFACE);
+            draw_circle(badge.x, badge.y, 5.5, style::ACCENT);
+            draw_line(badge.x - 3.0, badge.y, badge.x + 3.0, badge.y, 1.5, WHITE);
+            draw_line(badge.x, badge.y - 3.0, badge.x, badge.y + 3.0, 1.5, WHITE);
+        }
+        Tool::Islands => {
+            // Three islands of different sizes.
+            draw_ellipse_lines(c.x - 3.5, c.y + 2.0, 7.5, 5.0, 0.3, t, color);
+            draw_ellipse_lines(c.x + 6.0, c.y - 5.5, 3.6, 2.6, -0.4, t, color);
+            draw_ellipse_lines(c.x + 6.5, c.y + 6.0, 2.6, 1.9, 0.2, t, color);
+        }
+        Tool::Continents => {
+            // A globe: outline, a meridian ellipse and two parallels.
+            let radius = 10.0;
+            draw_circle_lines(c.x, c.y, radius, t, color);
+            let steps = 24;
+            for k in 0..steps {
+                let a0 = std::f32::consts::TAU * k as f32 / steps as f32;
+                let a1 = std::f32::consts::TAU * (k + 1) as f32 / steps as f32;
+                let p = |a: f32| vec2(c.x + a.cos() * radius * 0.42, c.y + a.sin() * radius);
+                let (p0, p1) = (p(a0), p(a1));
+                draw_line(p0.x, p0.y, p1.x, p1.y, t, color);
+            }
+            draw_line(c.x - radius, c.y, c.x + radius, c.y, t, color);
+            for dy in [-5.0f32, 5.0] {
+                let half = (radius * radius - dy * dy).sqrt();
+                draw_line(c.x - half, c.y + dy, c.x + half, c.y + dy, 1.2, color);
+            }
         }
     }
 }

@@ -5,13 +5,33 @@ use std::time::{Duration, Instant};
 use macroquad::models::{draw_mesh, Mesh, Vertex};
 use macroquad::prelude::*;
 
-use crate::noise::{smoothstep, Perlin};
-
 pub const SEA_LEVEL: f32 = 0.0;
 /// Spacing between heightmap samples, in world units (meters).
 pub const CELL_SIZE: f32 = 4.0;
 /// Every point of a new world starts this far below sea level.
-const INITIAL_DEPTH: f32 = -200.0;
+pub const DEEP_OCEAN: f32 = -200.0;
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    #[test]
+    fn surface_encodes_lowland_and_hill_elevation_without_changing_coast() {
+        let mut world = World::new(256.0, 256.0);
+        let mut heights = world.heights().to_vec();
+        heights[..6].copy_from_slice(&[-1.0, 0.0, 1.0, 7.0, 50.0, 200.0]);
+        world.set_heights(heights);
+        let texels = world.surface_texels();
+        let pixels: Vec<_> = texels.chunks_exact(4).take(6).collect();
+        assert_eq!(pixels.iter().map(|p| p[0]).collect::<Vec<_>>(), [0, 128, 255, 255, 255, 255]);
+        assert_eq!(pixels[0][1], 0);
+        assert_eq!(pixels[1][1], 0);
+        assert!(pixels[2][1] < pixels[3][1]);
+        assert!(pixels[3][1] < pixels[4][1]);
+        assert!(pixels[4][1] < pixels[5][1]);
+        assert_eq!(pixels[5][1], 255);
+    }
+}
 
 /// Heightmap cells along a chunk side at the finest LOD; each coarser LOD halves the vertex count.
 const CHUNK_CELLS: usize = 16;
@@ -20,20 +40,18 @@ pub const CHUNK_SIZE: f32 = CELL_SIZE * CHUNK_CELLS as f32;
 pub const MIN_MAP_SIZE: f32 = 256.0;
 pub const MAX_MAP_SIZE: f32 = 8192.0;
 /// Distance thresholds (world units) for LOD 0, 1 and 2; anything farther is LOD 3.
-const LOD_DISTANCES: [f32; 3] = [360.0, 800.0, 1500.0];
+/// Generous enough that coastlines stay crisp in the top-down view of a 4 km map.
+const LOD_DISTANCES: [f32; 3] = [500.0, 1300.0, 4000.0];
+
+/// Whether a map side of this many heightmap cells is a size the world can be built at.
+pub fn cells_valid(cells: usize) -> bool {
+    let meters = cells as f32 * CELL_SIZE;
+    snap_map_size(meters) == meters
+}
 
 /// Rounds a requested map side (meters) to the nearest size the world can be built at.
 pub fn snap_map_size(meters: f32) -> f32 {
     ((meters / CHUNK_SIZE).round() * CHUNK_SIZE).clamp(MIN_MAP_SIZE, MAX_MAP_SIZE)
-}
-
-fn water_color(depth: f32) -> Vec3 {
-    vec3(0.10, 0.42, 0.48).lerp(vec3(0.02, 0.10, 0.26), smoothstep(0.0, 45.0, depth))
-}
-
-fn rgba8(c: Vec3) -> [u8; 4] {
-    let c = c.clamp(Vec3::ZERO, Vec3::ONE) * 255.0;
-    [c.x as u8, c.y as u8, c.z as u8, 255]
 }
 
 struct Chunk {
@@ -49,7 +67,6 @@ pub struct World {
     cells_z: usize,
     /// (cells_x + 1) × (cells_z + 1) elevation samples, row-major from the north-west corner.
     heights: Vec<f32>,
-    perlin: Perlin,
     chunks_x: usize,
     chunks: Vec<Option<Chunk>>,
 }
@@ -64,8 +81,7 @@ impl World {
         Self {
             cells_x,
             cells_z,
-            heights: vec![INITIAL_DEPTH; (cells_x + 1) * (cells_z + 1)],
-            perlin: Perlin::new(1337),
+            heights: vec![DEEP_OCEAN; (cells_x + 1) * (cells_z + 1)],
             chunks_x,
             chunks: (0..chunks_x * chunks_z).map(|_| None).collect(),
         }
@@ -78,6 +94,24 @@ impl World {
 
     pub fn half_extents(&self) -> Vec2 {
         self.size() * 0.5
+    }
+
+    /// Heightmap cells along x and z.
+    pub fn cells(&self) -> (usize, usize) {
+        (self.cells_x, self.cells_z)
+    }
+
+    /// Every elevation sample, row-major from the north-west corner, (cells_x + 1) per row.
+    pub fn heights(&self) -> &[f32] {
+        &self.heights
+    }
+
+    /// Replaces every elevation sample (laid out as in `heights`) and drops the built chunks
+    /// so they are rebuilt from the new terrain.
+    pub fn set_heights(&mut self, heights: Vec<f32>) {
+        assert_eq!(heights.len(), self.heights.len(), "heightmap size mismatch");
+        self.heights = heights;
+        self.chunks.iter_mut().for_each(|c| *c = None);
     }
 
     /// Elevation at a heightmap sample; coordinates outside the world are clamped to its edge.
@@ -99,28 +133,30 @@ impl World {
         (top + (bottom - top) * tz).max(SEA_LEVEL)
     }
 
+    /// Heightmap samples along x and z: one more than the cells.
+    pub fn samples(&self) -> (usize, usize) {
+        (self.cells_x + 1, self.cells_z + 1)
+    }
+
+    /// The heightmap as RGBA texels for the terrain shader, one per sample in the same order.
+    /// Red is height around sea level, from 0 (1 m or more under water) through 128 (sea
+    /// level) to 255 (1 m or more above); the shader traces the coast where it crosses the
+    /// middle, which follows a smooth curve between samples. Green encodes
+    /// elevation from 0 to 50 m, which the shader splits into 50 shades of green.
+    pub fn surface_texels(&self) -> Vec<u8> {
+        self.heights
+            .iter()
+            .flat_map(|&h| {
+                let coast = ((0.5 + (h - SEA_LEVEL) * 0.5).clamp(0.0, 1.0) * 255.0).round();
+                let elevation = (((h - SEA_LEVEL).max(0.0) / 50.0).min(1.0) * 255.0).round();
+                [coast as u8, elevation as u8, 0, 255]
+            })
+            .collect()
+    }
+
     /// Highest point of the visible surface anywhere in the world.
     pub fn max_surface_height(&self) -> f32 {
         self.heights.iter().copied().fold(SEA_LEVEL, f32::max)
-    }
-
-    fn land_color(&self, h: f32, slope_y: f32, x: f32, z: f32) -> Vec3 {
-        let v = self.perlin.noise(x * 0.03 + 400.0, z * 0.03 - 400.0) * 0.5;
-        let hv = h + v * 25.0;
-
-        let sand = vec3(0.76, 0.70, 0.50);
-        let grass_lo = vec3(0.30, 0.50, 0.19);
-        let grass_hi = vec3(0.20, 0.34, 0.15);
-        let rock = vec3(0.42, 0.38, 0.35);
-        let snow = vec3(0.95, 0.96, 1.0);
-
-        let mut c = grass_lo.lerp(grass_hi, smoothstep(10.0, 140.0, hv));
-        c = sand.lerp(c, smoothstep(0.5, 2.5, h + v * 4.0));
-        let rockiness = smoothstep(0.80, 0.65, slope_y).max(smoothstep(150.0, 210.0, hv));
-        c = c.lerp(rock, rockiness);
-        let snowiness = smoothstep(185.0, 235.0, hv) * smoothstep(0.35, 0.6, slope_y);
-        c = c.lerp(snow, snowiness);
-        c * (1.0 + v * 0.15)
     }
 
     fn build_chunk(&self, cx: usize, cz: usize, lod: u8) -> Chunk {
@@ -148,26 +184,23 @@ impl World {
                 let r = self.sample(gi, gj);
                 let y = r.max(SEA_LEVEL);
 
-                // normal.w carries a "water" flag the fragment shader uses for ripples and glints.
-                let (normal, color, water) = if r < SEA_LEVEL {
-                    (Vec3::Y, water_color(SEA_LEVEL - r), 1.0)
-                } else {
-                    let nrm = vec3(
-                        surf(gi - stride, gj) - surf(gi + stride, gj),
-                        2.0 * step,
-                        surf(gi, gj - stride) - surf(gi, gj + stride),
-                    )
-                    .normalize();
-                    (nrm, self.land_color(r, nrm.y, x, z), 0.0)
-                };
+                // Only shape and lighting come from the mesh; whether a pixel is land or water,
+                // and its color, come from the surface texture so coastlines stay sharp at
+                // every level of detail.
+                let normal = vec3(
+                    surf(gi - stride, gj) - surf(gi + stride, gj),
+                    2.0 * step,
+                    surf(gi, gj - stride) - surf(gi, gj + stride),
+                )
+                .normalize();
 
                 y_min = y_min.min(y);
                 y_max = y_max.max(y);
                 vertices.push(Vertex {
                     position: vec3(x, y, z),
                     uv: Vec2::ZERO,
-                    color: rgba8(color),
-                    normal: normal.extend(water),
+                    color: [255; 4],
+                    normal: normal.extend(0.0),
                 });
             }
         }

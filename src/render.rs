@@ -3,7 +3,8 @@
 use macroquad::models::{Mesh, Vertex};
 use macroquad::prelude::*;
 
-use crate::world::SEA_LEVEL;
+use crate::camera::FOV_DEGREES;
+use crate::world::{World, CELL_SIZE, SEA_LEVEL};
 
 /// The neutral grey the backdrop fades to away from the world; distant terrain fogs to it too.
 pub const BACKGROUND: Vec3 = Vec3::new(0.30, 0.30, 0.31);
@@ -31,7 +32,7 @@ fn fog_range(view_distance: f32) -> Vec2 {
     vec2(view_distance * 0.6, view_distance)
 }
 
-pub fn apply_terrain_uniforms(mat: &Material, cam: Vec3, view_distance: f32, time: f32) {
+pub fn apply_terrain_uniforms(mat: &Material, world: &World, cam: Vec3, view_distance: f32, time: f32) {
     mat.set_uniform("cam_pos", cam);
     mat.set_uniform("sun_dir", sun_dir());
     mat.set_uniform("sun_color", SUN_COLOR);
@@ -39,6 +40,25 @@ pub fn apply_terrain_uniforms(mat: &Material, cam: Vec3, view_distance: f32, tim
     mat.set_uniform("fog_color", BACKGROUND);
     mat.set_uniform("fog_range", fog_range(view_distance));
     mat.set_uniform("time", time);
+
+    // Map world x/z to texel centers of the surface texture (one texel per heightmap sample).
+    let (nx, nz) = world.samples();
+    let texels = vec2(nx as f32, nz as f32);
+    let scale = Vec2::ONE / (texels * CELL_SIZE);
+    let offset = (world.half_extents() / CELL_SIZE + 0.5) / texels;
+    mat.set_uniform("surface_scale", scale);
+    mat.set_uniform("surface_offset", offset);
+    // Heightmap cells spanned by one screen pixel per meter of distance from the camera.
+    let pixel_angle = 2.0 * (FOV_DEGREES.to_radians() * 0.5).tan() / screen_height();
+    mat.set_uniform("pixel_cells", pixel_angle / CELL_SIZE);
+}
+
+/// Uploads the world's coast and elevation for the terrain shader.
+pub fn surface_texture(world: &World) -> Texture2D {
+    let (nx, nz) = world.samples();
+    let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &world.surface_texels());
+    texture.set_filter(FilterMode::Linear);
+    texture
 }
 
 /// `world_half` is the world's half extents in x and z.
@@ -73,8 +93,11 @@ pub fn load_terrain_material() -> Material {
                 UniformDesc::new("fog_color", UniformType::Float3),
                 UniformDesc::new("fog_range", UniformType::Float2),
                 UniformDesc::new("time", UniformType::Float1),
+                UniformDesc::new("surface_scale", UniformType::Float2),
+                UniformDesc::new("surface_offset", UniformType::Float2),
+                UniformDesc::new("pixel_cells", UniformType::Float1),
             ],
-            ..Default::default()
+            textures: vec!["surface".to_owned()],
         },
     )
     .expect("terrain shader failed to compile")
@@ -193,36 +216,50 @@ uniform vec3 ambient;
 uniform vec3 fog_color;
 uniform vec2 fog_range;
 uniform float time;
+// Height around sea level in red, and land elevation (0-50 m) in green.
+uniform sampler2D surface;
+uniform vec2 surface_scale;
+uniform vec2 surface_offset;
+uniform float pixel_cells;
 
-// Water reflects a blue sky even though the backdrop is neutral, so it still reads as water.
-const vec3 SKY_REFLECTION = vec3(0.55, 0.66, 0.80);
+// Land is drawn in 50 shades of green, one per metre: shade 1 (up to 2 m) is the lightest and
+// shade 50 (50 m and up) the darkest.
+const float GREEN_SHADES = 50.0;
+const vec3 GRASS = vec3(0.62, 0.80, 0.30);
+const vec3 HIGH_GRASS = vec3(0.03, 0.14, 0.05);
+const vec3 WATER = vec3(0.02, 0.10, 0.26);
 
 void main() {
-    vec3 view = v_world - cam_pos;
-    float dist = length(view);
-    vec3 vdir = view / max(dist, 0.001);
+    float dist = length(v_world - cam_pos);
     vec3 sun = normalize(sun_dir);
 
-    float water = smoothstep(0.3, 0.7, v_normal.w);
-    vec3 n = normalize(v_normal.xyz);
+    // Land or water is decided per pixel from the full-resolution surface texture, not per
+    // vertex, so coastlines stay sharp however coarse the mesh is. The edge is anti-aliased
+    // approximately in proportion to a screen pixel. Keep the minimum tiny: a fixed-width
+    // blend becomes a visibly wide, fuzzy strip when the camera is close to the shore.
+    vec4 terrain = texture2D(surface, v_world.xz * surface_scale + surface_offset);
+    float coast = terrain.r;
+    float aa = clamp(dist * pixel_cells * 0.5, 0.0001, 0.5);
+    float land = smoothstep(0.5 - aa, 0.5 + aa, coast);
+    // The small offset absorbs 8-bit rounding so a whole-metre height lands in its own shade.
+    float shade = clamp(floor(terrain.g * GREEN_SHADES + 0.1), 1.0, GREEN_SHADES);
+    vec3 grass = mix(GRASS, HIGH_GRASS, (shade - 1.0) / (GREEN_SHADES - 1.0));
+    vec3 base = mix(WATER, grass, land);
 
-    // Animated ripples perturb the water normal so the sun glints and the surface shimmers.
+    vec3 n = mix(vec3(0.0, 1.0, 0.0), normalize(v_normal.xyz), land);
+
+    // Gentle animated ripples shade the water slightly so it doesn't look painted on. They
+    // only change the lighting, so the water stays dark blue.
     vec2 p = mod(v_world.xz, 2048.0);
     vec3 wn = normalize(vec3(
         0.07 * sin(p.x * 0.31 + time * 1.7) + 0.05 * sin((p.x + p.y) * 0.57 - time * 2.3),
         1.0,
         0.07 * cos(p.y * 0.37 + time * 1.3) + 0.05 * cos((p.x - p.y) * 0.49 + time * 1.9)));
     // Fade ripples out with distance; seen from high above they would only shimmer.
-    n = normalize(mix(n, wn, water * (1.0 - smoothstep(120.0, 700.0, dist))));
+    n = normalize(mix(n, wn, (1.0 - land) * (1.0 - smoothstep(120.0, 700.0, dist))));
 
     float diffuse = max(dot(n, sun), 0.0);
-    vec3 col = v_color.rgb * (ambient + sun_color * diffuse);
-
-    vec3 r = reflect(vdir, n);
-    float spec = pow(max(dot(r, sun), 0.0), 90.0);
-    float fresnel = pow(1.0 - max(dot(-vdir, n), 0.0), 4.0);
-    vec3 water_col = mix(col, SKY_REFLECTION, fresnel * 0.65) + sun_color * spec * 1.4;
-    col = mix(col, water_col, water);
+    vec3 col = base * (ambient + sun_color * diffuse);
 
     float fog = smoothstep(fog_range.x, fog_range.y, dist);
     gl_FragColor = vec4(mix(col, fog_color, fog), 1.0);
