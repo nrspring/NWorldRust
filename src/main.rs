@@ -174,6 +174,15 @@ async fn main() {
             }
             Some(UiAction::GenerateContinents(params)) => pending = Some(Generation::Continents(params)),
             Some(UiAction::AddIslands(params)) => pending = Some(Generation::Islands(params)),
+            Some(UiAction::AddMountainRange { length, width, seed }) => {
+                if let Some(m) = &mut map {
+                    if m.add_mountain_range(length, width, seed) {
+                        toasts.info("Added a mountain range");
+                    } else {
+                        toasts.info("No room for a mountain range. Try a shorter one, or add more land first.");
+                    }
+                }
+            }
             Some(UiAction::Undo) => {
                 if let Some(m) = &mut map {
                     m.undo();

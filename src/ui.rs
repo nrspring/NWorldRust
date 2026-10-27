@@ -27,6 +27,13 @@ const MAX_CONTINENTS: u32 = 12;
 const MOUNTAIN_BRUSH_MIN: f32 = 20.0;
 const MOUNTAIN_BRUSH_MAX: f32 = 100.0;
 const MOUNTAIN_BRUSH_DEFAULT: f32 = 50.0;
+/// Random mountain ranges: length along the range and width across it, in meters.
+const RANGE_LENGTH_MIN: f32 = 500.0;
+const RANGE_LENGTH_MAX: f32 = 4000.0;
+const RANGE_LENGTH_DEFAULT: f32 = 1500.0;
+const RANGE_WIDTH_MIN: f32 = 60.0;
+const RANGE_WIDTH_MAX: f32 = 300.0;
+const RANGE_WIDTH_DEFAULT: f32 = 120.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -56,6 +63,8 @@ pub enum UiAction {
     GenerateContinents(ContinentParams),
     /// Sprinkle islands into the open water on the open map.
     AddIslands(IslandParams),
+    /// Raise a randomly placed mountain range, this long and wide in meters.
+    AddMountainRange { length: f32, width: f32, seed: u32 },
     /// Undo the most recent edit.
     Undo,
     /// Save the map; `save_as` asks for a new file name even if the map already has a file.
@@ -84,6 +93,8 @@ enum SliderId {
     IslandScatter,
     IslandRoughness,
     MountainBrush,
+    RangeLength,
+    RangeWidth,
 }
 
 struct NumberField {
@@ -243,15 +254,28 @@ impl IslandsLayout {
 struct MountainsLayout {
     panel: Rect,
     brush: Rect,
+    /// Where the line above the random range controls sits.
+    divider: f32,
+    length: Rect,
+    width: Rect,
+    button: Rect,
 }
 
 impl MountainsLayout {
     fn new(origin: Vec2) -> Self {
         let x = origin.x + PAD;
         let brush = Rect::new(x, origin.y + 92.0, INNER_WIDTH, 22.0);
+        let divider = brush.bottom() + 110.0;
+        let length = Rect::new(x, divider + 54.0, INNER_WIDTH, 22.0);
+        let width = Rect::new(x, length.y + 62.0, INNER_WIDTH, 22.0);
+        let button = Rect::new(x, width.bottom() + 28.0, INNER_WIDTH, CONTROL_HEIGHT);
         Self {
-            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, brush.bottom() + 118.0 - origin.y),
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, button.bottom() + PAD - origin.y),
             brush,
+            divider,
+            length,
+            width,
+            button,
         }
     }
 }
@@ -292,6 +316,9 @@ pub struct EditorUi {
     island_seed: NumberField,
     /// Width of the mountains brush in meters.
     mountain_brush: Slider,
+    /// Length and width of a random mountain range, in meters.
+    range_length: Slider,
+    range_width: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -432,6 +459,22 @@ impl EditorUi {
                 unit: " m",
                 ends: None,
             },
+            range_length: Slider {
+                label: "Length",
+                value: RANGE_LENGTH_DEFAULT,
+                min: RANGE_LENGTH_MIN,
+                max: RANGE_LENGTH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            range_width: Slider {
+                label: "Width",
+                value: RANGE_WIDTH_DEFAULT,
+                min: RANGE_WIDTH_MIN,
+                max: RANGE_WIDTH_MAX,
+                unit: " m",
+                ends: None,
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -480,6 +523,8 @@ impl EditorUi {
             SliderId::IslandScatter => &mut self.island_scatter,
             SliderId::IslandRoughness => &mut self.island_roughness,
             SliderId::MountainBrush => &mut self.mountain_brush,
+            SliderId::RangeLength => &mut self.range_length,
+            SliderId::RangeWidth => &mut self.range_width,
         }
     }
 
@@ -577,16 +622,24 @@ impl EditorUi {
         let mut submit = false;
         match &layout {
             Layout::Mountains(l) => {
-                let id = SliderId::MountainBrush;
-                if clicked && l.brush.contains(mouse) {
-                    self.dragging = Some(id);
+                let sliders = [
+                    (l.brush, SliderId::MountainBrush),
+                    (l.length, SliderId::RangeLength),
+                    (l.width, SliderId::RangeWidth),
+                ];
+                if clicked {
+                    if let Some((_, id)) = sliders.iter().find(|(r, _)| r.contains(mouse)) {
+                        self.dragging = Some(*id);
+                    }
+                    submit = l.button.contains(mouse);
                 }
-                let dragging = self.dragging == Some(id);
-                let slider = self.slider_mut(id);
-                if dragging {
-                    slider.set_from_x(l.brush, mouse.x);
+                if let Some(id) = self.dragging {
+                    if let Some((track, _)) = sliders.iter().find(|(_, s)| *s == id) {
+                        self.slider_mut(id).set_from_x(*track, mouse.x);
+                    }
                 }
                 // [ and ] resize the brush without leaving the map.
+                let slider = &mut self.mountain_brush;
                 let notch = (slider.max - slider.min) / 58.0;
                 for (key, sign) in [(KeyCode::LeftBracket, -1.0), (KeyCode::RightBracket, 1.0)] {
                     if is_key_pressed(key) {
@@ -703,7 +756,11 @@ impl EditorUi {
             Layout::NewMap(_) => self.submit_new_map(),
             Layout::Continents(_) => self.submit_continents(has_map),
             Layout::Islands(_) => self.submit_islands(has_map),
-            Layout::Mountains(_) => None,
+            Layout::Mountains(_) => has_map.then(|| UiAction::AddMountainRange {
+                length: self.range_length.value,
+                width: self.range_width.value,
+                seed: random_seed(),
+            }),
         }
     }
 
@@ -878,6 +935,17 @@ impl EditorUi {
             style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
             y += 18.0;
         }
+
+        // A random range, placed anywhere on land.
+        draw_line(x, l.divider, l.panel.right() - PAD, l.divider, 1.0, style::BORDER);
+        style.text("Random mountain range", x, l.divider + 28.0, 14, Weight::Semibold, style::TEXT);
+        for (r, slider, id) in [
+            (l.length, &self.range_length, SliderId::RangeLength),
+            (l.width, &self.range_width, SliderId::RangeWidth),
+        ] {
+            draw_slider(style, r, slider, self.dragging == Some(id), mouse);
+        }
+        draw_primary_button(style, l.button, "Add mountain range", has_map, mouse);
     }
 
     fn draw_islands_panel(&self, style: &Style, l: &IslandsLayout, mouse: Vec2, has_map: bool) {

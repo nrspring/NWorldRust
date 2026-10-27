@@ -8,7 +8,7 @@ use macroquad::prelude::*;
 use crate::camera::EditorCamera;
 use crate::continents::{self, ContinentParams};
 use crate::dialogs::{self, Unsaved};
-use crate::hills::{HillStroke, Peak};
+use crate::hills::{self, HillStroke, Peak};
 use crate::history::History;
 use crate::islands::{self, IslandParams};
 use crate::render;
@@ -131,6 +131,21 @@ impl OpenMap {
             self.dirty = true;
         }
         added
+    }
+
+    /// Raises a randomly placed mountain range, as one undoable step. Returns false if there is
+    /// no land with room for one. Seeded like [`generate_continents`](Self::generate_continents).
+    pub fn add_mountain_range(&mut self, length: f32, width: f32, seed: u32) -> bool {
+        let (nx, nz) = self.world.samples();
+        let seed = self.next_seed(seed);
+        let Some(heights) = hills::mountain_range(self.world.heights(), nx, nz, self.world.half_extents(), seed, length, width)
+        else {
+            return false;
+        };
+        self.history.record(self.world.heights(), &heights);
+        self.apply_heights(heights);
+        self.dirty = true;
+        true
     }
 
     /// Grows `peak`s with a brush of `radius` meters at `center` (world x and z), or with `erase`
