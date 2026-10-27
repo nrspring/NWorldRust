@@ -245,6 +245,104 @@ const vec3 GRASS = vec3(0.62, 0.80, 0.30);
 const vec3 HIGH_GRASS = vec3(0.03, 0.14, 0.05);
 const vec3 WATER = vec3(0.02, 0.10, 0.26);
 
+// Small-scale detail so grassland isn't one flat color up close. Everything is a function of
+// world position, so it stays put as the camera moves, and each layer fades out with distance
+// before it would shimmer.
+const vec3 DRY_GRASS = vec3(0.58, 0.52, 0.26);
+const float SCRUB_CELL = 7.0;
+
+float hash21(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+               mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// `up` is how level the ground is (1 is flat).
+vec3 grass_detail(vec3 grass, vec2 p, float dist, float elevation, float up) {
+    float far_fade = 1.0 - smoothstep(600.0, 2500.0, dist);
+    float mid_fade = 1.0 - smoothstep(120.0, 700.0, dist);
+    float near_fade = 1.0 - smoothstep(25.0, 140.0, dist);
+    float scrub_fade = 1.0 - smoothstep(70.0, 260.0, dist);
+    float speck_fade = 1.0 - smoothstep(15.0, 60.0, dist);
+    float grain_fade = 1.0 - smoothstep(4.0, 30.0, dist);
+
+    // Big patches of sun-dried and of lush grass.
+    float dry = smoothstep(0.52, 0.78, vnoise(p / 70.0 + 5.0)) * 0.6 * far_fade;
+    float lush = smoothstep(0.55, 0.80, vnoise(p / 45.0 - 21.0)) * 0.5 * far_fade;
+    vec3 col = mix(grass, DRY_GRASS, dry);
+    col = mix(col, grass * 0.62, lush);
+
+    // Mottling at a few sizes, down to grain you can see on the blades.
+    col *= 1.0 + (vnoise(p / 12.0 + 3.0) - 0.5) * 0.28 * mid_fade;
+    col *= 1.0 + (vnoise(p / 2.5 - 8.0) - 0.5) * 0.22 * near_fade;
+    col *= 1.0 + (mix(vnoise(p * 7.0), vnoise(p * 19.0 + 5.0), 0.5) - 0.5) * 0.20 * grain_fade;
+
+    // Only on level ground well above the shore and below the rock.
+    float spot = (1.0 - smoothstep(ROCK_START - 6.0, ROCK_START - 1.0, elevation))
+        * smoothstep(1.5, 4.0, elevation) * smoothstep(0.80, 0.93, up);
+
+    // Scrub: clumps of low bushes scattered on a jittered grid, thicker in some places.
+    if (scrub_fade * spot > 0.001) {
+        vec2 g = p / SCRUB_CELL;
+        vec2 cell = floor(g);
+        vec2 f = fract(g);
+        float density = 0.08 + 0.45 * smoothstep(0.40, 0.72, vnoise(p / 50.0 + 90.0));
+        float best = 0.0;
+        float shadow = 0.0;
+        vec3 best_col = col;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                vec2 o = vec2(float(dx), float(dy));
+                vec2 id = cell + o;
+                if (hash21(id) > density) {
+                    continue;
+                }
+                vec2 centre = o + vec2(hash21(id + 17.3), hash21(id + 91.7));
+                float d = length((f - centre) * SCRUB_CELL);
+                float r = mix(0.6, 2.0, hash21(id + 3.1)) * (0.8 + 0.4 * vnoise(p * 2.5));
+                float cover = 1.0 - smoothstep(r * 0.65, r, d);
+                // A soft shadow on the ground, thrown away from the sun.
+                float offset = length((f - centre) * SCRUB_CELL - vec2(0.3, 0.35) * r);
+                shadow = max(shadow, 1.0 - smoothstep(r * 0.6, r * 1.4, offset));
+                if (cover > best) {
+                    best = cover;
+                    float kind = hash21(id + 55.0);
+                    vec3 bush = kind < 0.5 ? vec3(0.17, 0.33, 0.11)
+                              : kind < 0.8 ? vec3(0.36, 0.42, 0.16)
+                              : vec3(0.45, 0.28, 0.14);
+                    // Lighter toward the middle so each bush reads as a mound.
+                    best_col = bush * (0.75 + 0.6 * clamp(1.0 - d / r, 0.0, 1.0));
+                    // Leafy mottling.
+                    best_col *= 0.8 + 0.4 * mix(vnoise(p * 9.0), vnoise(p * 23.0), 0.5);
+                }
+            }
+        }
+        col *= 1.0 - 0.35 * shadow * scrub_fade * spot;
+        col = mix(col, best_col, best * scrub_fade * spot);
+    }
+
+    // Wildflowers: tiny pale and yellow specks, only seen from close up.
+    if (speck_fade * spot > 0.001) {
+        vec2 g = p / 1.6;
+        vec2 cell = floor(g);
+        if (hash21(cell + 7.7) > 0.93) {
+            vec2 centre = vec2(0.15) + 0.7 * vec2(hash21(cell + 2.3), hash21(cell + 5.9));
+            float d = length((fract(g) - centre) * 1.6);
+            vec3 flower = hash21(cell + 13.1) < 0.5 ? vec3(0.95, 0.93, 0.85) : vec3(0.95, 0.80, 0.25);
+            col = mix(col, flower, (1.0 - smoothstep(0.05, 0.10, d)) * speck_fade * spot);
+        }
+    }
+    return col;
+}
+
 void main() {
     float dist = length(v_world - cam_pos);
     vec3 sun = normalize(sun_dir);
@@ -261,9 +359,13 @@ void main() {
     // The small offset absorbs 8-bit rounding so a whole-metre height lands in its own shade.
     float shade = clamp(floor(elevation + 0.2), 1.0, GREEN_SHADES);
     vec3 grass = mix(GRASS, HIGH_GRASS, (shade - 1.0) / (GREEN_SHADES - 1.0));
+    grass = grass_detail(grass, v_world.xz, dist, elevation, normalize(v_normal.xyz).y);
     // Rock is fully in by 26 m and snow by 40 m, each blended in over the metre below; the rock
     // lightens toward the snow line.
     vec3 rock = mix(ROCK, HIGH_ROCK, smoothstep(ROCK_START, SNOW_START, elevation));
+    // Bare rock is blotchy and grainy up close.
+    rock *= 1.0 + (vnoise(v_world.xz / 7.0) - 0.5) * 0.35 * (1.0 - smoothstep(120.0, 700.0, dist))
+        + (vnoise(v_world.xz / 1.8) - 0.5) * 0.25 * (1.0 - smoothstep(25.0, 140.0, dist));
     vec3 ground = mix(grass, rock, smoothstep(ROCK_START - 1.0, ROCK_START, elevation));
     ground = mix(ground, SNOW, smoothstep(SNOW_START - 1.0, SNOW_START, elevation));
     vec3 base = mix(WATER, ground, land);
