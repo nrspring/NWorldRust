@@ -1,10 +1,14 @@
 //! Lighting, the backdrop around the world, and the GLSL shaders that draw them.
 
+use macroquad::miniquad::{
+    self, BufferLayout, Pipeline, RenderingBackend, ShaderMeta, UniformBlockLayout, UniformsSource,
+    VertexAttribute, VertexFormat,
+};
 use macroquad::models::{Mesh, Vertex};
 use macroquad::prelude::*;
 
 use crate::camera::FOV_DEGREES;
-use crate::world::{Region, World, CELL_SIZE, SEA_LEVEL};
+use crate::world::{Frustum, Region, World, CELL_SIZE, SEA_LEVEL};
 
 /// The neutral grey the backdrop fades to away from the world; distant terrain fogs to it too.
 pub const BACKGROUND: Vec3 = Vec3::new(0.30, 0.30, 0.31);
@@ -14,6 +18,9 @@ const SUN_COLOR: Vec3 = Vec3::new(1.0, 0.95, 0.85);
 const AMBIENT: Vec3 = Vec3::new(0.34, 0.39, 0.47);
 /// How far the backdrop plane extends past the world's edge.
 const BACKDROP_EXTENT: f32 = 40_000.0;
+/// Texels along each side of the repeating random texture the terrain shader's noise reads.
+/// Must match `NOISE_SIZE` in the shader.
+const NOISE_SIZE: u16 = 512;
 
 pub fn background_color() -> Color {
     Color::new(BACKGROUND.x, BACKGROUND.y, BACKGROUND.z, 1.0)
@@ -32,25 +39,135 @@ fn fog_range(view_distance: f32) -> Vec2 {
     vec2(view_distance * 0.6, view_distance)
 }
 
-pub fn apply_terrain_uniforms(mat: &Material, world: &World, cam: Vec3, view_distance: f32, time: f32) {
-    mat.set_uniform("cam_pos", cam);
-    mat.set_uniform("sun_dir", sun_dir());
-    mat.set_uniform("sun_color", SUN_COLOR);
-    mat.set_uniform("ambient", AMBIENT);
-    mat.set_uniform("fog_color", BACKGROUND);
-    mat.set_uniform("fog_range", fog_range(view_distance));
-    mat.set_uniform("time", time);
+/// A terrain mesh vertex as the GPU reads it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TerrainVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+}
 
-    // Map world x/z to texel centers of the surface texture (one texel per heightmap sample).
-    let (nx, nz) = world.samples();
-    let texels = vec2(nx as f32, nz as f32);
-    let scale = Vec2::ONE / (texels * CELL_SIZE);
-    let offset = (world.half_extents() / CELL_SIZE + 0.5) / texels;
-    mat.set_uniform("surface_scale", scale);
-    mat.set_uniform("surface_offset", offset);
-    // Heightmap cells spanned by one screen pixel per meter of distance from the camera.
-    let pixel_angle = 2.0 * (FOV_DEGREES.to_radians() * 0.5).tan() / screen_height();
-    mat.set_uniform("pixel_cells", pixel_angle / CELL_SIZE);
+/// The terrain shaders' uniforms, in the order [`terrain_uniform_layout`] lists them.
+#[repr(C)]
+struct TerrainUniforms {
+    view_projection: Mat4,
+    cam_pos: Vec3,
+    sun_dir: Vec3,
+    sun_color: Vec3,
+    ambient: Vec3,
+    fog_color: Vec3,
+    fog_range: Vec2,
+    time: f32,
+    surface_scale: Vec2,
+    surface_offset: Vec2,
+    pixel_cells: f32,
+}
+
+fn terrain_uniform_layout() -> UniformBlockLayout {
+    use miniquad::UniformDesc as U;
+    use miniquad::UniformType::*;
+    UniformBlockLayout {
+        uniforms: vec![
+            U::new("view_projection", Mat4),
+            U::new("cam_pos", Float3),
+            U::new("sun_dir", Float3),
+            U::new("sun_color", Float3),
+            U::new("ambient", Float3),
+            U::new("fog_color", Float3),
+            U::new("fog_range", Float2),
+            U::new("time", Float1),
+            U::new("surface_scale", Float2),
+            U::new("surface_offset", Float2),
+            U::new("pixel_cells", Float1),
+        ],
+    }
+}
+
+/// Draws the world's terrain. The terrain lives on the GPU in blocks the world uploads only when
+/// they change, so a frame costs one draw call per visible block instead of copying every
+/// vertex in view, as drawing it through macroquad's batches would.
+pub struct TerrainRenderer {
+    pipeline: Pipeline,
+    noise: Texture2D,
+}
+
+impl TerrainRenderer {
+    pub fn new() -> Self {
+        let ctx = unsafe { get_internal_gl() }.quad_context;
+        let shader = ctx
+            .new_shader(
+                miniquad::ShaderSource::Glsl {
+                    vertex: TERRAIN_VERTEX,
+                    fragment: TERRAIN_FRAGMENT,
+                },
+                ShaderMeta {
+                    uniforms: terrain_uniform_layout(),
+                    images: vec!["surface".to_owned(), "noise".to_owned()],
+                },
+            )
+            .expect("terrain shader failed to compile");
+        let pipeline = ctx.new_pipeline(
+            &[BufferLayout::default()],
+            &[
+                VertexAttribute::new("position", VertexFormat::Float3),
+                VertexAttribute::new("normal", VertexFormat::Float3),
+            ],
+            shader,
+            opaque_pipeline(),
+        );
+        Self {
+            pipeline,
+            noise: noise_texture(),
+        }
+    }
+
+    /// Draws the terrain of `world`, colored from its `surface` texture, as seen by `camera`
+    /// from `cam`, out to `view_distance`. Whatever macroquad has queued is drawn first, so the
+    /// terrain lands on top of it.
+    pub fn draw(&self, world: &mut World, surface: &Texture2D, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32) {
+        let mut gl = unsafe { get_internal_gl() };
+        gl.flush();
+        let ctx: &mut dyn RenderingBackend = gl.quad_context;
+
+        let view_projection = camera.matrix();
+        let blocks = world.visible_blocks(ctx, &Frustum::from_matrix(view_projection), cam, view_distance);
+
+        // Map world x/z to texel centers of the surface texture (one texel per heightmap sample).
+        let (nx, nz) = world.samples();
+        let texels = vec2(nx as f32, nz as f32);
+        // Heightmap cells spanned by one screen pixel per meter of distance from the camera.
+        let pixel_angle = 2.0 * (FOV_DEGREES.to_radians() * 0.5).tan() / screen_height();
+        let uniforms = TerrainUniforms {
+            view_projection,
+            cam_pos: cam,
+            sun_dir: sun_dir(),
+            sun_color: SUN_COLOR,
+            ambient: AMBIENT,
+            fog_color: BACKGROUND,
+            fog_range: fog_range(view_distance),
+            time,
+            surface_scale: Vec2::ONE / (texels * CELL_SIZE),
+            surface_offset: (world.half_extents() / CELL_SIZE + 0.5) / texels,
+            pixel_cells: pixel_angle / CELL_SIZE,
+        };
+
+        let (width, height) = miniquad::window::screen_size();
+        ctx.begin_default_pass(miniquad::PassAction::Nothing);
+        ctx.apply_pipeline(&self.pipeline);
+        ctx.apply_viewport(0, 0, width as i32, height as i32);
+        ctx.apply_scissor_rect(0, 0, width as i32, height as i32);
+        let images = vec![surface.raw_miniquad_id(), self.noise.raw_miniquad_id()];
+        for block in blocks {
+            ctx.apply_bindings(&miniquad::Bindings {
+                vertex_buffers: vec![block.vertices],
+                index_buffer: block.indices,
+                images: images.clone(),
+            });
+            ctx.apply_uniforms(UniformsSource::table(&uniforms));
+            ctx.draw(0, block.count, 1);
+        }
+        ctx.end_render_pass();
+    }
 }
 
 /// Uploads the world's coast and elevation for the terrain shader.
@@ -71,6 +188,29 @@ pub fn update_surface(texture: &Texture2D, world: &World, region: Region) {
     texture.update_part(&image, region.i0 as i32, region.j0 as i32, image.width as i32, image.height as i32);
 }
 
+/// A repeating texture of random values for the terrain shader's noise. Reading noise from it
+/// takes one texture lookup instead of hashing four lattice points, which is most of what the
+/// grass and rock detail used to cost.
+pub fn noise_texture() -> Texture2D {
+    // xorshift: any fixed sequence will do, as long as it is the same every run.
+    let mut state: u32 = 0x9E37_79B9;
+    let bytes: Vec<u8> = (0..NOISE_SIZE as usize * NOISE_SIZE as usize * 4)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 24) as u8
+        })
+        .collect();
+    let texture = Texture2D::from_rgba8(NOISE_SIZE, NOISE_SIZE, &bytes);
+    texture.set_filter(FilterMode::Linear);
+    let id = texture.raw_miniquad_id();
+    unsafe { get_internal_gl() }
+        .quad_context
+        .texture_set_wrap(id, miniquad::TextureWrap::Repeat, miniquad::TextureWrap::Repeat);
+    texture
+}
+
 /// `world_half` is the world's half extents in x and z.
 pub fn apply_backdrop_uniforms(mat: &Material, cam: Vec3, view_distance: f32, world_half: Vec2) {
     mat.set_uniform("cam_pos", cam);
@@ -85,32 +225,6 @@ fn opaque_pipeline() -> PipelineParams {
         depth_test: Comparison::LessOrEqual,
         ..Default::default()
     }
-}
-
-pub fn load_terrain_material() -> Material {
-    load_material(
-        ShaderSource::Glsl {
-            vertex: VERTEX,
-            fragment: TERRAIN_FRAGMENT,
-        },
-        MaterialParams {
-            pipeline_params: opaque_pipeline(),
-            uniforms: vec![
-                UniformDesc::new("cam_pos", UniformType::Float3),
-                UniformDesc::new("sun_dir", UniformType::Float3),
-                UniformDesc::new("sun_color", UniformType::Float3),
-                UniformDesc::new("ambient", UniformType::Float3),
-                UniformDesc::new("fog_color", UniformType::Float3),
-                UniformDesc::new("fog_range", UniformType::Float2),
-                UniformDesc::new("time", UniformType::Float1),
-                UniformDesc::new("surface_scale", UniformType::Float2),
-                UniformDesc::new("surface_offset", UniformType::Float2),
-                UniformDesc::new("pixel_cells", UniformType::Float1),
-            ],
-            textures: vec!["surface".to_owned()],
-        },
-    )
-    .expect("terrain shader failed to compile")
 }
 
 pub fn load_backdrop_material() -> Material {
@@ -188,6 +302,25 @@ void main() {
 }
 "#;
 
+const TERRAIN_VERTEX: &str = r#"#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+attribute vec3 position;
+attribute vec3 normal;
+
+varying vec4 v_normal;
+varying vec3 v_world;
+
+uniform mat4 view_projection;
+
+void main() {
+    v_world = position;
+    v_normal = vec4(normal, 0.0);
+    gl_Position = view_projection * vec4(position, 1.0);
+}
+"#;
+
 const BACKDROP_FRAGMENT: &str = r#"#version 100
 #ifdef GL_ES
 precision highp float;
@@ -215,7 +348,6 @@ const TERRAIN_FRAGMENT: &str = r#"#version 100
 #ifdef GL_ES
 precision highp float;
 #endif
-varying vec4 v_color;
 varying vec4 v_normal;
 varying vec3 v_world;
 
@@ -226,8 +358,12 @@ uniform vec3 ambient;
 uniform vec3 fog_color;
 uniform vec2 fog_range;
 uniform float time;
-// Height around sea level in red, and land elevation (0-50 m) in green.
+// Height around sea level in red, land elevation (0-50 m) in green, and in blue whether water
+// is close enough for a beach.
 uniform sampler2D surface;
+// Repeating random values, for noise.
+uniform sampler2D noise;
+const float NOISE_SIZE = 512.0;
 uniform vec2 surface_scale;
 uniform vec2 surface_offset;
 uniform float pixel_cells;
@@ -260,12 +396,13 @@ float hash21(vec2 p) {
     return fract((p3.x + p3.y) * p3.z);
 }
 
+// Smooth value noise in one lookup: the texture's linear filter blends the four lattice values,
+// and easing the position within the texel turns that blend into a smooth curve.
 float vnoise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
-               mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+    return texture2D(noise, (mod(i, NOISE_SIZE) + f + 0.5) / NOISE_SIZE).r;
 }
 
 // `up` is how level the ground is (1 is flat).
@@ -276,16 +413,26 @@ vec3 grass_detail(vec3 grass, vec2 p, float dist, float elevation, float up) {
     float speck_fade = 1.0 - smoothstep(15.0, 60.0, dist);
     float grain_fade = 1.0 - smoothstep(4.0, 30.0, dist);
 
+    // Each layer is skipped once it has faded out, which is most of the screen from afar.
     // Big patches of sun-dried and of lush grass.
-    float dry = smoothstep(0.52, 0.78, vnoise(p / 70.0 + 5.0)) * 0.6 * far_fade;
-    float lush = smoothstep(0.55, 0.80, vnoise(p / 45.0 - 21.0)) * 0.5 * far_fade;
-    vec3 col = mix(grass, DRY_GRASS, dry);
-    col = mix(col, grass * 0.62, lush);
+    vec3 col = grass;
+    if (far_fade > 0.0) {
+        float dry = smoothstep(0.52, 0.78, vnoise(p / 70.0 + 5.0)) * 0.6 * far_fade;
+        float lush = smoothstep(0.55, 0.80, vnoise(p / 45.0 - 21.0)) * 0.5 * far_fade;
+        col = mix(grass, DRY_GRASS, dry);
+        col = mix(col, grass * 0.62, lush);
+    }
 
     // Mottling at a few sizes, down to grain you can see on the blades.
-    col *= 1.0 + (vnoise(p / 12.0 + 3.0) - 0.5) * 0.28 * mid_fade;
-    col *= 1.0 + (vnoise(p / 2.5 - 8.0) - 0.5) * 0.22 * near_fade;
-    col *= 1.0 + (mix(vnoise(p * 7.0), vnoise(p * 19.0 + 5.0), 0.5) - 0.5) * 0.20 * grain_fade;
+    if (mid_fade > 0.0) {
+        col *= 1.0 + (vnoise(p / 12.0 + 3.0) - 0.5) * 0.28 * mid_fade;
+    }
+    if (near_fade > 0.0) {
+        col *= 1.0 + (vnoise(p / 2.5 - 8.0) - 0.5) * 0.22 * near_fade;
+    }
+    if (grain_fade > 0.0) {
+        col *= 1.0 + (mix(vnoise(p * 7.0), vnoise(p * 19.0 + 5.0), 0.5) - 0.5) * 0.20 * grain_fade;
+    }
 
     // Only on level ground well above the shore and below the rock.
     float spot = (1.0 - smoothstep(ROCK_START - 6.0, ROCK_START - 1.0, elevation))
@@ -340,19 +487,26 @@ void main() {
     // The small offset absorbs 8-bit rounding so a whole-metre height lands in its own shade.
     float shade = clamp(floor(elevation + 0.2), 1.0, GREEN_SHADES);
     vec3 grass = mix(GRASS, HIGH_GRASS, (shade - 1.0) / (GREEN_SHADES - 1.0));
-    grass = grass_detail(grass, v_world.xz, dist, elevation, normalize(v_normal.xyz).y);
+    // Grass detail only where grass shows: on land, below the rock.
+    float rocky = smoothstep(ROCK_START - 1.0, ROCK_START, elevation);
+    if (land > 0.0 && rocky < 1.0) {
+        grass = grass_detail(grass, v_world.xz, dist, elevation, normalize(v_normal.xyz).y);
+    }
     // Rock is fully in by 26 m and snow by 40 m, each blended in over the metre below; the rock
     // lightens toward the snow line.
     vec3 rock = mix(ROCK, HIGH_ROCK, smoothstep(ROCK_START, SNOW_START, elevation));
     // Bare rock is blotchy and grainy up close.
-    rock *= 1.0 + (vnoise(v_world.xz / 7.0) - 0.5) * 0.35 * (1.0 - smoothstep(120.0, 700.0, dist))
-        + (vnoise(v_world.xz / 1.8) - 0.5) * 0.25 * (1.0 - smoothstep(25.0, 140.0, dist));
-    vec3 ground = mix(grass, rock, smoothstep(ROCK_START - 1.0, ROCK_START, elevation));
+    if (rocky > 0.0 && dist < 700.0) {
+        rock *= 1.0 + (vnoise(v_world.xz / 7.0) - 0.5) * 0.35 * (1.0 - smoothstep(120.0, 700.0, dist))
+            + (vnoise(v_world.xz / 1.8) - 0.5) * 0.25 * (1.0 - smoothstep(25.0, 140.0, dist));
+    }
+    vec3 ground = mix(grass, rock, rocky);
     ground = mix(ground, SNOW, smoothstep(SNOW_START - 1.0, SNOW_START, elevation));
     // A narrow sandy beach along every shore, damp where it meets the water. Far away it would
     // only be a hair-thin line, so it fades out with distance.
     float beach_fade = (1.0 - smoothstep(500.0, 1500.0, dist)) * (1.0 - smoothstep(3.0, 6.0, elevation));
-    if (land > 0.001 && beach_fade > 0.001) {
+    // Blue marks ground with water nearby; the search for it is skipped everywhere else.
+    if (land > 0.001 && beach_fade > 0.001 && terrain.b > 0.0) {
         float width = BEACH_WIDTH * (0.65 + 0.7 * vnoise(v_world.xz / 23.0 + 40.0));
         float beach = smoothstep(0.15, 0.6, beach_amount(v_world.xz, coast, width)) * beach_fade;
         vec3 sand = mix(SAND, WET_SAND, 1.0 - smoothstep(0.5, 0.62, coast));

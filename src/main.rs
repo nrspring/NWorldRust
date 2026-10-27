@@ -26,7 +26,6 @@ use open_map::{can_discard, open_map, save_map, OpenMap};
 use style::{Style, Weight};
 use toast::Toasts;
 use ui::{EditorUi, UiAction, TOOLBAR_WIDTH};
-use world::Frustum;
 
 /// Fog distance at sea level; it grows with altitude so the overview shows the whole world.
 const BASE_VIEW_DISTANCE: f32 = 4000.0;
@@ -100,7 +99,7 @@ fn shift_down() -> bool {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let terrain_material = render::load_terrain_material();
+    let terrain = render::TerrainRenderer::new();
     let backdrop_material = render::load_backdrop_material();
     let style = Style::load();
 
@@ -219,7 +218,7 @@ async fn main() {
                 m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush().is_none());
                 m.world.update(m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
-                draw_world(m, &terrain_material, &backdrop_material, time, brush);
+                draw_world(m, &terrain, &backdrop_material, time, brush);
                 if show_height && !ui.mouse_over() && !pills.covers(mouse_position().into(), &style) {
                     let camera = m.cam.camera(&m.world, 40_000.0);
                     readout = hills::pick_terrain(&camera, &m.world, mouse_position().into())
@@ -279,7 +278,7 @@ fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2,
     center.filter(|_| over_map).map(|c| (c, radius))
 }
 
-fn draw_world(map: &OpenMap, terrain_material: &Material, backdrop_material: &Material, time: f32, brush: Option<(Vec2, f32)>) {
+fn draw_world(map: &mut OpenMap, terrain: &render::TerrainRenderer, backdrop_material: &Material, time: f32, brush: Option<(Vec2, f32)>) {
     let pos = map.cam.position();
     let view_distance = BASE_VIEW_DISTANCE + pos.y.max(0.0) * 1.5;
     let camera = map.cam.camera(&map.world, view_distance * 1.5);
@@ -291,10 +290,7 @@ fn draw_world(map: &OpenMap, terrain_material: &Material, backdrop_material: &Ma
     gl_use_material(backdrop_material);
     draw_mesh(&map.backdrop);
 
-    render::apply_terrain_uniforms(terrain_material, &map.world, pos, view_distance, time);
-    terrain_material.set_texture("surface", map.surface.clone());
-    gl_use_material(terrain_material);
-    map.world.draw(&Frustum::from_matrix(camera.matrix()), pos, view_distance);
+    terrain.draw(&mut map.world, &map.surface, &camera, pos, view_distance, time);
 
     gl_use_default_material();
     if let Some((center, radius)) = brush {
