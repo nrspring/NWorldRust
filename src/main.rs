@@ -35,8 +35,8 @@ const HELP: &[(&[&str], &str)] = &[
     (&["W", "A", "S", "D"], "Move"),
     (&["E", "Q"], "Up / down"),
     (&["Wheel"], "Zoom"),
-    (&["Right-drag"], "Look (not in Hills)"),
-    (&["Left-drag"], "Raise hills"),
+    (&["Right-drag"], "Look (not with brushes)"),
+    (&["Left-drag"], "Raise hills / mountains"),
     (&["Right-drag"], "Lower ground"),
     (&["[", "]"], "Brush size"),
     (&["Arrows"], "Look"),
@@ -115,6 +115,7 @@ async fn main() {
     let mut pending: Option<Generation> = None;
 
     let mut show_help = false;
+    let mut show_height = false;
     let mut time = 0.0f32;
 
     loop {
@@ -186,6 +187,13 @@ async fn main() {
             None => {}
         }
 
+        let pills = hud_pills(&style, map.as_ref());
+        if is_mouse_button_pressed(MouseButton::Left) && pills.height.is_some_and(|r| r.contains(mouse_position().into())) {
+            show_height = !show_height;
+        }
+        // The elevation under the pointer, shown beside it when the option is on.
+        let mut readout: Option<String> = None;
+
         match &mut map {
             Some(m) => {
                 if shortcuts && is_key_pressed(KeyCode::R) {
@@ -195,10 +203,15 @@ async fn main() {
                     m.cam.toggle_overview(&m.world, TOOLBAR_WIDTH);
                 }
 
-                m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush_radius().is_none());
+                m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush().is_none());
                 m.world.update(m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
                 draw_world(m, &terrain_material, &backdrop_material, time, brush);
+                if show_height && !ui.mouse_over() && !pills.covers(mouse_position().into(), &style) {
+                    let camera = m.cam.camera(&m.world, 40_000.0);
+                    readout = hills::pick_terrain(&camera, &m.world, mouse_position().into())
+                        .map(|p| elevation_label(m.world.elevation(p.x, p.y)));
+                }
             }
             None => {
                 clear_background(BLACK);
@@ -207,22 +220,25 @@ async fn main() {
         }
 
         // The HUD goes under the editor UI so an open panel covers it.
-        draw_hud(&style, map.as_ref(), show_help);
+        draw_hud(&style, &pills, map.as_ref(), show_help, show_height);
         ui.draw(&style, map.is_some(), map.as_ref().map_or(0, |m| m.history.steps()));
+        if let Some(text) = &readout {
+            draw_readout(&style, text, mouse_position().into());
+        }
         toasts.draw(&style, viewport());
         next_frame().await;
     }
 }
 
-/// Slowly raises hills with the left button, or lowers the ground with the right, while the
-/// Hills tool is open and the mouse is held over the map. Returns where the brush ring should be drawn: its center and radius.
+/// Slowly raises hills or mountains with the left button, or lowers the ground with the right,
+/// while the Hills or Mountains tool is open and the mouse is held over the map. Returns where the brush ring should be drawn: its center and radius.
 fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2, f32)> {
-    let Some(radius) = ui.brush_radius() else {
+    let Some((radius, peak)) = ui.brush() else {
         map.end_stroke();
         return None;
     };
     let mouse: Vec2 = mouse_position().into();
-    let over_map = !ui.mouse_over() && !overview_button_rect(style).contains(mouse);
+    let over_map = !ui.mouse_over() && !hud_pills(style, Some(&*map)).covers(mouse, style);
     // A stroke can only start on the map, but once started it follows the mouse anywhere, for
     // as long as the button that started it is held.
     let erase = map.stroke_erases().or_else(|| {
@@ -245,7 +261,7 @@ fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2,
         .then(|| hills::pick_terrain(&camera, &map.world, mouse))
         .flatten();
     if let (Some(erase), true, Some(center)) = (erase, painting, center) {
-        map.paint_hills(center, radius, erase, get_frame_time().min(0.1));
+        map.paint_peaks(center, radius, erase, peak, get_frame_time().min(0.1));
     }
     center.filter(|_| over_map).map(|c| (c, radius))
 }
@@ -337,20 +353,84 @@ fn draw_overview_button(style: &Style, cam: &EditorCamera) {
     style.keycap("T", r.right() - 8.0 - 18.0, mid);
 }
 
-fn draw_hud(style: &Style, map: Option<&OpenMap>, show_help: bool) {
-    let fps = format!("{} FPS", get_fps());
-    let fps_w = style.measure(&fps, 12, Weight::Semibold).width + 20.0;
-    let fps_rect = Rect::new(HUD_LEFT, HUD_MARGIN, fps_w, 26.0);
-    glass(fps_rect, false);
-    style.text_centered(&fps, fps_rect, 12, Weight::Semibold, style::TEXT_MUTED);
+const PILL_HEIGHT: f32 = 26.0;
+const SWITCH_WIDTH: f32 = 30.0;
 
-    if let Some(map) = map {
-        // The map's file name, with a star while it has edits that aren't saved.
-        let name = format!("{}{}", map.name(), if map.is_dirty() { " *" } else { "" });
-        let name_w = style.measure(&name, 12, Weight::Regular).width + 20.0;
-        let name_rect = Rect::new(fps_rect.right() + 6.0, HUD_MARGIN, name_w, 26.0);
+/// The pills along the top left of the HUD: the frame rate, the map's name and the switch for
+/// showing elevation at the pointer.
+struct HudPills {
+    fps: Rect,
+    name: Option<Rect>,
+    height: Option<Rect>,
+}
+
+impl HudPills {
+    /// Whether the pointer is over a HUD control, rather than the map beneath.
+    fn covers(&self, mouse: Vec2, style: &Style) -> bool {
+        self.height.is_some_and(|r| r.contains(mouse))
+            || (self.name.is_some() && overview_button_rect(style).contains(mouse))
+    }
+}
+
+/// The map's file name, with a star while it has edits that aren't saved.
+fn map_label(map: &OpenMap) -> String {
+    format!("{}{}", map.name(), if map.is_dirty() { " *" } else { "" })
+}
+
+fn hud_pills(style: &Style, map: Option<&OpenMap>) -> HudPills {
+    let fps_w = style.measure(&format!("{} FPS", get_fps()), 12, Weight::Semibold).width + 20.0;
+    let fps = Rect::new(HUD_LEFT, HUD_MARGIN, fps_w, PILL_HEIGHT);
+    let Some(map) = map else {
+        return HudPills { fps, name: None, height: None };
+    };
+    let name_w = style.measure(&map_label(map), 12, Weight::Regular).width + 20.0;
+    let name = Rect::new(fps.right() + 6.0, HUD_MARGIN, name_w, PILL_HEIGHT);
+    let label_w = style.measure("Height", 12, Weight::Regular).width;
+    let height = Rect::new(name.right() + 6.0, HUD_MARGIN, 12.0 + label_w + 10.0 + SWITCH_WIDTH + 10.0, PILL_HEIGHT);
+    HudPills { fps, name: Some(name), height: Some(height) }
+}
+
+/// "Height" and an on/off switch.
+fn draw_height_switch(style: &Style, r: Rect, on: bool) {
+    let hovered = r.contains(mouse_position().into());
+    glass(r, hovered);
+    let mid = r.center().y;
+    style.text_mid("Height", r.x + 12.0, mid, 12, Weight::Regular, style::TEXT_MUTED);
+    let track = Rect::new(r.right() - 10.0 - SWITCH_WIDTH, mid - 8.0, SWITCH_WIDTH, 16.0);
+    let fill = if on { style::ACCENT } else { Color::new(1.0, 1.0, 1.0, 0.18) };
+    style::rounded_rect(track, 8.0, fill);
+    let knob_x = if on { track.right() - 8.0 } else { track.x + 8.0 };
+    draw_circle(knob_x, mid, 6.0, WHITE);
+}
+
+/// "37.4 m" on land, or how deep the water is.
+fn elevation_label(elevation: f32) -> String {
+    if elevation < 0.0 {
+        format!("Water, {:.0} m deep", -elevation)
+    } else {
+        format!("{elevation:.1} m")
+    }
+}
+
+/// The elevation readout, just below and right of the pointer and kept inside the window.
+fn draw_readout(style: &Style, text: &str, mouse: Vec2) {
+    let w = style.measure(text, 13, Weight::Semibold).width + 20.0;
+    let x = (mouse.x + 18.0).min(screen_width() - w - HUD_MARGIN);
+    let y = if mouse.y + 52.0 > screen_height() { mouse.y - 40.0 } else { mouse.y + 22.0 };
+    let r = Rect::new(x, y, w, PILL_HEIGHT);
+    glass(r, false);
+    style.text_centered(text, r, 13, Weight::Semibold, style::TEXT);
+}
+
+fn draw_hud(style: &Style, pills: &HudPills, map: Option<&OpenMap>, show_help: bool, show_height: bool) {
+    let fps = format!("{} FPS", get_fps());
+    glass(pills.fps, false);
+    style.text_centered(&fps, pills.fps, 12, Weight::Semibold, style::TEXT_MUTED);
+
+    if let (Some(map), Some(name_rect), Some(height_rect)) = (map, pills.name, pills.height) {
         glass(name_rect, false);
-        style.text_centered(&name, name_rect, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_centered(&map_label(map), name_rect, 12, Weight::Regular, style::TEXT_MUTED);
+        draw_height_switch(style, height_rect, show_height);
 
         draw_overview_button(style, &map.cam);
     }

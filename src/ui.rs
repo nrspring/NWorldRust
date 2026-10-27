@@ -4,6 +4,7 @@
 use macroquad::prelude::*;
 
 use crate::continents::ContinentParams;
+use crate::hills::Peak;
 use crate::islands::IslandParams;
 use crate::style::{self, Style, Weight};
 use crate::world::{snap_map_size, CHUNK_SIZE, MAX_MAP_SIZE, MIN_MAP_SIZE};
@@ -25,6 +26,10 @@ const MAX_CONTINENTS: u32 = 12;
 const BRUSH_MIN: f32 = 10.0;
 const BRUSH_MAX: f32 = 100.0;
 const BRUSH_DEFAULT: f32 = 40.0;
+/// Mountains need a wider brush to rise gently; widths in meters.
+const MOUNTAIN_BRUSH_MIN: f32 = 20.0;
+const MOUNTAIN_BRUSH_MAX: f32 = 100.0;
+const MOUNTAIN_BRUSH_DEFAULT: f32 = 50.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -32,10 +37,11 @@ enum Tool {
     Continents,
     Islands,
     Hills,
+    Mountains,
 }
 
 impl Tool {
-    const ALL: [Tool; 4] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Hills];
+    const ALL: [Tool; 5] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Hills, Tool::Mountains];
 
     fn label(self) -> &'static str {
         match self {
@@ -43,6 +49,7 @@ impl Tool {
             Tool::Continents => "Continents",
             Tool::Islands => "Islands",
             Tool::Hills => "Hills",
+            Tool::Mountains => "Mountains",
         }
     }
 }
@@ -82,6 +89,7 @@ enum SliderId {
     IslandScatter,
     IslandRoughness,
     BrushSize,
+    MountainBrush,
 }
 
 struct NumberField {
@@ -259,6 +267,7 @@ enum Layout {
     Continents(ContinentsLayout),
     Islands(IslandsLayout),
     Hills(HillsLayout),
+    Mountains(HillsLayout),
 }
 
 impl Layout {
@@ -267,7 +276,7 @@ impl Layout {
             Layout::NewMap(l) => l.panel,
             Layout::Continents(l) => l.panel,
             Layout::Islands(l) => l.panel,
-            Layout::Hills(l) => l.panel,
+            Layout::Hills(l) | Layout::Mountains(l) => l.panel,
         }
     }
 }
@@ -290,6 +299,8 @@ pub struct EditorUi {
     island_seed: NumberField,
     /// Width of the hills brush in meters.
     brush_size: Slider,
+    /// Width of the mountains brush in meters.
+    mountain_brush: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -430,6 +441,14 @@ impl EditorUi {
                 unit: " m",
                 ends: None,
             },
+            mountain_brush: Slider {
+                label: "Brush size",
+                value: MOUNTAIN_BRUSH_DEFAULT,
+                min: MOUNTAIN_BRUSH_MIN,
+                max: MOUNTAIN_BRUSH_MAX,
+                unit: " m",
+                ends: None,
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -445,6 +464,7 @@ impl EditorUi {
             Tool::Continents => Layout::Continents(ContinentsLayout::new(origin)),
             Tool::Islands => Layout::Islands(IslandsLayout::new(origin)),
             Tool::Hills => Layout::Hills(HillsLayout::new(origin)),
+            Tool::Mountains => Layout::Mountains(HillsLayout::new(origin)),
         })
     }
 
@@ -478,6 +498,7 @@ impl EditorUi {
             SliderId::IslandScatter => &mut self.island_scatter,
             SliderId::IslandRoughness => &mut self.island_roughness,
             SliderId::BrushSize => &mut self.brush_size,
+            SliderId::MountainBrush => &mut self.mountain_brush,
         }
     }
 
@@ -487,13 +508,18 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Hills) | None => &[],
+            Some(Tool::Hills) | Some(Tool::Mountains) | None => &[],
         }
     }
 
-    /// The radius in meters of the hills brush while the Hills tool is open, else `None`.
-    pub fn brush_radius(&self) -> Option<f32> {
-        (self.open_tool == Some(Tool::Hills)).then_some(self.brush_size.value * 0.5)
+    /// The radius in meters and what it grows while the Hills or Mountains tool is open, else
+    /// `None`.
+    pub fn brush(&self) -> Option<(f32, Peak)> {
+        match self.open_tool {
+            Some(Tool::Hills) => Some((self.brush_size.value * 0.5, Peak::Hills)),
+            Some(Tool::Mountains) => Some((self.mountain_brush.value * 0.5, Peak::Mountains)),
+            _ => None,
+        }
     }
 
     /// True while a text field has focus, so keyboard shortcuts and camera keys should pause.
@@ -571,19 +597,25 @@ impl EditorUi {
         let layout = self.layout()?;
         let mut submit = false;
         match &layout {
-            Layout::Hills(l) => {
+            Layout::Hills(l) | Layout::Mountains(l) => {
+                let id = if self.open_tool == Some(Tool::Mountains) {
+                    SliderId::MountainBrush
+                } else {
+                    SliderId::BrushSize
+                };
                 if clicked && l.brush.contains(mouse) {
-                    self.dragging = Some(SliderId::BrushSize);
+                    self.dragging = Some(id);
                 }
-                if self.dragging == Some(SliderId::BrushSize) {
-                    self.brush_size.set_from_x(l.brush, mouse.x);
+                let dragging = self.dragging == Some(id);
+                let slider = self.slider_mut(id);
+                if dragging {
+                    slider.set_from_x(l.brush, mouse.x);
                 }
                 // [ and ] resize the brush without leaving the map.
-                let notch = (self.brush_size.max - self.brush_size.min) / 58.0;
+                let notch = (slider.max - slider.min) / 58.0;
                 for (key, sign) in [(KeyCode::LeftBracket, -1.0), (KeyCode::RightBracket, 1.0)] {
                     if is_key_pressed(key) {
-                        let size = self.brush_size.value + sign * notch;
-                        self.brush_size.value = size.round().clamp(self.brush_size.min, self.brush_size.max);
+                        slider.value = (slider.value + sign * notch).round().clamp(slider.min, slider.max);
                     }
                 }
             }
@@ -696,7 +728,7 @@ impl EditorUi {
             Layout::NewMap(_) => self.submit_new_map(),
             Layout::Continents(_) => self.submit_continents(has_map),
             Layout::Islands(_) => self.submit_islands(has_map),
-            Layout::Hills(_) => None,
+            Layout::Hills(_) | Layout::Mountains(_) => None,
         }
     }
 
@@ -785,7 +817,8 @@ impl EditorUi {
                 Layout::NewMap(l) => self.draw_new_map_panel(style, l, mouse),
                 Layout::Continents(l) => self.draw_continents_panel(style, l, mouse, has_map),
                 Layout::Islands(l) => self.draw_islands_panel(style, l, mouse, has_map),
-                Layout::Hills(l) => self.draw_hills_panel(style, l, mouse, has_map),
+                Layout::Hills(l) => self.draw_brush_panel(style, l, mouse, has_map, Peak::Hills),
+                Layout::Mountains(l) => self.draw_brush_panel(style, l, mouse, has_map, Peak::Mountains),
             }
         }
     }
@@ -849,23 +882,42 @@ impl EditorUi {
         draw_primary_button(style, l.button, "Create map", true, mouse);
     }
 
-    fn draw_hills_panel(&self, style: &Style, l: &HillsLayout, mouse: Vec2, has_map: bool) {
+    fn draw_brush_panel(&self, style: &Style, l: &HillsLayout, mouse: Vec2, has_map: bool, peak: Peak) {
+        let (title, id, slider, lines) = match peak {
+            Peak::Hills => (
+                "Hills",
+                SliderId::BrushSize,
+                &self.brush_size,
+                [
+                    "Hold left to grow hills (10 to 25 m)",
+                    "easing down into the lowlands.",
+                    "Hold right to lower ground, down to 1 m.",
+                    "[ and ] resize the brush.",
+                ],
+            ),
+            Peak::Mountains => (
+                "Mountains",
+                SliderId::MountainBrush,
+                &self.mountain_brush,
+                [
+                    "Hold left to grow mountains (26 to 100 m).",
+                    "Rock shows from 26 m, snow from 50 m.",
+                    "Hold right to lower ground, down to 1 m.",
+                    "[ and ] resize the brush.",
+                ],
+            ),
+        };
         let subtitle = if has_map {
-            "Paint hills, or wear the ground down."
+            "Paint on land, or wear the ground down."
         } else {
             "Create a map first."
         };
-        self.draw_header(style, l.panel, "Hills", subtitle);
-        draw_slider(style, l.brush, &self.brush_size, self.dragging == Some(SliderId::BrushSize), mouse);
+        self.draw_header(style, l.panel, title, subtitle);
+        draw_slider(style, l.brush, slider, self.dragging == Some(id), mouse);
 
         let x = l.panel.x + PAD;
         let mut y = l.brush.bottom() + 30.0;
-        for line in [
-            "Hold left to grow hills (20 to 50 m)",
-            "easing down into the lowlands.",
-            "Hold right to lower ground, down to 1 m.",
-            "[ and ] resize the brush.",
-        ] {
+        for line in lines {
             style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
             y += 18.0;
         }
@@ -1157,6 +1209,20 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             draw_circle(badge.x, badge.y, 5.5, style::ACCENT);
             draw_line(badge.x - 3.0, badge.y, badge.x + 3.0, badge.y, 1.5, WHITE);
             draw_line(badge.x, badge.y - 3.0, badge.x, badge.y + 3.0, 1.5, WHITE);
+        }
+        Tool::Mountains => {
+            // A tall peak with a snow cap, and a smaller one beside it.
+            let ground = c.y + 9.0;
+            let (peak_x, peak_y) = (c.x - 2.0, c.y - 10.0);
+            draw_line(c.x - 12.0, ground, peak_x, peak_y, t, color);
+            draw_line(peak_x, peak_y, c.x + 7.0, ground, t, color);
+            draw_line(c.x + 3.0, c.y - 1.0, c.x + 11.0, ground, t, color);
+            draw_line(c.x - 12.0, ground, c.x + 11.0, ground, t, color);
+            // The snow line, zigzagging across the peak.
+            let line = [vec2(peak_x - 3.7, peak_y + 6.0), vec2(peak_x - 1.5, peak_y + 4.0), vec2(peak_x + 0.5, peak_y + 6.0), vec2(peak_x + 2.5, peak_y + 4.0), vec2(peak_x + 3.7, peak_y + 5.5)];
+            for pair in line.windows(2) {
+                draw_line(pair[0].x, pair[0].y, pair[1].x, pair[1].y, 1.3, color);
+            }
         }
         Tool::Hills => {
             // Two overlapping peaks on a ground line.

@@ -8,7 +8,7 @@ use macroquad::prelude::*;
 use crate::camera::EditorCamera;
 use crate::continents::{self, ContinentParams};
 use crate::dialogs::{self, Unsaved};
-use crate::hills::HillStroke;
+use crate::hills::{HillStroke, Peak};
 use crate::history::History;
 use crate::islands::{self, IslandParams};
 use crate::render;
@@ -133,23 +133,23 @@ impl OpenMap {
         added
     }
 
-    /// Paints hills with a brush of `radius` meters at `center` (world x and z), or with `erase`
-    /// wears the ground down, continuing the current stroke or starting one (`erase` only
-    /// matters when starting). `dt` is the seconds since the last call, which sets how much an
-    /// erasing brush takes off. [`end_stroke`](Self::end_stroke) finishes it.
-    pub fn paint_hills(&mut self, center: Vec2, radius: f32, erase: bool, dt: f32) {
+    /// Grows `peak`s with a brush of `radius` meters at `center` (world x and z), or with `erase`
+    /// wears the ground down, continuing the current stroke or starting one (`erase` and `peak`
+    /// only matter when starting). `dt` is the seconds since the last call, which sets how much
+    /// the brush changes. [`end_stroke`](Self::end_stroke) finishes it.
+    pub fn paint_peaks(&mut self, center: Vec2, radius: f32, erase: bool, peak: Peak, dt: f32) {
         let (nx, nz) = self.world.samples();
         let half = self.world.half_extents();
         let seed = self.hill_seed;
         let stroke = self
             .stroke
-            .get_or_insert_with(|| HillStroke::begin(self.world.heights(), nx, nz, seed, erase));
+            .get_or_insert_with(|| HillStroke::begin(self.world.heights(), nx, nz, seed, erase, peak));
         if let Some(region) = stroke.paint(self.world.heights_mut(), half, center, radius, dt) {
             self.refresh(region);
         }
     }
 
-    /// Finishes the hills stroke being painted: smooths its rim and records it as one undoable
+    /// Finishes the hills or mountains stroke being painted: smooths its rim and records it as one undoable
     /// step.
     pub fn end_stroke(&mut self) {
         let Some(mut stroke) = self.stroke.take() else {

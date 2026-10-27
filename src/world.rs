@@ -28,7 +28,7 @@ mod surface_tests {
         assert_eq!(pixels[1][1], 0);
         assert!(pixels[2][1] < pixels[3][1]);
         assert!(pixels[3][1] < pixels[4][1]);
-        assert_eq!(pixels[4][1], 255);
+        assert!(pixels[4][1] < pixels[5][1]);
         assert_eq!(pixels[5][1], 255);
     }
 }
@@ -123,6 +123,12 @@ impl World {
 
     /// Height of the visible surface (land or water) at a world position.
     pub fn surface_height(&self, x: f32, z: f32) -> f32 {
+        self.elevation(x, z).max(SEA_LEVEL)
+    }
+
+    /// Elevation of the ground at a world position in meters: negative under water, where it is
+    /// how deep the seabed lies.
+    pub fn elevation(&self, x: f32, z: f32) -> f32 {
         let half = self.half_extents();
         let fx = ((x + half.x) / CELL_SIZE).clamp(0.0, self.cells_x as f32);
         let fz = ((z + half.y) / CELL_SIZE).clamp(0.0, self.cells_z as f32);
@@ -130,7 +136,7 @@ impl World {
         let (tx, tz) = (fx - i as f32, fz - j as f32);
         let top = self.sample(i, j) + (self.sample(i + 1, j) - self.sample(i, j)) * tx;
         let bottom = self.sample(i, j + 1) + (self.sample(i + 1, j + 1) - self.sample(i, j + 1)) * tx;
-        (top + (bottom - top) * tz).max(SEA_LEVEL)
+        top + (bottom - top) * tz
     }
 
     /// Heightmap samples along x and z: one more than the cells.
@@ -142,7 +148,8 @@ impl World {
     /// Red is height around sea level, from 0 (1 m or more under water) through 128 (sea
     /// level) to 255 (1 m or more above); the shader traces the coast where it crosses the
     /// middle, which follows a smooth curve between samples. Green encodes
-    /// elevation from 0 to 50 m, which the shader splits into 50 shades of green.
+    /// elevation from 0 to 100 m, which the shader colors: 25 shades of green up to 25 m, grey
+    /// rock from 26 m and snow from 50 m.
     pub fn surface_texels(&self) -> Vec<u8> {
         self.heights.iter().flat_map(|&h| surface_texel(h)).collect()
     }
@@ -330,11 +337,15 @@ impl World {
     }
 }
 
+/// Elevations up to this many meters are told apart in the surface texture; higher ground
+/// reads as this.
+pub const MAX_SURFACE_ELEVATION: f32 = 100.0;
+
 /// A texel for the terrain shader: the coast in red and elevation in green, as described on
 /// [`World::surface_texels`].
 fn surface_texel(h: f32) -> [u8; 4] {
     let coast = ((0.5 + (h - SEA_LEVEL) * 0.5).clamp(0.0, 1.0) * 255.0).round();
-    let elevation = (((h - SEA_LEVEL).max(0.0) / 50.0).min(1.0) * 255.0).round();
+    let elevation = (((h - SEA_LEVEL).max(0.0) / MAX_SURFACE_ELEVATION).min(1.0) * 255.0).round();
     [coast as u8, elevation as u8, 0, 255]
 }
 

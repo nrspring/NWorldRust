@@ -226,15 +226,21 @@ uniform vec3 ambient;
 uniform vec3 fog_color;
 uniform vec2 fog_range;
 uniform float time;
-// Height around sea level in red, and land elevation (0-50 m) in green.
+// Height around sea level in red, and land elevation (0-100 m) in green.
 uniform sampler2D surface;
 uniform vec2 surface_scale;
 uniform vec2 surface_offset;
 uniform float pixel_cells;
 
-// Land is drawn in 50 shades of green, one per metre: shade 1 (up to 2 m) is the lightest and
-// shade 50 (50 m and up) the darkest.
-const float GREEN_SHADES = 50.0;
+// Hills are drawn in 25 shades of green, one per metre: shade 1 (up to 2 m) is the lightest and
+// shade 25 (25 m) the darkest. Mountains are grey rock from 26 m and snow from 50 m.
+const float GREEN_SHADES = 25.0;
+const float ROCK_START = 26.0;
+const float SNOW_START = 50.0;
+const float ELEVATION_RANGE = 100.0;
+const vec3 ROCK = vec3(0.42, 0.42, 0.43);
+const vec3 HIGH_ROCK = vec3(0.60, 0.60, 0.62);
+const vec3 SNOW = vec3(0.96, 0.97, 1.0);
 const vec3 GRASS = vec3(0.62, 0.80, 0.30);
 const vec3 HIGH_GRASS = vec3(0.03, 0.14, 0.05);
 const vec3 WATER = vec3(0.02, 0.10, 0.26);
@@ -251,10 +257,16 @@ void main() {
     float coast = terrain.r;
     float aa = clamp(dist * pixel_cells * 0.5, 0.0001, 0.5);
     float land = smoothstep(0.5 - aa, 0.5 + aa, coast);
+    float elevation = terrain.g * ELEVATION_RANGE;
     // The small offset absorbs 8-bit rounding so a whole-metre height lands in its own shade.
-    float shade = clamp(floor(terrain.g * GREEN_SHADES + 0.1), 1.0, GREEN_SHADES);
+    float shade = clamp(floor(elevation + 0.2), 1.0, GREEN_SHADES);
     vec3 grass = mix(GRASS, HIGH_GRASS, (shade - 1.0) / (GREEN_SHADES - 1.0));
-    vec3 base = mix(WATER, grass, land);
+    // Rock is fully in by 26 m and snow by 50 m, each blended in over the metre below; the rock
+    // lightens toward the snow line.
+    vec3 rock = mix(ROCK, HIGH_ROCK, smoothstep(ROCK_START, SNOW_START, elevation));
+    vec3 ground = mix(grass, rock, smoothstep(ROCK_START - 1.0, ROCK_START, elevation));
+    ground = mix(ground, SNOW, smoothstep(SNOW_START - 1.0, SNOW_START, elevation));
+    vec3 base = mix(WATER, ground, land);
 
     vec3 n = mix(vec3(0.0, 1.0, 0.0), normalize(v_normal.xyz), land);
 
