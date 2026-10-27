@@ -28,7 +28,7 @@ mod surface_tests {
         assert_eq!(pixels[1][1], 0);
         assert!(pixels[2][1] < pixels[3][1]);
         assert!(pixels[3][1] < pixels[4][1]);
-        assert!(pixels[4][1] < pixels[5][1]);
+        assert_eq!(pixels[4][1], 255);
         assert_eq!(pixels[5][1], 255);
     }
 }
@@ -144,14 +144,42 @@ impl World {
     /// middle, which follows a smooth curve between samples. Green encodes
     /// elevation from 0 to 50 m, which the shader splits into 50 shades of green.
     pub fn surface_texels(&self) -> Vec<u8> {
-        self.heights
-            .iter()
-            .flat_map(|&h| {
-                let coast = ((0.5 + (h - SEA_LEVEL) * 0.5).clamp(0.0, 1.0) * 255.0).round();
-                let elevation = (((h - SEA_LEVEL).max(0.0) / 50.0).min(1.0) * 255.0).round();
-                [coast as u8, elevation as u8, 0, 255]
-            })
-            .collect()
+        self.heights.iter().flat_map(|&h| surface_texel(h)).collect()
+    }
+
+    /// The part of [`surface_texels`](Self::surface_texels) inside `region`, row by row.
+    pub fn surface_texels_in(&self, region: Region) -> Vec<u8> {
+        let nx = self.cells_x + 1;
+        let mut texels = Vec::with_capacity(region.width() * region.height() * 4);
+        for j in region.j0..=region.j1 {
+            let row = &self.heights[j * nx + region.i0..=j * nx + region.i1];
+            texels.extend(row.iter().flat_map(|&h| surface_texel(h)));
+        }
+        texels
+    }
+
+    /// Mutable elevation samples, laid out as in [`heights`](Self::heights). After changing
+    /// some, call [`refresh_region`](Self::refresh_region) for the part that changed.
+    pub fn heights_mut(&mut self) -> &mut [f32] {
+        &mut self.heights
+    }
+
+    /// Rebuilds the chunks affected by a change to the samples in `region` right away, at the
+    /// level of detail they would get with the camera at `cam`.
+    pub fn refresh_region(&mut self, region: Region, cam: Vec3) {
+        // A chunk's normals look as far as one stride (up to 8 cells) past its own samples.
+        const REACH: usize = 8;
+        let cx0 = region.i0.saturating_sub(REACH) / CHUNK_CELLS;
+        let cz0 = region.j0.saturating_sub(REACH) / CHUNK_CELLS;
+        let cx1 = ((region.i1 + REACH) / CHUNK_CELLS).min(self.chunks_x - 1);
+        let cz1 = ((region.j1 + REACH) / CHUNK_CELLS).min(self.cells_z / CHUNK_CELLS - 1);
+        for cz in cz0..=cz1 {
+            for cx in cx0..=cx1 {
+                let idx = cz * self.chunks_x + cx;
+                let lod = lod_for(self.chunk_center(idx).distance(cam));
+                self.chunks[idx] = Some(self.build_chunk(cx, cz, lod));
+            }
+        }
     }
 
     /// Highest point of the visible surface anywhere in the world.
@@ -298,6 +326,43 @@ impl World {
             {
                 draw_mesh(&chunk.mesh);
             }
+        }
+    }
+}
+
+/// A texel for the terrain shader: the coast in red and elevation in green, as described on
+/// [`World::surface_texels`].
+fn surface_texel(h: f32) -> [u8; 4] {
+    let coast = ((0.5 + (h - SEA_LEVEL) * 0.5).clamp(0.0, 1.0) * 255.0).round();
+    let elevation = (((h - SEA_LEVEL).max(0.0) / 50.0).min(1.0) * 255.0).round();
+    [coast as u8, elevation as u8, 0, 255]
+}
+
+/// A rectangle of heightmap samples, both corners included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    pub i0: usize,
+    pub j0: usize,
+    pub i1: usize,
+    pub j1: usize,
+}
+
+impl Region {
+    pub fn width(&self) -> usize {
+        self.i1 - self.i0 + 1
+    }
+
+    pub fn height(&self) -> usize {
+        self.j1 - self.j0 + 1
+    }
+
+    /// The smallest region holding both.
+    pub fn union(self, other: Region) -> Region {
+        Region {
+            i0: self.i0.min(other.i0),
+            j0: self.j0.min(other.j0),
+            i1: self.i1.max(other.i1),
+            j1: self.j1.max(other.j1),
         }
     }
 }

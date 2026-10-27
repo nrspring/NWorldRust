@@ -8,13 +8,14 @@ use macroquad::prelude::*;
 use crate::camera::EditorCamera;
 use crate::continents::{self, ContinentParams};
 use crate::dialogs::{self, Unsaved};
+use crate::hills::HillStroke;
 use crate::history::History;
 use crate::islands::{self, IslandParams};
 use crate::render;
 use crate::storage::{self, SavedMap};
 use crate::toast::Toasts;
 use crate::ui::TOOLBAR_WIDTH;
-use crate::world::{World, CELL_SIZE};
+use crate::world::{Region, World, CELL_SIZE};
 
 /// A map being edited, with its camera, the backdrop sized to it, and its surface texture.
 pub struct OpenMap {
@@ -25,6 +26,10 @@ pub struct OpenMap {
     /// How many times continents have been generated on this map, undone or not.
     generations: u32,
     pub history: History,
+    /// Seeds the shape of every hill painted on this map.
+    hill_seed: u32,
+    /// The hills brush stroke being painted, while the mouse button is held.
+    stroke: Option<HillStroke>,
     /// The file the map was last saved to or opened from.
     path: Option<PathBuf>,
     /// Whether the map has been edited since it was created, saved or opened.
@@ -54,6 +59,8 @@ impl OpenMap {
             surface,
             generations: 0,
             history: History::default(),
+            hill_seed: rand::gen_range(1, u32::MAX),
+            stroke: None,
             path: None,
             dirty: false,
         }
@@ -124,6 +131,48 @@ impl OpenMap {
             self.dirty = true;
         }
         added
+    }
+
+    /// Paints hills with a brush of `radius` meters at `center` (world x and z), or with `erase`
+    /// wears the ground down, continuing the current stroke or starting one (`erase` only
+    /// matters when starting). `dt` is the seconds since the last call, which sets how much an
+    /// erasing brush takes off. [`end_stroke`](Self::end_stroke) finishes it.
+    pub fn paint_hills(&mut self, center: Vec2, radius: f32, erase: bool, dt: f32) {
+        let (nx, nz) = self.world.samples();
+        let half = self.world.half_extents();
+        let seed = self.hill_seed;
+        let stroke = self
+            .stroke
+            .get_or_insert_with(|| HillStroke::begin(self.world.heights(), nx, nz, seed, erase));
+        if let Some(region) = stroke.paint(self.world.heights_mut(), half, center, radius, dt) {
+            self.refresh(region);
+        }
+    }
+
+    /// Finishes the hills stroke being painted: smooths its rim and records it as one undoable
+    /// step.
+    pub fn end_stroke(&mut self) {
+        let Some(mut stroke) = self.stroke.take() else {
+            return;
+        };
+        if let Some(region) = stroke.finish(self.world.heights_mut()) {
+            self.refresh(region);
+        }
+        if stroke.base() != self.world.heights() {
+            self.history.record(stroke.base(), self.world.heights());
+            self.dirty = true;
+        }
+    }
+
+    /// The hills stroke being painted, if any: `Some(true)` if it lowers the ground.
+    pub fn stroke_erases(&self) -> Option<bool> {
+        self.stroke.as_ref().map(HillStroke::erases)
+    }
+
+    /// Redraws the part of the map that changed, without touching the rest.
+    fn refresh(&mut self, region: Region) {
+        self.world.refresh_region(region, self.cam.position());
+        render::update_surface(&self.surface, &self.world, region);
     }
 
     /// The seed for the next generation run: the one the user chose, mixed with how many runs

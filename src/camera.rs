@@ -128,7 +128,9 @@ impl EditorCamera {
 
     /// `keyboard` and `mouse` say whether those devices drive the camera this frame; they are
     /// off while the editor UI is using them (typing into a field, pointer over a panel).
-    pub fn update(&mut self, dt: f32, world: &World, keyboard: bool, mouse: bool) {
+    /// `mouse_look` says whether dragging with the right button turns the camera; a tool can
+    /// claim that button, and the arrow keys still look around.
+    pub fn update(&mut self, dt: f32, world: &World, keyboard: bool, mouse: bool, mouse_look: bool) {
         let keys = |positive: &[KeyCode], negative: &[KeyCode]| {
             if keyboard { axis(positive, negative) } else { 0.0 }
         };
@@ -152,7 +154,7 @@ impl EditorCamera {
 
         let mut turn = keys(&[KeyCode::Right], &[KeyCode::Left]) * LOOK_RATE * dt;
         let mut tilt = keys(&[KeyCode::Up], &[KeyCode::Down]) * LOOK_RATE * dt;
-        if mouse && is_mouse_button_down(MouseButton::Right) {
+        if mouse && mouse_look && is_mouse_button_down(MouseButton::Right) {
             turn += mouse_delta.x * MOUSE_LOOK;
             tilt -= mouse_delta.y * MOUSE_LOOK;
         }

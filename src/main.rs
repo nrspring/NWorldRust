@@ -2,6 +2,7 @@ mod camera;
 mod continents;
 mod dialogs;
 mod gen_common;
+mod hills;
 mod history;
 mod islands;
 mod noise;
@@ -34,7 +35,10 @@ const HELP: &[(&[&str], &str)] = &[
     (&["W", "A", "S", "D"], "Move"),
     (&["E", "Q"], "Up / down"),
     (&["Wheel"], "Zoom"),
-    (&["Right-drag"], "Look"),
+    (&["Right-drag"], "Look (not in Hills)"),
+    (&["Left-drag"], "Raise hills"),
+    (&["Right-drag"], "Lower ground"),
+    (&["[", "]"], "Brush size"),
     (&["Arrows"], "Look"),
     (&["Shift"], "Faster"),
     (&["T"], "Top-down view / back"),
@@ -153,6 +157,13 @@ async fn main() {
             show_help = !show_help;
         }
 
+        // Any other edit ends a hills stroke first, so it lands as its own undo step.
+        if action.is_some() {
+            if let Some(m) = &mut map {
+                m.end_stroke();
+            }
+        }
+
         match action {
             Some(UiAction::CreateMap { width, height }) => {
                 if can_discard(map.as_mut(), "create a new map", &mut toasts) {
@@ -184,9 +195,10 @@ async fn main() {
                     m.cam.toggle_overview(&m.world, TOOLBAR_WIDTH);
                 }
 
-                m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over());
+                m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush_radius().is_none());
                 m.world.update(m.cam.position(), Duration::from_millis(6));
-                draw_world(m, &terrain_material, &backdrop_material, time);
+                let brush = paint_hills(m, &ui, &style);
+                draw_world(m, &terrain_material, &backdrop_material, time, brush);
             }
             None => {
                 clear_background(BLACK);
@@ -202,7 +214,43 @@ async fn main() {
     }
 }
 
-fn draw_world(map: &OpenMap, terrain_material: &Material, backdrop_material: &Material, time: f32) {
+/// Slowly raises hills with the left button, or lowers the ground with the right, while the
+/// Hills tool is open and the mouse is held over the map. Returns where the brush ring should be drawn: its center and radius.
+fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2, f32)> {
+    let Some(radius) = ui.brush_radius() else {
+        map.end_stroke();
+        return None;
+    };
+    let mouse: Vec2 = mouse_position().into();
+    let over_map = !ui.mouse_over() && !overview_button_rect(style).contains(mouse);
+    // A stroke can only start on the map, but once started it follows the mouse anywhere, for
+    // as long as the button that started it is held.
+    let erase = map.stroke_erases().or_else(|| {
+        let pressed = |b| is_mouse_button_pressed(b) && over_map;
+        if pressed(MouseButton::Left) {
+            Some(false)
+        } else {
+            pressed(MouseButton::Right).then_some(true)
+        }
+    });
+    let painting = erase.is_some_and(|erase| {
+        is_mouse_button_down(if erase { MouseButton::Right } else { MouseButton::Left })
+    });
+    if !painting {
+        map.end_stroke();
+    }
+
+    let camera = map.cam.camera(&map.world, 40_000.0);
+    let center = (over_map || painting)
+        .then(|| hills::pick_terrain(&camera, &map.world, mouse))
+        .flatten();
+    if let (Some(erase), true, Some(center)) = (erase, painting, center) {
+        map.paint_hills(center, radius, erase, get_frame_time().min(0.1));
+    }
+    center.filter(|_| over_map).map(|c| (c, radius))
+}
+
+fn draw_world(map: &OpenMap, terrain_material: &Material, backdrop_material: &Material, time: f32, brush: Option<(Vec2, f32)>) {
     let pos = map.cam.position();
     let view_distance = BASE_VIEW_DISTANCE + pos.y.max(0.0) * 1.5;
     let camera = map.cam.camera(&map.world, view_distance * 1.5);
@@ -220,7 +268,26 @@ fn draw_world(map: &OpenMap, terrain_material: &Material, backdrop_material: &Ma
     map.world.draw(&Frustum::from_matrix(camera.matrix()), pos, view_distance);
 
     gl_use_default_material();
+    if let Some((center, radius)) = brush {
+        draw_brush_ring(&map.world, pos, center, radius);
+    }
     set_default_camera();
+}
+
+/// A ring on the ground showing where the hills brush will paint.
+fn draw_brush_ring(world: &world::World, cam: Vec3, center: Vec2, radius: f32) {
+    const SEGMENTS: usize = 72;
+    let point = |a: f32| {
+        let (x, z) = (center.x + a.cos() * radius, center.y + a.sin() * radius);
+        // Float just above the ground, higher the farther away so it doesn't flicker.
+        let lift = (cam.distance(vec3(x, 0.0, z)) * 0.003).max(0.6);
+        vec3(x, world.surface_height(x, z) + lift, z)
+    };
+    for k in 0..SEGMENTS {
+        let a0 = std::f32::consts::TAU * k as f32 / SEGMENTS as f32;
+        let a1 = std::f32::consts::TAU * (k + 1) as f32 / SEGMENTS as f32;
+        draw_line_3d(point(a0), point(a1), Color::new(1.0, 1.0, 1.0, 0.9));
+    }
 }
 
 /// The area right of the toolbar, where the map is shown.

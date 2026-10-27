@@ -4,7 +4,7 @@ use macroquad::models::{Mesh, Vertex};
 use macroquad::prelude::*;
 
 use crate::camera::FOV_DEGREES;
-use crate::world::{World, CELL_SIZE, SEA_LEVEL};
+use crate::world::{Region, World, CELL_SIZE, SEA_LEVEL};
 
 /// The neutral grey the backdrop fades to away from the world; distant terrain fogs to it too.
 pub const BACKGROUND: Vec3 = Vec3::new(0.30, 0.30, 0.31);
@@ -59,6 +59,16 @@ pub fn surface_texture(world: &World) -> Texture2D {
     let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &world.surface_texels());
     texture.set_filter(FilterMode::Linear);
     texture
+}
+
+/// Re-uploads the part of the surface texture inside `region` after its heights changed.
+pub fn update_surface(texture: &Texture2D, world: &World, region: Region) {
+    let image = Image {
+        bytes: world.surface_texels_in(region),
+        width: region.width() as u16,
+        height: region.height() as u16,
+    };
+    texture.update_part(&image, region.i0 as i32, region.j0 as i32, image.width as i32, image.height as i32);
 }
 
 /// `world_half` is the world's half extents in x and z.
