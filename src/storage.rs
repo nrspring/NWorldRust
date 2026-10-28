@@ -1,6 +1,6 @@
 //! Saving and loading maps.
 //!
-//! A map file is a small header followed by the heightmap, compressed:
+//! A map file is a small header followed by the heightmap and the water levels, compressed:
 //!
 //! | bytes | meaning |
 //! | --- | --- |
@@ -8,10 +8,11 @@
 //! | 4 | format version (little endian) |
 //! | 4, 4 | heightmap cells along x and z |
 //! | 4 | how many times continents have been generated on the map |
-//! | rest | the (cells_x + 1) × (cells_z + 1) heights as `f32`, byte-shuffled and deflated |
+//! | rest | the (cells_x + 1) × (cells_z + 1) heights, then as many water levels, as `f32`, byte-shuffled and deflated |
 //!
 //! Shuffling groups the first bytes of every height together, then the second bytes, and so
-//! on, which makes the flat stretches of ocean and land compress far better.
+//! on, which makes the flat stretches of ocean and land compress far better. Version 1 files
+//! have no water levels: the water is at sea level everywhere.
 
 use std::fs;
 use std::path::Path;
@@ -19,13 +20,13 @@ use std::path::Path;
 use miniz_oxide::deflate::compress_to_vec;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 
-use crate::world::{cells_valid, DEEP_OCEAN};
+use crate::world::{cells_valid, DEEP_OCEAN, SEA_LEVEL};
 
 /// File extension of saved maps, without the dot.
 pub const EXTENSION: &str = "nworld";
 
 const MAGIC: &[u8; 8] = b"NWORLDMP";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const HEADER_LEN: usize = 8 + 4 + 4 + 4 + 4;
 /// Deflate effort; 6 is the usual balance of speed and size.
 const COMPRESSION: u8 = 6;
@@ -40,15 +41,19 @@ pub struct SavedMap {
     pub generations: u32,
     /// (cells_x + 1) × (cells_z + 1) samples, row-major from the north-west corner.
     pub heights: Vec<f32>,
+    /// The water level at each of the same samples.
+    pub water: Vec<f32>,
 }
 
 /// The file contents for a map.
 pub fn encode(map: &SavedMap) -> Vec<u8> {
     let n = map.heights.len();
-    let mut shuffled = vec![0u8; n * 4];
-    for (i, h) in map.heights.iter().enumerate() {
-        for (plane, byte) in h.to_le_bytes().into_iter().enumerate() {
-            shuffled[plane * n + i] = byte;
+    let mut shuffled = vec![0u8; n * 8];
+    for (layer, values) in [&map.heights, &map.water].into_iter().enumerate() {
+        for (i, h) in values.iter().enumerate() {
+            for (plane, byte) in h.to_le_bytes().into_iter().enumerate() {
+                shuffled[layer * n * 4 + plane * n + i] = byte;
+            }
         }
     }
 
@@ -68,7 +73,7 @@ pub fn decode(bytes: &[u8]) -> Result<SavedMap, String> {
     }
     let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
     let version = word(8);
-    if version != VERSION {
+    if version == 0 || version > VERSION {
         return Err(format!(
             "This map was saved by {} version of NWorld (file format {version}).",
             if version > VERSION { "a newer" } else { "an unknown" }
@@ -80,25 +85,37 @@ pub fn decode(bytes: &[u8]) -> Result<SavedMap, String> {
     }
 
     let n = (cells_x + 1) * (cells_z + 1);
-    let shuffled = decompress_to_vec_with_limit(&bytes[HEADER_LEN..], n * 4)
+    let layers = if version == 1 { 1 } else { 2 };
+    let shuffled = decompress_to_vec_with_limit(&bytes[HEADER_LEN..], n * 4 * layers)
         .map_err(|_| "The map data in this file is damaged.".to_owned())?;
-    if shuffled.len() != n * 4 {
+    if shuffled.len() != n * 4 * layers {
         return Err("The map data in this file is incomplete.".to_owned());
     }
 
+    let read = |layer: usize, i: usize| {
+        let at = layer * n * 4 + i;
+        f32::from_le_bytes([shuffled[at], shuffled[at + n], shuffled[at + 2 * n], shuffled[at + 3 * n]])
+    };
     let mut heights = Vec::with_capacity(n);
+    let mut water = Vec::with_capacity(n);
     for i in 0..n {
-        let h = f32::from_le_bytes([shuffled[i], shuffled[n + i], shuffled[2 * n + i], shuffled[3 * n + i]]);
+        let h = read(0, i);
         if !h.is_finite() || !(DEEP_OCEAN - 1.0..=MAX_HEIGHT).contains(&h) {
             return Err("The map data in this file is damaged.".to_owned());
         }
         heights.push(h);
+        let w = if layers == 2 { read(1, i) } else { SEA_LEVEL };
+        if !w.is_finite() || !(SEA_LEVEL..=MAX_HEIGHT).contains(&w) {
+            return Err("The map data in this file is damaged.".to_owned());
+        }
+        water.push(w);
     }
     Ok(SavedMap {
         cells_x,
         cells_z,
         generations,
         heights,
+        water,
     })
 }
 
@@ -135,11 +152,19 @@ mod tests {
                 _ => {}
             }
         }
+        // A lake: ground around 12 m with water standing at 10 m.
+        let mut water = vec![SEA_LEVEL; heights.len()];
+        for (i, w) in water.iter_mut().enumerate() {
+            if i % 13 < 4 {
+                *w = 10.0;
+            }
+        }
         SavedMap {
             cells_x,
             cells_z,
             generations: 7,
             heights,
+            water,
         }
     }
 
@@ -149,6 +174,28 @@ mod tests {
         let back = decode(&encode(&map)).unwrap();
         assert_eq!((back.cells_x, back.cells_z, back.generations), (64, 80, 7));
         assert_eq!(back.heights, map.heights);
+        assert_eq!(back.water, map.water);
+    }
+
+    #[test]
+    fn maps_saved_before_lakes_load_with_the_water_at_sea_level() {
+        let map = sample_map();
+        let n = map.heights.len();
+        let mut shuffled = vec![0u8; n * 4];
+        for (i, h) in map.heights.iter().enumerate() {
+            for (plane, byte) in h.to_le_bytes().into_iter().enumerate() {
+                shuffled[plane * n + i] = byte;
+            }
+        }
+        let mut old = Vec::new();
+        old.extend_from_slice(MAGIC);
+        for value in [1u32, map.cells_x as u32, map.cells_z as u32, map.generations] {
+            old.extend_from_slice(&value.to_le_bytes());
+        }
+        old.extend(compress_to_vec(&shuffled, COMPRESSION));
+        let back = decode(&old).unwrap();
+        assert_eq!(back.heights, map.heights);
+        assert!(back.water.iter().all(|&w| w == SEA_LEVEL));
     }
 
     #[test]
@@ -159,6 +206,7 @@ mod tests {
             cells_z,
             generations: 0,
             heights: vec![DEEP_OCEAN; (cells_x + 1) * (cells_z + 1)],
+            water: vec![SEA_LEVEL; (cells_x + 1) * (cells_z + 1)],
         };
         let bytes = encode(&map);
         assert!(bytes.len() * 50 < map.heights.len() * 4, "{} bytes", bytes.len());
@@ -211,6 +259,11 @@ mod tests {
         assert!(decode(&encode(&map)).is_err());
         map.heights[10] = 1.0e9;
         assert!(decode(&encode(&map)).is_err());
+        map.heights[10] = 1.0;
+        map.water[10] = f32::NAN;
+        assert!(decode(&encode(&map)).is_err());
+        map.water[10] = -5.0;
+        assert!(decode(&encode(&map)).is_err());
     }
 
     #[test]
@@ -220,7 +273,7 @@ mod tests {
         let path = dir.join("map.nworld");
         fs::write(&path, b"old contents").unwrap();
         save(&path, &sample_map()).unwrap();
-        assert_eq!(load(&path).unwrap().heights, sample_map().heights);
+        assert_eq!(load(&path).unwrap().water, sample_map().water);
         assert!(!dir.join("map.nworld.tmp").exists());
 
         // A path in a folder that doesn't exist fails cleanly with a readable message.

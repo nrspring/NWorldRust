@@ -73,7 +73,7 @@ impl OpenMap {
         if map.world.cells() != (saved.cells_x, saved.cells_z) {
             return Err("The map size in this file isn't supported.".to_owned());
         }
-        map.apply_heights(saved.heights);
+        map.apply_terrain(saved.heights, saved.water);
         map.generations = saved.generations;
         map.path = Some(path);
         Ok(map)
@@ -86,6 +86,7 @@ impl OpenMap {
             cells_z,
             generations: self.generations,
             heights: self.world.heights().to_vec(),
+            water: self.world.water().to_vec(),
         }
     }
 
@@ -110,7 +111,7 @@ impl OpenMap {
             ..*params
         };
         let heights = continents::generate(&params, cells_x, cells_z, self.world.heights());
-        self.history.record(self.world.heights(), &heights);
+        self.history.record(self.world.heights(), self.world.water(), &heights, self.world.water());
         self.apply_heights(heights);
         self.dirty = true;
     }
@@ -126,7 +127,7 @@ impl OpenMap {
         };
         let (heights, added) = islands::generate(&params, cells_x, cells_z, self.world.heights());
         if heights != self.world.heights() {
-            self.history.record(self.world.heights(), &heights);
+            self.history.record(self.world.heights(), self.world.water(), &heights, self.world.water());
             self.apply_heights(heights);
             self.dirty = true;
         }
@@ -142,10 +143,27 @@ impl OpenMap {
         else {
             return false;
         };
-        self.history.record(self.world.heights(), &heights);
+        self.history.record(self.world.heights(), self.world.water(), &heights, self.world.water());
         self.apply_heights(heights);
         self.dirty = true;
         true
+    }
+
+    /// Digs randomly placed lakes, about `size` meters across, as one undoable step, and returns
+    /// how many fit, which can be fewer than asked for or none. Seeded like
+    /// [`generate_continents`](Self::generate_continents).
+    pub fn add_lakes(&mut self, count: u32, size: f32, seed: u32) -> usize {
+        let (nx, nz) = self.world.samples();
+        let seed = self.next_seed(seed);
+        let Some((heights, water, added)) =
+            hills::scatter_lakes(self.world.heights(), self.world.water(), nx, nz, self.world.half_extents(), seed, count, size)
+        else {
+            return 0;
+        };
+        self.history.record(self.world.heights(), self.world.water(), &heights, &water);
+        self.apply_terrain(heights, water);
+        self.dirty = true;
+        added
     }
 
     /// Grows `peak`s with a brush of `radius` meters at `center` (world x and z), or with `erase`
@@ -158,8 +176,9 @@ impl OpenMap {
         let seed = self.hill_seed;
         let stroke = self
             .stroke
-            .get_or_insert_with(|| HillStroke::begin(self.world.heights(), nx, nz, seed, erase, peak));
+            .get_or_insert_with(|| HillStroke::begin_on(self.world.heights(), self.world.water(), nx, nz, seed, erase, peak));
         if let Some(region) = stroke.paint(self.world.heights_mut(), half, center, radius, dt) {
+            copy_water(stroke.water(), self.world.water_mut(), nx, region);
             self.refresh(region);
         }
     }
@@ -173,8 +192,8 @@ impl OpenMap {
         if let Some(region) = stroke.finish(self.world.heights_mut()) {
             self.refresh(region);
         }
-        if stroke.base() != self.world.heights() {
-            self.history.record(stroke.base(), self.world.heights());
+        if stroke.base() != self.world.heights() || stroke.base_water() != self.world.water() {
+            self.history.record(stroke.base(), stroke.base_water(), self.world.heights(), self.world.water());
             self.dirty = true;
         }
     }
@@ -186,8 +205,8 @@ impl OpenMap {
 
     /// Redraws the part of the map that changed, without touching the rest.
     fn refresh(&mut self, region: Region) {
-        self.world.refresh_region(region, self.cam.position());
-        render::update_surface(&self.surface, &self.world, region);
+        let texels = self.world.refresh_region(region, self.cam.position());
+        render::update_surface(&self.surface, &self.world, texels);
     }
 
     /// The seed for the next generation run: the one the user chose, mixed with how many runs
@@ -202,17 +221,30 @@ impl OpenMap {
     /// Undoes the most recent edit. Returns false if there was nothing to undo.
     pub fn undo(&mut self) -> bool {
         let mut heights = self.world.heights().to_vec();
-        if !self.history.undo(&mut heights) {
+        let mut water = self.world.water().to_vec();
+        if !self.history.undo(&mut heights, &mut water) {
             return false;
         }
-        self.apply_heights(heights);
+        self.apply_terrain(heights, water);
         self.dirty = true;
         true
     }
 
-    /// Puts new heights on the map and refreshes everything drawn from them.
+    /// Puts new heights on the map, leaving the water levels as they are, and refreshes
+    /// everything drawn from them.
     fn apply_heights(&mut self, heights: Vec<f32>) {
         self.world.set_heights(heights);
+        self.redraw();
+    }
+
+    /// Puts new heights and water levels on the map and refreshes everything drawn from them.
+    fn apply_terrain(&mut self, heights: Vec<f32>, water: Vec<f32>) {
+        self.world.set_terrain(heights, water);
+        self.redraw();
+    }
+
+    /// Redraws the whole map after its terrain was replaced.
+    fn redraw(&mut self) {
         self.surface = render::surface_texture(&self.world);
         // Rebuild every chunk now rather than streaming them in over the next frames.
         self.world.update(self.cam.position(), Duration::from_secs(10));
@@ -240,6 +272,15 @@ impl OpenMap {
             }
             Err(e) => Outcome::Failed(e),
         }
+    }
+}
+
+/// Copies the water levels of the samples in `region` from `from` to `to`, which are laid out
+/// `nx` samples to the row.
+fn copy_water(from: &[f32], to: &mut [f32], nx: usize, region: Region) {
+    for j in region.j0..=region.j1 {
+        let row = j * nx + region.i0..=j * nx + region.i1;
+        to[row.clone()].copy_from_slice(&from[row]);
     }
 }
 

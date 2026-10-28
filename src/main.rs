@@ -36,8 +36,8 @@ const HELP: &[(&[&str], &str)] = &[
     (&["E", "Q"], "Up / down"),
     (&["Wheel"], "Zoom"),
     (&["Right-drag"], "Look (not with brushes)"),
-    (&["Left-drag"], "Raise hills / mountains"),
-    (&["Right-drag"], "Lower ground"),
+    (&["Left-drag"], "Raise mountains / dig lakes"),
+    (&["Right-drag"], "Lower mountains"),
     (&["[", "]"], "Brush size"),
     (&["Arrows"], "Look"),
     (&["Shift"], "Faster"),
@@ -175,6 +175,15 @@ async fn main() {
             }
             Some(UiAction::GenerateContinents(params)) => pending = Some(Generation::Continents(params)),
             Some(UiAction::AddIslands(params)) => pending = Some(Generation::Islands(params)),
+            Some(UiAction::AddLakes { count, size, seed }) => {
+                if let Some(m) = &mut map {
+                    match m.add_lakes(count, size, seed) {
+                        0 => toasts.info("No room for lakes there. Try fewer or smaller ones, or add more land first."),
+                        n if n as u32 >= count => toasts.info(format!("Added {n} {}", if n == 1 { "lake" } else { "lakes" })),
+                        n => toasts.info(format!("Added {n} of {count} lakes. There wasn't room for the rest.")),
+                    }
+                }
+            }
             Some(UiAction::AddMountainRange { length, width, seed }) => {
                 if let Some(m) = &mut map {
                     if m.add_mountain_range(length, width, seed) {

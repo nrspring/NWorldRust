@@ -362,8 +362,9 @@ uniform vec3 ambient;
 uniform vec3 fog_color;
 uniform vec2 fog_range;
 uniform float time;
-// Height around sea level in red, land elevation (0-50 m) in green, and in blue whether water
-// is close enough for a beach.
+// Height around the water level in red, land elevation (0-50 m) in green, in blue whether
+// water is close enough for a beach and in alpha how high the ground stands above the water
+// (0-8 m).
 uniform sampler2D surface;
 // Repeating random values, for noise.
 uniform sampler2D noise;
@@ -566,7 +567,8 @@ void main() {
     ground = mix(ground, SNOW, smoothstep(SNOW_START - 1.0, SNOW_START, elevation));
     // A narrow sandy beach along every shore, damp where it meets the water. Far away it would
     // only be a hair-thin line, so it fades out with distance.
-    float beach_fade = (1.0 - smoothstep(500.0, 1500.0, dist)) * (1.0 - smoothstep(3.0, 6.0, elevation));
+    float above_water = terrain.a * 8.0;
+    float beach_fade = (1.0 - smoothstep(500.0, 1500.0, dist)) * (1.0 - smoothstep(3.0, 6.0, above_water));
     // Blue marks ground with water nearby; the search for it is skipped everywhere else.
     if (land > 0.001 && beach_fade > 0.001 && terrain.b > 0.0) {
         float width = BEACH_WIDTH * (0.65 + 0.7 * vnoise(v_world.xz / 23.0 + 40.0));

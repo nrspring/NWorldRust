@@ -36,6 +36,58 @@ mod surface_tests {
         assert_eq!(pixels[4][1], 255);
         assert_eq!(pixels[5][1], 255);
     }
+
+    /// A 256 m world of flat 20 m ground with a pit of 14 m at its middle, filled by a lake whose
+    /// surface stands at 20 m.
+    fn world_with_lake() -> World {
+        let mut world = World::new(256.0, 256.0);
+        let (nx, nz) = world.samples();
+        let mut heights = vec![20.0; nx * nz];
+        let mut water = vec![SEA_LEVEL; nx * nz];
+        for j in 29..=35 {
+            for i in 29..=35 {
+                water[j * nx + i] = 20.0;
+            }
+        }
+        heights[32 * nx + 32] = 14.0;
+        world.set_terrain(heights, water);
+        world
+    }
+
+    #[test]
+    fn a_lake_is_drawn_at_its_own_level() {
+        let world = world_with_lake();
+        let nx = world.samples().0;
+        assert_eq!(world.surface_height(0.0, 0.0), 20.0, "the surface is the lake's, not the pit's");
+
+        let texels = world.surface_texels();
+        let texel = |i: usize, j: usize| &texels[(j * nx + i) * 4..(j * nx + i) * 4 + 4];
+        assert_eq!(texel(32, 32)[0], 0, "the pit is water");
+        assert_eq!(texel(32, 32)[3], 0);
+        // Ground at the lake's level is its shore, and ground beyond its water is dry.
+        assert_eq!(texel(31, 32)[0], 128);
+        assert_eq!(texel(10, 10)[0], 255);
+        assert_eq!(texel(10, 10)[3], 255, "20 m above the sea is far above the beach");
+        assert_eq!(texel(31, 32)[3], 0, "the lake's shore is level with its water");
+        // Beaches are found beside the lake, not far from it.
+        assert!(world.near_water[32 * nx + 36]);
+        assert!(!world.near_water[10 * nx + 10]);
+    }
+
+    #[test]
+    fn painting_a_lake_moves_the_beaches_with_it() {
+        let mut world = World::new(256.0, 256.0);
+        let (nx, nz) = world.samples();
+        world.set_terrain(vec![20.0; nx * nz], vec![SEA_LEVEL; nx * nz]);
+        assert!(!world.near_water[32 * nx + 34]);
+
+        world.heights_mut()[32 * nx + 32] = 14.0;
+        world.water_mut()[32 * nx + 32] = 20.0;
+        let region = Region { i0: 32, j0: 32, i1: 32, j1: 32 };
+        let texels = world.refresh_region(region, Vec3::ZERO);
+        assert!(world.near_water[32 * nx + 34], "the new lake has a beach");
+        assert!(texels.i0 <= 28 && texels.i1 >= 36 && texels.j0 <= 28 && texels.j1 >= 36, "{texels:?}");
+    }
 }
 
 /// Heightmap cells along a chunk side at the finest LOD; each coarser LOD halves the vertex count.
@@ -108,6 +160,9 @@ pub struct World {
     cells_z: usize,
     /// (cells_x + 1) × (cells_z + 1) elevation samples, row-major from the north-west corner.
     heights: Vec<f32>,
+    /// The level of the water at each sample, which holds wherever the ground is lower: sea level
+    /// everywhere except around a lake, where it is the lake's own level.
+    water: Vec<f32>,
     /// For each sample, whether water is close enough for the terrain shader to look for a
     /// beach there; see [`near_water`].
     near_water: Vec<bool>,
@@ -133,6 +188,7 @@ impl World {
             cells_x,
             cells_z,
             heights: vec![DEEP_OCEAN; samples],
+            water: vec![SEA_LEVEL; samples],
             near_water: vec![true; samples],
             chunks_x,
             chunks: (0..chunks_x * chunks_z).map(|_| None).collect(),
@@ -170,40 +226,50 @@ impl World {
         &self.heights
     }
 
-    /// Replaces every elevation sample (laid out as in `heights`) and drops the built chunks
-    /// so they are rebuilt from the new terrain.
+    /// The water level at every sample, laid out as in `heights`: wherever the ground is lower
+    /// than this it is under water. It is sea level except around lakes.
+    pub fn water(&self) -> &[f32] {
+        &self.water
+    }
+
+    /// Replaces every elevation sample (laid out as in `heights`), keeping the water levels, and
+    /// drops the built chunks so they are rebuilt from the new terrain.
     pub fn set_heights(&mut self, heights: Vec<f32>) {
+        let water = std::mem::take(&mut self.water);
+        self.set_terrain(heights, water);
+    }
+
+    /// Replaces every elevation sample and water level, and drops the built chunks so they are
+    /// rebuilt from the new terrain.
+    pub fn set_terrain(&mut self, heights: Vec<f32>, water: Vec<f32>) {
         assert_eq!(heights.len(), self.heights.len(), "heightmap size mismatch");
-        self.near_water = near_water(&heights, self.cells_x + 1, self.cells_z + 1);
+        assert_eq!(water.len(), self.heights.len(), "water map size mismatch");
+        self.near_water = near_water(&heights, &water, self.cells_x + 1, self.cells_z + 1);
         self.heights = heights;
+        self.water = water;
         self.version += 1;
         self.chunks.iter_mut().for_each(|c| *c = None);
         self.blocks.iter_mut().for_each(|b| b.dirty = true);
     }
 
-    /// Elevation at a heightmap sample; coordinates outside the world are clamped to its edge.
-    fn sample(&self, gi: i32, gj: i32) -> f32 {
-        let i = gi.clamp(0, self.cells_x as i32) as usize;
-        let j = gj.clamp(0, self.cells_z as i32) as usize;
-        self.heights[j * (self.cells_x + 1) + i]
-    }
-
     /// Height of the visible surface (land or water) at a world position.
     pub fn surface_height(&self, x: f32, z: f32) -> f32 {
-        self.elevation(x, z).max(SEA_LEVEL)
-    }
-
-    /// Elevation of the ground at a world position in meters: negative under water, where it is
-    /// how deep the seabed lies.
-    pub fn elevation(&self, x: f32, z: f32) -> f32 {
         let half = self.half_extents();
         let fx = ((x + half.x) / CELL_SIZE).clamp(0.0, self.cells_x as f32);
         let fz = ((z + half.y) / CELL_SIZE).clamp(0.0, self.cells_z as f32);
         let (i, j) = (fx.floor() as i32, fz.floor() as i32);
         let (tx, tz) = (fx - i as f32, fz - j as f32);
-        let top = self.sample(i, j) + (self.sample(i + 1, j) - self.sample(i, j)) * tx;
-        let bottom = self.sample(i, j + 1) + (self.sample(i + 1, j + 1) - self.sample(i, j + 1)) * tx;
+        let top = self.surface_sample(i, j) + (self.surface_sample(i + 1, j) - self.surface_sample(i, j)) * tx;
+        let bottom = self.surface_sample(i, j + 1) + (self.surface_sample(i + 1, j + 1) - self.surface_sample(i, j + 1)) * tx;
         top + (bottom - top) * tz
+    }
+
+    /// Height of the visible surface, land or water, at a heightmap sample.
+    fn surface_sample(&self, gi: i32, gj: i32) -> f32 {
+        let i = gi.clamp(0, self.cells_x as i32) as usize;
+        let j = gj.clamp(0, self.cells_z as i32) as usize;
+        let idx = j * (self.cells_x + 1) + i;
+        self.heights[idx].max(self.water[idx])
     }
 
     /// Heightmap samples along x and z: one more than the cells.
@@ -212,17 +278,14 @@ impl World {
     }
 
     /// The heightmap as RGBA texels for the terrain shader, one per sample in the same order.
-    /// Red is height around sea level, from 0 (1 m or more under water) through 128 (sea
-    /// level) to 255 (1 m or more above); the shader traces the coast where it crosses the
+    /// Red is height around the water level, from 0 (1 m or more under water) through 128 (at the
+    /// water) to 255 (1 m or more above); the shader traces the coast where it crosses the
     /// middle, which follows a smooth curve between samples. Green encodes
     /// elevation from 0 to 50 m, which the shader colors: 25 shades of green up to 25 m, grey
-    /// rock from 26 m and snow from 40 m.
+    /// rock from 26 m and snow from 40 m. Alpha is how far the ground stands above the water, up
+    /// to 8 m, which is as far up as a beach goes.
     pub fn surface_texels(&self) -> Vec<u8> {
-        self.heights
-            .iter()
-            .zip(&self.near_water)
-            .flat_map(|(&h, &near)| surface_texel(h, near))
-            .collect()
+        self.surface_texels_in(Region { i0: 0, j0: 0, i1: self.cells_x, j1: self.cells_z })
     }
 
     /// The part of [`surface_texels`](Self::surface_texels) inside `region`, row by row.
@@ -232,7 +295,14 @@ impl World {
         for j in region.j0..=region.j1 {
             let row = j * nx + region.i0..=j * nx + region.i1;
             let near = &self.near_water[row.clone()];
-            texels.extend(self.heights[row].iter().zip(near).flat_map(|(&h, &near)| surface_texel(h, near)));
+            let water = &self.water[row.clone()];
+            texels.extend(
+                self.heights[row]
+                    .iter()
+                    .zip(water)
+                    .zip(near)
+                    .flat_map(|((&h, &w), &near)| surface_texel(h, w, near)),
+            );
         }
         texels
     }
@@ -245,10 +315,19 @@ impl World {
         &mut self.heights
     }
 
+    /// Mutable water levels, laid out as in [`water`](Self::water); see
+    /// [`heights_mut`](Self::heights_mut).
+    pub fn water_mut(&mut self) -> &mut [f32] {
+        &mut self.water
+    }
+
     /// Rebuilds the chunks affected by a change to the samples in `region` right away, at the
-    /// level of detail they would get with the camera at `cam`.
-    pub fn refresh_region(&mut self, region: Region, cam: Vec3) {
+    /// level of detail they would get with the camera at `cam`. Returns the samples whose
+    /// [`surface_texels`](Self::surface_texels) may have changed, which reach a little beyond
+    /// `region` where the beaches move.
+    pub fn refresh_region(&mut self, region: Region, cam: Vec3) -> Region {
         self.version += 1;
+        let texels = self.refresh_near_water(region);
         // A chunk's normals look as far as one stride (up to 8 cells) past its own samples.
         const REACH: usize = 8;
         let cx0 = region.i0.saturating_sub(REACH) / CHUNK_CELLS;
@@ -262,6 +341,41 @@ impl World {
                 self.set_chunk(idx, self.build_chunk(cx, cz, lod));
             }
         }
+        texels
+    }
+
+    /// Works out again which samples near `region` have water close by, after its heights or
+    /// water levels changed. Returns the samples that were looked at.
+    fn refresh_near_water(&mut self, region: Region) -> Region {
+        let (nx, nz) = self.samples();
+        let reach = BEACH_REACH as usize;
+        let span = Region {
+            i0: region.i0.saturating_sub(reach),
+            j0: region.j0.saturating_sub(reach),
+            i1: (region.i1 + reach).min(nx - 1),
+            j1: (region.j1 + reach).min(nz - 1),
+        };
+        let flooded = |i: usize, j: usize| self.heights[j * nx + i] < self.water[j * nx + i];
+        let mut near = Vec::with_capacity(span.width() * span.height());
+        for j in span.j0..=span.j1 {
+            for i in span.i0..=span.i1 {
+                let found = (j.saturating_sub(reach)..=(j + reach).min(nz - 1)).any(|nj| {
+                    (i.saturating_sub(reach)..=(i + reach).min(nx - 1)).any(|ni| {
+                        let (di, dj) = (ni.abs_diff(i) as f32, nj.abs_diff(j) as f32);
+                        di * di + dj * dj <= BEACH_REACH * BEACH_REACH && flooded(ni, nj)
+                    })
+                });
+                near.push(found);
+            }
+        }
+        let mut k = 0;
+        for j in span.j0..=span.j1 {
+            for i in span.i0..=span.i1 {
+                self.near_water[j * nx + i] = near[k];
+                k += 1;
+            }
+        }
+        span
     }
 
     /// Puts a freshly built chunk in place and marks its block for upload.
@@ -285,7 +399,7 @@ impl World {
         let half = self.half_extents();
         let x0 = gi0 as f32 * CELL_SIZE - half.x;
         let z0 = gj0 as f32 * CELL_SIZE - half.y;
-        let surf = |gi: i32, gj: i32| self.sample(gi, gj).max(SEA_LEVEL);
+        let surf = |gi: i32, gj: i32| self.surface_sample(gi, gj);
 
         let row = n + 1;
         let mut vertices = Vec::with_capacity(row * row + 4 * row);
@@ -298,8 +412,7 @@ impl World {
                 let gj = gj0 + j as i32 * stride;
                 let x = x0 + i as f32 * step;
                 let z = z0 + j as f32 * step;
-                let r = self.sample(gi, gj);
-                let y = r.max(SEA_LEVEL);
+                let y = self.surface_sample(gi, gj);
 
                 // Only shape and lighting come from the mesh; whether a pixel is land or water,
                 // and its color, come from the surface texture so coastlines stay sharp at
@@ -483,22 +596,28 @@ impl Drop for World {
 /// reads as this.
 pub const MAX_SURFACE_ELEVATION: f32 = 50.0;
 
-/// A texel for the terrain shader: the coast in red, elevation in green and whether water is
-/// near in blue, as described on [`World::surface_texels`].
-fn surface_texel(h: f32, near_water: bool) -> [u8; 4] {
-    let coast = ((0.5 + (h - SEA_LEVEL) * 0.5).clamp(0.0, 1.0) * 255.0).round();
+/// How far above the water the shader tells ground apart, in the alpha channel.
+const MAX_ABOVE_WATER: f32 = 8.0;
+
+/// A texel for the terrain shader: the coast in red, elevation in green, whether water is near
+/// in blue and the height above the water in alpha, as described on [`World::surface_texels`].
+/// `w` is the water level at the sample.
+fn surface_texel(h: f32, w: f32, near_water: bool) -> [u8; 4] {
+    let coast = ((0.5 + (h - w) * 0.5).clamp(0.0, 1.0) * 255.0).round();
     let elevation = (((h - SEA_LEVEL).max(0.0) / MAX_SURFACE_ELEVATION).min(1.0) * 255.0).round();
-    [coast as u8, elevation as u8, if near_water { 255 } else { 0 }, 255]
+    let above = (((h - w) / MAX_ABOVE_WATER).clamp(0.0, 1.0) * 255.0).round();
+    [coast as u8, elevation as u8, if near_water { 255 } else { 0 }, above as u8]
 }
 
 /// Samples this close to water (in samples) can have beach; beaches are at most about 12 m
 /// wide, three samples, so this leaves a sample to spare.
 const BEACH_REACH: f32 = 4.0;
 
-/// Whether each sample of an `nx` by `nz` heightmap lies within [`BEACH_REACH`] of water.
-fn near_water(heights: &[f32], nx: usize, nz: usize) -> Vec<bool> {
+/// Whether each sample of an `nx` by `nz` heightmap lies within [`BEACH_REACH`] of water, which
+/// fills the ground lower than its `level`.
+fn near_water(heights: &[f32], level: &[f32], nx: usize, nz: usize) -> Vec<bool> {
     // The distance transform measures distance to "land", so mark the water as land.
-    let water: Vec<f32> = heights.iter().map(|&h| if h < SEA_LEVEL { 0.0 } else { -1.0 }).collect();
+    let water: Vec<f32> = heights.iter().zip(level).map(|(&h, &w)| if h < w { 0.0 } else { -1.0 }).collect();
     match ExistingLand::new(&water, nx, nz, 1.0) {
         Some(distance) => distance.dist.iter().map(|&d| d <= BEACH_REACH).collect(),
         None => vec![false; heights.len()],

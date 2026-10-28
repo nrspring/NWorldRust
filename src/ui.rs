@@ -27,6 +27,16 @@ const MAX_CONTINENTS: u32 = 12;
 const MOUNTAIN_BRUSH_MIN: f32 = 20.0;
 const MOUNTAIN_BRUSH_MAX: f32 = 100.0;
 const MOUNTAIN_BRUSH_DEFAULT: f32 = 50.0;
+/// Lakes brush width in meters, and the random lakes: how many, and how big across.
+const LAKE_BRUSH_MIN: f32 = 10.0;
+const LAKE_BRUSH_MAX: f32 = 100.0;
+const LAKE_BRUSH_DEFAULT: f32 = 40.0;
+const LAKE_COUNT_MIN: f32 = 1.0;
+const LAKE_COUNT_MAX: f32 = 20.0;
+const LAKE_COUNT_DEFAULT: f32 = 3.0;
+const LAKE_SIZE_MIN: f32 = 20.0;
+const LAKE_SIZE_MAX: f32 = 600.0;
+const LAKE_SIZE_DEFAULT: f32 = 200.0;
 /// Random mountain ranges: length along the range and width across it, in meters.
 const RANGE_LENGTH_MIN: f32 = 500.0;
 const RANGE_LENGTH_MAX: f32 = 4000.0;
@@ -41,10 +51,11 @@ enum Tool {
     Continents,
     Islands,
     Mountains,
+    Lakes,
 }
 
 impl Tool {
-    const ALL: [Tool; 4] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Mountains];
+    const ALL: [Tool; 5] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Mountains, Tool::Lakes];
 
     fn label(self) -> &'static str {
         match self {
@@ -52,6 +63,7 @@ impl Tool {
             Tool::Continents => "Continents",
             Tool::Islands => "Islands",
             Tool::Mountains => "Mountains",
+            Tool::Lakes => "Lakes",
         }
     }
 }
@@ -65,6 +77,8 @@ pub enum UiAction {
     AddIslands(IslandParams),
     /// Raise a randomly placed mountain range, this long and wide in meters.
     AddMountainRange { length: f32, width: f32, seed: u32 },
+    /// Dig this many randomly placed lakes, about this many meters across.
+    AddLakes { count: u32, size: f32, seed: u32 },
     /// Undo the most recent edit.
     Undo,
     /// Save the map; `save_as` asks for a new file name even if the map already has a file.
@@ -95,6 +109,9 @@ enum SliderId {
     MountainBrush,
     RangeLength,
     RangeWidth,
+    LakeBrush,
+    LakeCount,
+    LakeSize,
 }
 
 struct NumberField {
@@ -250,31 +267,32 @@ impl IslandsLayout {
     }
 }
 
-/// Where everything in the Mountains panel sits.
-struct MountainsLayout {
+/// Where everything in the Mountains and Lakes panels sits: a brush size, then two sliders and a
+/// button for placing them at random.
+struct BrushLayout {
     panel: Rect,
     brush: Rect,
-    /// Where the line above the random range controls sits.
+    /// Where the line above the random placement controls sits.
     divider: f32,
-    length: Rect,
-    width: Rect,
+    first: Rect,
+    second: Rect,
     button: Rect,
 }
 
-impl MountainsLayout {
+impl BrushLayout {
     fn new(origin: Vec2) -> Self {
         let x = origin.x + PAD;
         let brush = Rect::new(x, origin.y + 92.0, INNER_WIDTH, 22.0);
         let divider = brush.bottom() + 110.0;
-        let length = Rect::new(x, divider + 54.0, INNER_WIDTH, 22.0);
-        let width = Rect::new(x, length.y + 62.0, INNER_WIDTH, 22.0);
-        let button = Rect::new(x, width.bottom() + 28.0, INNER_WIDTH, CONTROL_HEIGHT);
+        let first = Rect::new(x, divider + 54.0, INNER_WIDTH, 22.0);
+        let second = Rect::new(x, first.y + 62.0, INNER_WIDTH, 22.0);
+        let button = Rect::new(x, second.bottom() + 28.0, INNER_WIDTH, CONTROL_HEIGHT);
         Self {
             panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, button.bottom() + PAD - origin.y),
             brush,
             divider,
-            length,
-            width,
+            first,
+            second,
             button,
         }
     }
@@ -284,7 +302,8 @@ enum Layout {
     NewMap(NewMapLayout),
     Continents(ContinentsLayout),
     Islands(IslandsLayout),
-    Mountains(MountainsLayout),
+    Mountains(BrushLayout),
+    Lakes(BrushLayout),
 }
 
 impl Layout {
@@ -293,7 +312,7 @@ impl Layout {
             Layout::NewMap(l) => l.panel,
             Layout::Continents(l) => l.panel,
             Layout::Islands(l) => l.panel,
-            Layout::Mountains(l) => l.panel,
+            Layout::Mountains(l) | Layout::Lakes(l) => l.panel,
         }
     }
 }
@@ -319,6 +338,10 @@ pub struct EditorUi {
     /// Length and width of a random mountain range, in meters.
     range_length: Slider,
     range_width: Slider,
+    /// Width of the lakes brush in meters, and the random lakes' number and width.
+    lake_brush: Slider,
+    lake_count: Slider,
+    lake_size: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -475,6 +498,30 @@ impl EditorUi {
                 unit: " m",
                 ends: None,
             },
+            lake_brush: Slider {
+                label: "Brush size",
+                value: LAKE_BRUSH_DEFAULT,
+                min: LAKE_BRUSH_MIN,
+                max: LAKE_BRUSH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            lake_count: Slider {
+                label: "Lakes",
+                value: LAKE_COUNT_DEFAULT,
+                min: LAKE_COUNT_MIN,
+                max: LAKE_COUNT_MAX,
+                unit: "",
+                ends: None,
+            },
+            lake_size: Slider {
+                label: "Lake size",
+                value: LAKE_SIZE_DEFAULT,
+                min: LAKE_SIZE_MIN,
+                max: LAKE_SIZE_MAX,
+                unit: " m",
+                ends: None,
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -489,7 +536,8 @@ impl EditorUi {
             Tool::NewMap => Layout::NewMap(NewMapLayout::new(origin)),
             Tool::Continents => Layout::Continents(ContinentsLayout::new(origin)),
             Tool::Islands => Layout::Islands(IslandsLayout::new(origin)),
-            Tool::Mountains => Layout::Mountains(MountainsLayout::new(origin)),
+            Tool::Mountains => Layout::Mountains(BrushLayout::new(origin)),
+            Tool::Lakes => Layout::Lakes(BrushLayout::new(origin)),
         })
     }
 
@@ -525,6 +573,9 @@ impl EditorUi {
             SliderId::MountainBrush => &mut self.mountain_brush,
             SliderId::RangeLength => &mut self.range_length,
             SliderId::RangeWidth => &mut self.range_width,
+            SliderId::LakeBrush => &mut self.lake_brush,
+            SliderId::LakeCount => &mut self.lake_count,
+            SliderId::LakeSize => &mut self.lake_size,
         }
     }
 
@@ -534,14 +585,16 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Mountains) | None => &[],
+            Some(Tool::Mountains) | Some(Tool::Lakes) | None => &[],
         }
     }
 
-    /// The radius in meters and what it grows while the Mountains tool is open, else `None`.
+    /// The radius in meters and what it paints while the Mountains or Lakes tool is open, else
+    /// `None`.
     pub fn brush(&self) -> Option<(f32, Peak)> {
         match self.open_tool {
             Some(Tool::Mountains) => Some((self.mountain_brush.value * 0.5, Peak::Mountains)),
+            Some(Tool::Lakes) => Some((self.lake_brush.value * 0.5, Peak::Lakes)),
             _ => None,
         }
     }
@@ -621,12 +674,13 @@ impl EditorUi {
         let layout = self.layout()?;
         let mut submit = false;
         match &layout {
-            Layout::Mountains(l) => {
-                let sliders = [
-                    (l.brush, SliderId::MountainBrush),
-                    (l.length, SliderId::RangeLength),
-                    (l.width, SliderId::RangeWidth),
-                ];
+            Layout::Mountains(l) | Layout::Lakes(l) => {
+                let (brush, first, second) = if self.open_tool == Some(Tool::Lakes) {
+                    (SliderId::LakeBrush, SliderId::LakeCount, SliderId::LakeSize)
+                } else {
+                    (SliderId::MountainBrush, SliderId::RangeLength, SliderId::RangeWidth)
+                };
+                let sliders = [(l.brush, brush), (l.first, first), (l.second, second)];
                 if clicked {
                     if let Some((_, id)) = sliders.iter().find(|(r, _)| r.contains(mouse)) {
                         self.dragging = Some(*id);
@@ -639,7 +693,7 @@ impl EditorUi {
                     }
                 }
                 // [ and ] resize the brush without leaving the map.
-                let slider = &mut self.mountain_brush;
+                let slider = self.slider_mut(brush);
                 let notch = (slider.max - slider.min) / 58.0;
                 for (key, sign) in [(KeyCode::LeftBracket, -1.0), (KeyCode::RightBracket, 1.0)] {
                     if is_key_pressed(key) {
@@ -761,6 +815,11 @@ impl EditorUi {
                 width: self.range_width.value,
                 seed: random_seed(),
             }),
+            Layout::Lakes(_) => has_map.then(|| UiAction::AddLakes {
+                count: self.lake_count.value as u32,
+                size: self.lake_size.value,
+                seed: random_seed(),
+            }),
         }
     }
 
@@ -849,7 +908,44 @@ impl EditorUi {
                 Layout::NewMap(l) => self.draw_new_map_panel(style, l, mouse),
                 Layout::Continents(l) => self.draw_continents_panel(style, l, mouse, has_map),
                 Layout::Islands(l) => self.draw_islands_panel(style, l, mouse, has_map),
-                Layout::Mountains(l) => self.draw_mountains_panel(style, l, mouse, has_map),
+                Layout::Mountains(l) => self.draw_paint_panel(
+                    style,
+                    l,
+                    mouse,
+                    has_map,
+                    PaintPanel {
+                        title: "Mountains",
+                        brush: (&self.mountain_brush, SliderId::MountainBrush),
+                        lines: [
+                            "Hold left to grow mountains (26 to 50 m).",
+                            "Hills form around them as foothills.",
+                            "Hold right to lower ground, down to 1 m.",
+                            "[ and ] resize the brush.",
+                        ],
+                        random_title: "Random mountain range",
+                        random: [(&self.range_length, SliderId::RangeLength), (&self.range_width, SliderId::RangeWidth)],
+                        button: "Add mountain range",
+                    },
+                ),
+                Layout::Lakes(l) => self.draw_paint_panel(
+                    style,
+                    l,
+                    mouse,
+                    has_map,
+                    PaintPanel {
+                        title: "Lakes",
+                        brush: (&self.lake_brush, SliderId::LakeBrush),
+                        lines: [
+                            "Hold left to dig a lake into the land.",
+                            "It joins any lake it touches, otherwise it",
+                            "fills to the lowest ground under the brush.",
+                            "[ and ] resize the brush.",
+                        ],
+                        random_title: "Random lakes",
+                        random: [(&self.lake_count, SliderId::LakeCount), (&self.lake_size, SliderId::LakeSize)],
+                        button: "Add lakes",
+                    },
+                ),
             }
         }
     }
@@ -913,39 +1009,31 @@ impl EditorUi {
         draw_primary_button(style, l.button, "Create map", true, mouse);
     }
 
-    fn draw_mountains_panel(&self, style: &Style, l: &MountainsLayout, mouse: Vec2, has_map: bool) {
-        let id = SliderId::MountainBrush;
-        let lines = [
-            "Hold left to grow mountains (26 to 50 m).",
-            "Hills form around them as foothills.",
-            "Hold right to lower ground, down to 1 m.",
-            "[ and ] resize the brush.",
-        ];
+    /// The Mountains and Lakes panels: a brush size and notes on how it works, then sliders and a
+    /// button for placing them at random.
+    fn draw_paint_panel(&self, style: &Style, l: &BrushLayout, mouse: Vec2, has_map: bool, panel: PaintPanel) {
         let subtitle = if has_map {
-            "Paint on land, or wear the ground down."
+            "Paint on land, or place at random."
         } else {
             "Create a map first."
         };
-        self.draw_header(style, l.panel, "Mountains", subtitle);
-        draw_slider(style, l.brush, &self.mountain_brush, self.dragging == Some(id), mouse);
+        self.draw_header(style, l.panel, panel.title, subtitle);
+        let (brush, brush_id) = panel.brush;
+        draw_slider(style, l.brush, brush, self.dragging == Some(brush_id), mouse);
 
         let x = l.panel.x + PAD;
         let mut y = l.brush.bottom() + 30.0;
-        for line in lines {
+        for line in panel.lines {
             style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
             y += 18.0;
         }
 
-        // A random range, placed anywhere on land.
         draw_line(x, l.divider, l.panel.right() - PAD, l.divider, 1.0, style::BORDER);
-        style.text("Random mountain range", x, l.divider + 28.0, 14, Weight::Semibold, style::TEXT);
-        for (r, slider, id) in [
-            (l.length, &self.range_length, SliderId::RangeLength),
-            (l.width, &self.range_width, SliderId::RangeWidth),
-        ] {
+        style.text(panel.random_title, x, l.divider + 28.0, 14, Weight::Semibold, style::TEXT);
+        for (r, (slider, id)) in [l.first, l.second].into_iter().zip(panel.random) {
             draw_slider(style, r, slider, self.dragging == Some(id), mouse);
         }
-        draw_primary_button(style, l.button, "Add mountain range", has_map, mouse);
+        draw_primary_button(style, l.button, panel.button, has_map, mouse);
     }
 
     fn draw_islands_panel(&self, style: &Style, l: &IslandsLayout, mouse: Vec2, has_map: bool) {
@@ -1010,6 +1098,16 @@ impl EditorUi {
         let label = if self.busy { "Generating..." } else { "Add continents" };
         draw_primary_button(style, l.button, label, has_map && !self.busy, mouse);
     }
+}
+
+/// What differs between the Mountains and Lakes panels.
+struct PaintPanel<'a> {
+    title: &'static str,
+    brush: (&'a Slider, SliderId),
+    lines: [&'static str; 4],
+    random_title: &'static str,
+    random: [(&'a Slider, SliderId); 2],
+    button: &'static str,
 }
 
 fn draw_field(style: &Style, r: Rect, field: &NumberField, focused: bool, mouse: Vec2) {
@@ -1247,6 +1345,13 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             let line = [vec2(peak_x - 3.7, peak_y + 6.0), vec2(peak_x - 1.5, peak_y + 4.0), vec2(peak_x + 0.5, peak_y + 6.0), vec2(peak_x + 2.5, peak_y + 4.0), vec2(peak_x + 3.7, peak_y + 5.5)];
             for pair in line.windows(2) {
                 draw_line(pair[0].x, pair[0].y, pair[1].x, pair[1].y, 1.3, color);
+            }
+        }
+        Tool::Lakes => {
+            // A pond with two ripples across it.
+            draw_ellipse_lines(c.x, c.y, 11.0, 7.5, 0.0, t, color);
+            for (dx, dy, w) in [(-3.5, -1.5, 3.0), (2.0, 2.5, 3.5)] {
+                draw_line(c.x + dx - w, c.y + dy, c.x + dx + w, c.y + dy, 1.2, color);
             }
         }
         Tool::Islands => {

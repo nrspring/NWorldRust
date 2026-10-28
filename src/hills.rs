@@ -1,12 +1,12 @@
-//! The hills and mountains brushes: grow rolling 10 to 25 m hills, or jagged 26 to 50 m mountains
-//! with foothills around them, on land, and slowly wear ground back down. Also places whole
-//! mountain ranges at random.
+//! The hills, mountains and lakes brushes: grow rolling 10 to 25 m hills, or jagged 26 to 50 m
+//! mountains with foothills around them, on land, dig lakes into it, and slowly wear ground back
+//! down. Also places whole mountain ranges and lakes at random.
 
 use macroquad::prelude::*;
 
 use crate::gen_common::{ExistingLand, Rng, LAND_HEIGHT};
 use crate::noise::{smoothstep, Simplex};
-use crate::world::{Region, World, CELL_SIZE};
+use crate::world::{Region, World, CELL_SIZE, SEA_LEVEL};
 
 pub const MIN_HILL: f32 = 10.0;
 pub const MAX_HILL: f32 = 25.0;
@@ -26,6 +26,20 @@ const SMOOTH_STRENGTH: f32 = 0.8;
 const RANGE_STEP: f32 = 20.0;
 /// A range stops this far from the water, so it never runs into the coast.
 const RANGE_COAST_MARGIN: f32 = 60.0;
+/// A lake's shoreline wanders by up to this share of its radius.
+const LAKE_WANDER: f32 = 0.35;
+/// Lakes stay this far from the sea, in meters, easing in over as far again, so they never
+/// break through to it.
+const LAKE_COAST_MARGIN: f32 = 30.0;
+/// The longest a lake's banks run before meeting the ground around it, in meters.
+const LAKE_MAX_BANK: f32 = 150.0;
+/// Spots tried for each randomly placed lake.
+const LAKE_TRIES: usize = 80;
+/// Of the spots that fit, this many are compared and the flattest used, so a lake's surface
+/// doesn't end up standing above lower ground beside it.
+const LAKE_CANDIDATES: usize = 6;
+/// A lake won't spread onto ground this many meters lower than its water.
+const LAKE_SPILL: f32 = 1.0;
 /// Spots tried as the start of a range; the one with the most room to run is used.
 const RANGE_TRIES: usize = 24;
 /// Times the brush walks along a range's spine, back and forth, to grow it fully.
@@ -38,6 +52,9 @@ const RANGE_DT: f32 = 0.5;
 pub enum Peak {
     Hills,
     Mountains,
+    /// Digs lakes: ground sunk below the level of the water, which is that of the lake the brush
+    /// touches, or else the lowest ground under it.
+    Lakes,
 }
 
 impl Peak {
@@ -46,6 +63,7 @@ impl Peak {
         match self {
             Peak::Hills => (MIN_HILL, MAX_HILL),
             Peak::Mountains => (MIN_MOUNTAIN, MAX_MOUNTAIN),
+            Peak::Lakes => (0.0, 0.0),
         }
     }
 
@@ -54,6 +72,8 @@ impl Peak {
         match self {
             Peak::Hills => 5.0,
             Peak::Mountains => 20.0,
+            // Digging: how fast the ground sinks toward the lake.
+            Peak::Lakes => 10.0,
         }
     }
 
@@ -64,6 +84,7 @@ impl Peak {
         match self {
             Peak::Hills => 0.3,
             Peak::Mountains => 0.85,
+            Peak::Lakes => 1.0,
         }
     }
 
@@ -72,7 +93,7 @@ impl Peak {
     fn smooth_passes(self) -> usize {
         match self {
             Peak::Hills => 4,
-            Peak::Mountains => 0,
+            Peak::Mountains | Peak::Lakes => 0,
         }
     }
 
@@ -82,6 +103,7 @@ impl Peak {
         match self {
             Peak::Hills => 8.0,
             Peak::Mountains => 16.0,
+            Peak::Lakes => 0.0,
         }
     }
 
@@ -91,6 +113,7 @@ impl Peak {
         match self {
             Peak::Hills => 120.0,
             Peak::Mountains => 24.0,
+            Peak::Lakes => LAKE_COAST_MARGIN,
         }
     }
 
@@ -107,8 +130,15 @@ pub struct HillStroke {
     base: Vec<f32>,
     /// The strongest brush weight (0 to 1) that has reached each sample.
     coverage: Vec<f32>,
+    /// The water levels when the stroke began.
+    base_water: Vec<f32>,
+    /// The water levels now: those of the lakes the stroke has made are added to the map's.
+    water: Vec<f32>,
     /// Distance to the nearest water, if the map has any.
     shore: Option<ExistingLand>,
+    /// Distance to the nearest sea, not counting lakes. Only the lakes brush needs it, and only
+    /// on a map that has lakes already; otherwise `shore` is the same.
+    sea: Option<ExistingLand>,
     longest: f32,
     noise: Simplex,
     nx: usize,
@@ -125,13 +155,28 @@ impl HillStroke {
     /// Starts a stroke on `heights` (`nx` by `nz` samples) that raises `peak`s, or with `erase`
     /// wears the ground down. The same `seed` always grows the same ones in the same place.
     pub fn begin(heights: &[f32], nx: usize, nz: usize, seed: u32, erase: bool, peak: Peak) -> Self {
+        Self::begin_on(heights, &vec![SEA_LEVEL; heights.len()], nx, nz, seed, erase, peak)
+    }
+
+    /// Like [`begin`](Self::begin), on a map whose water stands at the levels in `water`.
+    pub fn begin_on(heights: &[f32], water: &[f32], nx: usize, nz: usize, seed: u32, erase: bool, peak: Peak) -> Self {
         let longest = (nx - 1).max(nz - 1) as f32;
         // Mark water as "land" so the distance transform measures how far inland each sample is.
-        let water: Vec<f32> = heights.iter().map(|&h| if h < 0.0 { 0.0 } else { -1.0 }).collect();
+        let mark = |wet: &dyn Fn(f32, f32) -> bool| -> Vec<f32> {
+            heights.iter().zip(water).map(|(&h, &w)| if wet(h, w) { 0.0 } else { -1.0 }).collect()
+        };
+        let flooded = mark(&|h, w| h < w);
+        let has_lakes = water.iter().any(|&w| w > SEA_LEVEL);
+        let sea = (peak == Peak::Lakes && has_lakes)
+            .then(|| ExistingLand::new(&mark(&|h, w| h < w && w <= SEA_LEVEL), nx, nz, longest))
+            .flatten();
         Self {
             base: heights.to_vec(),
             coverage: vec![0.0; heights.len()],
-            shore: ExistingLand::new(&water, nx, nz, longest),
+            base_water: water.to_vec(),
+            water: water.to_vec(),
+            shore: ExistingLand::new(&flooded, nx, nz, longest),
+            sea,
             longest,
             noise: Simplex::new(seed ^ 0x5A17_E3D9),
             nx,
@@ -153,10 +198,33 @@ impl HillStroke {
         &self.base
     }
 
+    /// The water levels the stroke began with.
+    pub fn base_water(&self) -> &[f32] {
+        &self.base_water
+    }
+
+    /// The water levels as the stroke has left them.
+    pub fn water(&self) -> &[f32] {
+        &self.water
+    }
+
     /// Meters from the sample to the nearest water.
     fn inland(&self, idx: usize) -> f32 {
-        match &self.shore {
-            Some(shore) => (shore.dist[idx] * self.longest - 1.0).max(0.0) * CELL_SIZE,
+        self.meters(&self.shore, idx)
+    }
+
+    /// Meters from the sample to the nearest sea, not counting lakes.
+    fn sea_inland(&self, idx: usize) -> f32 {
+        if self.sea.is_some() {
+            self.meters(&self.sea, idx)
+        } else {
+            self.inland(idx)
+        }
+    }
+
+    fn meters(&self, field: &Option<ExistingLand>, idx: usize) -> f32 {
+        match field {
+            Some(field) => (field.dist[idx] * self.longest - 1.0).max(0.0) * CELL_SIZE,
             None => f32::INFINITY,
         }
     }
@@ -184,6 +252,7 @@ impl HillStroke {
                 let crags = self.noise.fbm(x / 28.0 + 11.0, z / 28.0 - 23.0, 2, 0.5);
                 0.4 + 0.6 * ridge * ridge + MOUNTAIN_CRAGS * crags
             }
+            Peak::Lakes => 0.0,
         };
         (low + (high - low) * unit.clamp(0.0, 1.0)).clamp(low, high)
     }
@@ -237,6 +306,10 @@ impl HillStroke {
     /// One dab of the brush at `at`. `amounts` is how many meters to raise (or, erasing, lower)
     /// the ground at the brush's center, and how many to raise foothills around mountains.
     fn dab(&mut self, heights: &mut [f32], half: Vec2, at: Vec2, radius: f32, amounts: (f32, f32)) -> Option<Region> {
+        if self.peak == Peak::Lakes {
+            // Lakes only dig; there is nothing for the lowering brush to do.
+            return if self.erase { None } else { self.dig(heights, half, at, radius, amounts.0) };
+        }
         // Mountains also grow foothills out beyond the brush.
         let foothills = !self.erase && self.peak == Peak::Mountains;
         let reach = if foothills { radius * FOOTHILL_REACH } else { radius };
@@ -294,6 +367,151 @@ impl HillStroke {
             }
         }
         changed
+    }
+
+    /// How high the ground ends up at sample `idx` (at world `x`, `z`, `distance` from the center
+    /// of a lake of `radius`) when the lake's water stands at `level`: below the water inside the
+    /// shoreline, which wanders as the noise pushes it in and out, and rising along banks to the
+    /// ground the stroke began with, over a distance that grows with how high that ground stands
+    /// above the water. It never goes up, and fades out toward the coast so a lake can't break
+    /// through to the sea.
+    fn lake_height(&self, idx: usize, (x, z): (f32, f32), distance: f32, radius: f32, level: f32) -> f32 {
+        let base = self.base[idx];
+        let wander = 1.0 + LAKE_WANDER * self.noise.fbm(x / 110.0 + 13.0, z / 110.0 - 29.0, 2, 0.5).clamp(-1.0, 1.0);
+        let e = distance / wander;
+        let shaped = if e < radius {
+            let depth = (radius * 0.12).clamp(2.0, 10.0);
+            level - depth * (1.0 - (e / radius) * (e / radius))
+        } else {
+            let above = (base - level).max(0.0);
+            let bank = (above * 6.0).clamp(8.0, LAKE_MAX_BANK);
+            let f = ((e - radius) / bank).min(1.0);
+            level + above * (1.0 - (1.0 - f) * (1.0 - f))
+        };
+        let allowed = smoothstep(LAKE_COAST_MARGIN, 2.0 * LAKE_COAST_MARGIN, self.sea_inland(idx));
+        base + (shaped.min(base) - base) * allowed
+    }
+
+    /// The level of the water in a lake dug by a brush of `radius` at `at`: that of a lake the
+    /// brush touches, so the two join up, or else that of the lowest ground it covers, where the
+    /// lake would fill first. `None` if the brush can't dig here: no ground far enough from the sea
+    /// is under it, or it would spill a lake it touches onto lower ground.
+    fn lake_level(&self, heights: &[f32], half: Vec2, at: Vec2, radius: f32) -> Option<f32> {
+        // The shoreline wanders out as far as this.
+        let disc = radius * (1.0 + LAKE_WANDER) + 2.0 * CELL_SIZE;
+        let touch = radius + 2.0 * CELL_SIZE;
+        let to_index = |v: f32, h: f32, n: usize| ((v + h) / CELL_SIZE).clamp(0.0, (n - 1) as f32);
+        let i0 = to_index(at.x - disc, half.x, self.nx).ceil() as usize;
+        let i1 = to_index(at.x + disc, half.x, self.nx).floor() as usize;
+        let j0 = to_index(at.y - disc, half.y, self.nz).ceil() as usize;
+        let j1 = to_index(at.y + disc, half.y, self.nz).floor() as usize;
+
+        let mut touching: Option<(f32, f32)> = None;
+        let mut lowest = f32::MAX;
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                let distance = (vec2(i as f32 * CELL_SIZE - half.x, j as f32 * CELL_SIZE - half.y) - at).length();
+                if distance >= disc {
+                    continue;
+                }
+                let idx = j * self.nx + i;
+                let w = self.water[idx];
+                if w > SEA_LEVEL && heights[idx] < w {
+                    if distance < touch && touching.is_none_or(|(d, _)| distance < d) {
+                        touching = Some((distance, w));
+                    }
+                } else if self.sea_inland(idx) > LAKE_COAST_MARGIN {
+                    lowest = lowest.min(self.base[idx]);
+                }
+            }
+        }
+        match touching {
+            Some((_, level)) => (lowest >= level - LAKE_SPILL).then_some(level),
+            None => (lowest < f32::MAX).then(|| lowest.max(LAND_HEIGHT)),
+        }
+    }
+
+    /// One dab of the lakes brush: sinks the ground toward the lake by up to `amount` meters, and
+    /// sets the water level where that leaves it under water.
+    fn dig(&mut self, heights: &mut [f32], half: Vec2, at: Vec2, radius: f32, amount: f32) -> Option<Region> {
+        let level = self.lake_level(heights, half, at, radius)?;
+        let reach = (radius + LAKE_MAX_BANK) * (1.0 + LAKE_WANDER);
+        let to_index = |v: f32, h: f32, n: usize| ((v + h) / CELL_SIZE).clamp(0.0, (n - 1) as f32);
+        let i0 = to_index(at.x - reach, half.x, self.nx).ceil() as usize;
+        let i1 = to_index(at.x + reach, half.x, self.nx).floor() as usize;
+        let j0 = to_index(at.y - reach, half.y, self.nz).ceil() as usize;
+        let j1 = to_index(at.y + reach, half.y, self.nz).floor() as usize;
+        if i0 > i1 || j0 > j1 {
+            return None;
+        }
+
+        let mut changed: Option<Region> = None;
+        let mark = |changed: &mut Option<Region>, i: usize, j: usize| {
+            let sample = Region { i0: i, j0: j, i1: i, j1: j };
+            *changed = Some(changed.map_or(sample, |c| c.union(sample)));
+        };
+        for j in j0..=j1 {
+            let z = j as f32 * CELL_SIZE - half.y;
+            for i in i0..=i1 {
+                let x = i as f32 * CELL_SIZE - half.x;
+                let distance = (vec2(x, z) - at).length();
+                if distance >= reach {
+                    continue;
+                }
+                let idx = j * self.nx + i;
+                // Ground that holds another lake's water is left to that lake.
+                if self.water[idx] > SEA_LEVEL && self.water[idx] != level {
+                    continue;
+                }
+                let current = heights[idx];
+                let target = self.lake_height(idx, (x, z), distance, radius, level);
+                if target >= current {
+                    continue;
+                }
+                let dug = (current - amount).max(target);
+                heights[idx] = dug;
+                mark(&mut changed, i, j);
+                if dug < level {
+                    self.water[idx] = level;
+                    // The ground around the water shares its level, so the shore is drawn where
+                    // the ground meets the water and not where it meets the sea's.
+                    for nj in j.saturating_sub(1)..=(j + 1).min(self.nz - 1) {
+                        for ni in i.saturating_sub(1)..=(i + 1).min(self.nx - 1) {
+                            let n = nj * self.nx + ni;
+                            if self.water[n] == SEA_LEVEL && heights[n] >= level {
+                                self.water[n] = level;
+                                mark(&mut changed, ni, nj);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(region) = changed {
+            self.touched = Some(self.touched.map_or(region, |t| t.union(region)));
+        }
+        changed
+    }
+
+    /// How much the ground varies under a disc of `reach` meters around `at`: the height of the
+    /// highest sample above the lowest.
+    fn relief(&self, heights: &[f32], half: Vec2, at: Vec2, reach: f32) -> f32 {
+        let to_index = |v: f32, h: f32, n: usize| ((v + h) / CELL_SIZE).clamp(0.0, (n - 1) as f32);
+        let i0 = to_index(at.x - reach, half.x, self.nx).ceil() as usize;
+        let i1 = to_index(at.x + reach, half.x, self.nx).floor() as usize;
+        let j0 = to_index(at.y - reach, half.y, self.nz).ceil() as usize;
+        let j1 = to_index(at.y + reach, half.y, self.nz).floor() as usize;
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                if (vec2(i as f32 * CELL_SIZE - half.x, j as f32 * CELL_SIZE - half.y) - at).length() < reach {
+                    let h = heights[j * self.nx + i];
+                    lo = lo.min(h);
+                    hi = hi.max(h);
+                }
+            }
+        }
+        (hi - lo).max(0.0)
     }
 
     /// Ends the stroke by smoothing the rim of what was painted, where the hills ease down into
@@ -376,6 +594,55 @@ impl HillStroke {
         (j.saturating_sub(1)..=(j + 1).min(self.nz - 1))
             .any(|nj| (i.saturating_sub(1)..=(i + 1).min(self.nx - 1)).any(|ni| self.coverage[nj * self.nx + ni] > 0.0))
     }
+}
+
+/// Digs `count` lakes about `size` meters across (each between half and all of that) into
+/// randomly chosen land far enough from the coast, of the `nx` by `nz` samples in `heights`
+/// (centered on the origin by `half`), whose water stands at the levels in `water`. Each lake
+/// takes the level of any lake it touches, or else of the lowest ground it covers, and the
+/// flattest of a few spots is used. Returns the new heights and water levels and how many lakes
+/// fit, or `None` if none did.
+#[allow(clippy::too_many_arguments)]
+pub fn scatter_lakes(
+    heights: &[f32],
+    water: &[f32],
+    nx: usize,
+    nz: usize,
+    half: Vec2,
+    seed: u32,
+    count: u32,
+    size: f32,
+) -> Option<(Vec<f32>, Vec<f32>, usize)> {
+    let mut stroke = HillStroke::begin_on(heights, water, nx, nz, seed, false, Peak::Lakes);
+    let mut rng = Rng::new(seed ^ 0x51ED_270B);
+    let mut out = heights.to_vec();
+    let mut added = 0;
+    for _ in 0..count {
+        let radius = size * 0.5 * rng.range(0.5, 1.0);
+        // Dry land, with room for the whole lake and its banks before the sea.
+        let room = radius * (1.0 + LAKE_WANDER) + 2.0 * LAKE_COAST_MARGIN;
+        let mut spots: Vec<(f32, Vec2)> = Vec::new();
+        for _ in 0..LAKE_TRIES {
+            if spots.len() >= LAKE_CANDIDATES {
+                break;
+            }
+            let i = rng.range(0.0, (nx - 1) as f32) as usize;
+            let j = rng.range(0.0, (nz - 1) as f32) as usize;
+            let idx = j * nx + i;
+            if out[idx] >= stroke.water[idx].max(LAND_HEIGHT) && stroke.sea_inland(idx) >= room {
+                let at = vec2(i as f32 * CELL_SIZE - half.x, j as f32 * CELL_SIZE - half.y);
+                spots.push((stroke.relief(&out, half, at, radius * 2.0), at));
+            }
+        }
+        let Some(&(_, at)) = spots.iter().min_by(|a, b| a.0.total_cmp(&b.0)) else { continue };
+        // Start fresh, and give the dab all the time it needs to reach full depth.
+        stroke.last = None;
+        for _ in 0..3 {
+            stroke.paint(&mut out, half, at, radius, 2.0);
+        }
+        added += 1;
+    }
+    (added > 0 && (out != heights || stroke.water != water)).then_some((out, stroke.water, added))
 }
 
 /// One arm of a mountain range: a winding line of points and how wide the range is along it.
@@ -737,6 +1004,185 @@ mod tests {
         assert!(mountain_range(&vec![DEEP_OCEAN; n * n], n, n, half, 1, 600.0, 100.0).is_none());
         assert!(mountain_range(&island(cells, 70), n, n, half, 1, 600.0, 100.0).is_none());
     }
+
+    /// Digs a lake of `radius` at the middle of a 160-cell island of `ground` meters and returns
+    /// the map as it began, as it ended, its water levels and its width.
+    fn lake_on(ground: f32, radius: f32) -> (Vec<f32>, Vec<f32>, Vec<f32>, usize) {
+        let cells = 160;
+        let n = cells + 1;
+        let mut start = island(cells, 10);
+        start.iter_mut().filter(|h| **h > 0.0).for_each(|h| *h = ground);
+        let (heights, water) = dig_lake(&start, &vec![0.0; n * n], vec2(0.0, 0.0), radius);
+        (start, heights, water, n)
+    }
+
+    /// Holds the lakes brush of `radius` meters at `at` on a 160-cell map, long enough to dig a
+    /// lake, and returns the new heights and water levels.
+    fn dig_lake(heights: &[f32], water: &[f32], at: Vec2, radius: f32) -> (Vec<f32>, Vec<f32>) {
+        let n = 161;
+        let half = Vec2::splat(160.0 * CELL_SIZE * 0.5);
+        let mut heights = heights.to_vec();
+        let mut stroke = HillStroke::begin_on(&heights, water, n, n, 3, false, Peak::Lakes);
+        for _ in 0..200 {
+            stroke.paint(&mut heights, half, at, radius, 0.1);
+        }
+        stroke.finish(&mut heights);
+        (heights, stroke.water().to_vec())
+    }
+
+    /// An island whose ground climbs `slope` meters per meter eastward from `ground` at the middle.
+    fn tilted_island(ground: f32, slope: f32) -> Vec<f32> {
+        let mut heights = island(160, 10);
+        for (idx, h) in heights.iter_mut().enumerate() {
+            if *h > 0.0 {
+                *h = ground + slope * ((idx % 161) as f32 * CELL_SIZE - 320.0);
+            }
+        }
+        heights
+    }
+
+    /// The x of the centers of the samples under water in a map, in meters.
+    fn flooded_xs(heights: &[f32], water: &[f32]) -> Vec<f32> {
+        (0..heights.len())
+            .filter(|&idx| heights[idx] < water[idx] && water[idx] > 0.0)
+            .map(|idx| (idx % 161) as f32 * CELL_SIZE - 320.0)
+            .collect()
+    }
+
+    #[test]
+    fn a_lake_is_a_pool_at_the_level_of_the_ground_with_gentle_banks() {
+        for ground in [3.0, 12.0, 30.0] {
+            let (start, heights, water, n) = lake_on(ground, 40.0);
+            let centre = (n / 2) * n + n / 2;
+            assert_eq!(water[centre], ground, "the lake lies at the level of the flat ground around it");
+            assert!(heights[centre] < ground - 1.0, "the middle is under water, got {}", heights[centre]);
+            let pool = (0..heights.len()).filter(|&i| heights[i] < water[i] && water[i] > 0.0).count();
+            assert!(pool > 20, "a lake of {pool} samples is too small");
+            assert!(heights.iter().zip(&start).all(|(h, s)| h <= s), "lakes only lower ground");
+            assert!(
+                (0..heights.len()).all(|i| water[i] == 0.0 || water[i] == ground),
+                "all of the water stands at the one level"
+            );
+            // Banks ease down: nothing near a cliff between neighbors.
+            let mut steepest: f32 = 0.0;
+            for j in 0..n - 1 {
+                for i in 0..n - 1 {
+                    // The island's own coast, where it drops into the deep sea, isn't a bank.
+                    let h = heights[j * n + i];
+                    for other in [heights[j * n + i + 1], heights[(j + 1) * n + i]] {
+                        if h >= -30.0 && other >= -30.0 {
+                            steepest = steepest.max((h - other).abs() / CELL_SIZE);
+                        }
+                    }
+                }
+            }
+            assert!(steepest < 1.0, "banks over {ground} m ground are too steep: {steepest}");
+        }
+    }
+
+    #[test]
+    fn lakes_stay_clear_of_the_sea_and_only_the_lakes_brush_digs_them() {
+        let cells = 160;
+        let n = cells + 1;
+        let half = Vec2::splat(cells as f32 * CELL_SIZE * 0.5);
+        let start = island(cells, 10);
+        // Right at the shore.
+        let mut heights = start.clone();
+        let mut stroke = HillStroke::begin(&heights, n, n, 3, false, Peak::Lakes);
+        for _ in 0..100 {
+            stroke.paint(&mut heights, half, vec2(-half.x + 10.0 * CELL_SIZE, 0.0), 40.0, 0.1);
+        }
+        for (idx, &h) in heights.iter().enumerate() {
+            let (i, j) = (idx % n, idx / n);
+            let near_coast = i < 10 + 6 || j < 10 + 6 || i > cells - 16 || j > cells - 16;
+            if near_coast && start[idx] >= 0.0 {
+                assert!(h >= 0.0, "the sea shouldn't flood in at sample {i},{j}: {h}");
+            }
+        }
+        // Erasing with the lakes brush changes nothing.
+        let mut erased = start.clone();
+        let mut stroke = HillStroke::begin(&erased, n, n, 3, true, Peak::Lakes);
+        stroke.paint(&mut erased, half, vec2(0.0, 0.0), 40.0, 1.0);
+        assert_eq!(erased, start);
+    }
+
+    #[test]
+    fn random_lakes_land_on_dry_ground_away_from_the_sea() {
+        let cells = 320;
+        let n = cells + 1;
+        let half = Vec2::splat(cells as f32 * CELL_SIZE * 0.5);
+        let start = island(cells, 30);
+        let dry = vec![0.0; n * n];
+        let (heights, water, added) = scatter_lakes(&start, &dry, n, n, half, 5, 4, 120.0).expect("there is room for lakes");
+        assert!(added >= 1 && added <= 4);
+        assert!(
+            (0..n * n).any(|i| heights[i] < water[i] && water[i] > 0.0 && start[i] >= 0.0),
+            "lakes were dug"
+        );
+        assert!(heights.iter().zip(&start).all(|(h, s)| h <= s));
+        for (idx, &h) in start.iter().enumerate() {
+            if h < 0.0 {
+                assert_eq!(heights[idx], h, "the sea is left alone");
+                assert_eq!(water[idx], 0.0, "and so is its water");
+            }
+        }
+        // The same seed repeats, another differs, and open water has no room.
+        assert_eq!(Some(&heights), scatter_lakes(&start, &dry, n, n, half, 5, 4, 120.0).as_ref().map(|r| &r.0));
+        assert_ne!(Some(&heights), scatter_lakes(&start, &dry, n, n, half, 6, 4, 120.0).as_ref().map(|r| &r.0));
+        assert!(scatter_lakes(&vec![DEEP_OCEAN; n * n], &dry, n, n, half, 5, 4, 120.0).is_none());
+    }
+
+    #[test]
+    fn a_lake_on_a_slope_sits_at_the_lowest_ground_under_the_brush() {
+        let start = tilted_island(12.0, 0.03);
+        let (heights, water) = dig_lake(&start, &vec![0.0; 161 * 161], vec2(0.0, 0.0), 30.0);
+        let centre = 80 * 161 + 80;
+        // The shoreline can wander as far as 1.35 radii, plus a little, to the west: where the
+        // ground is 12 - 0.03 * 48.5 = 10.5 m.
+        let level = water[centre];
+        assert!((10.2..10.9).contains(&level), "the lake's level is {level}");
+        let xs = flooded_xs(&heights, &water);
+        assert!(!xs.is_empty());
+        for idx in 0..heights.len() {
+            if water[idx] > 0.0 {
+                assert_eq!(water[idx], level, "one lake, one level");
+            }
+        }
+        // Far from the lake the water is still the sea's.
+        assert_eq!(water[10 * 161 + 20], 0.0);
+        assert_eq!(heights.iter().filter(|&&h| h < 0.0).count(), start.iter().filter(|&&h| h < 0.0).count());
+    }
+
+    #[test]
+    fn a_stroke_that_touches_a_lake_matches_its_level() {
+        let start = tilted_island(12.0, 0.03);
+        let dry = vec![0.0; 161 * 161];
+        let (once, water) = dig_lake(&start, &dry, vec2(-100.0, 0.0), 40.0);
+        let level = water[80 * 161 + 80 - 25];
+        assert!((6.5..8.0).contains(&level), "the first lake's level is {level}");
+        let east_edge = flooded_xs(&once, &water).into_iter().fold(f32::MIN, f32::max);
+
+        // A second stroke overlapping the first would, on its own, find higher ground to sit on.
+        let (twice, water) = dig_lake(&once, &water, vec2(-40.0, 0.0), 40.0);
+        let levels: Vec<f32> = (0..twice.len()).filter(|&i| water[i] > 0.0).map(|i| water[i]).collect();
+        assert!(levels.iter().all(|&l| l == level), "the lakes joined up at one level");
+        let new_edge = flooded_xs(&twice, &water).into_iter().fold(f32::MIN, f32::max);
+        assert!(new_edge > east_edge + 20.0, "the lake grew from {east_edge} to {new_edge}");
+    }
+
+    #[test]
+    fn a_lake_does_not_spread_onto_ground_lower_than_its_water() {
+        let start = tilted_island(12.0, 0.03);
+        let dry = vec![0.0; 161 * 161];
+        let (once, water) = dig_lake(&start, &dry, vec2(100.0, 0.0), 40.0);
+        let level = water[80 * 161 + 80 + 25];
+        assert!(level > 12.5, "the first lake's level is {level}");
+        // Downhill from the lake the ground lies lower than its water, so the brush does nothing.
+        let (twice, water_after) = dig_lake(&once, &water, vec2(20.0, 0.0), 40.0);
+        assert_eq!(twice, once);
+        assert_eq!(water_after, water);
+    }
+
 
     #[test]
     fn mountains_rise_steeply_where_hills_do_not() {

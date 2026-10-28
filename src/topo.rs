@@ -51,7 +51,7 @@ impl ContourLabels {
             return;
         }
         let (nx, nz) = world.samples();
-        self.candidates = find_candidates(world.heights(), nx, nz, world.half_extents());
+        self.candidates = find_candidates(world.heights(), world.water(), nx, nz, world.half_extents());
         self.revision = Some(revision);
         self.found_at = now;
     }
@@ -117,8 +117,9 @@ fn hidden(world: &World, cam: Vec3, point: Vec3) -> bool {
 }
 
 /// One candidate spot per contour level in every `CANDIDATE_SPACING` square of the map, at the
-/// first place the line is found there.
-fn find_candidates(heights: &[f32], nx: usize, nz: usize, half: Vec2) -> Vec<Candidate> {
+/// first place the line is found there. `water` holds the water levels, since lines only mean
+/// something on dry ground.
+fn find_candidates(heights: &[f32], water: &[f32], nx: usize, nz: usize, half: Vec2) -> Vec<Candidate> {
     let bucket = (CANDIDATE_SPACING / CELL_SIZE) as usize;
     let mut taken: HashSet<(i32, usize, usize)> = HashSet::new();
     let mut found = Vec::new();
@@ -133,7 +134,7 @@ fn find_candidates(heights: &[f32], nx: usize, nz: usize, half: Vec2) -> Vec<Can
                 let g = heights[nj * nx + ni];
                 let (lo, hi) = (h.min(g), h.max(g));
                 // Lines only mean something on land.
-                if lo < 1.0 || lo == hi {
+                if lo < 1.0 || lo == hi || h < water[j * nx + i] || g < water[nj * nx + ni] {
                     continue;
                 }
                 let mut level = ((lo / CONTOUR_STEP).floor() + 1.0) * CONTOUR_STEP;
@@ -167,7 +168,7 @@ mod tests {
         // A ramp climbing 1 m every cell, up to 40 m.
         let (nx, nz) = (40, 4);
         let heights: Vec<f32> = (0..nz).flat_map(|_| (0..nx).map(|i| 1.0 + i as f32)).collect();
-        let found = find_candidates(&heights, nx, nz, Vec2::ZERO);
+        let found = find_candidates(&heights, &vec![0.0; nx * nz], nx, nz, Vec2::ZERO);
         let mut levels: Vec<i32> = found.iter().map(|c| c.level).collect();
         levels.sort_unstable();
         levels.dedup();
@@ -182,8 +183,21 @@ mod tests {
     #[test]
     fn water_and_flat_ground_get_no_labels() {
         let heights = vec![-5.0; 100];
-        assert!(find_candidates(&heights, 10, 10, Vec2::ZERO).is_empty());
+        assert!(find_candidates(&heights, &[0.0; 100], 10, 10, Vec2::ZERO).is_empty());
         let heights = vec![12.0; 100];
-        assert!(find_candidates(&heights, 10, 10, Vec2::ZERO).is_empty());
+        assert!(find_candidates(&heights, &[0.0; 100], 10, 10, Vec2::ZERO).is_empty());
+    }
+
+    #[test]
+    fn the_bed_of_a_lake_gets_no_labels() {
+        // A ramp that climbs 1 m a cell, flooded up to 20 m: only the dry part is labeled.
+        let (nx, nz) = (40, 4);
+        let heights: Vec<f32> = (0..nz).flat_map(|_| (0..nx).map(|i| 1.0 + i as f32)).collect();
+        let water = vec![20.0; nx * nz];
+        let mut levels: Vec<i32> = find_candidates(&heights, &water, nx, nz, Vec2::ZERO).iter().map(|c| c.level).collect();
+        levels.sort_unstable();
+        levels.dedup();
+        // The 20 m line is the shore itself.
+        assert_eq!(levels, vec![25, 30, 35, 40]);
     }
 }
