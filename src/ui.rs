@@ -37,6 +37,11 @@ const LAKE_COUNT_DEFAULT: f32 = 3.0;
 const LAKE_SIZE_MIN: f32 = 20.0;
 const LAKE_SIZE_MAX: f32 = 600.0;
 const LAKE_SIZE_DEFAULT: f32 = 200.0;
+/// Rivers: channel width in meters, and how much they wind, as a percentage.
+const RIVER_WIDTH_MIN: f32 = 8.0;
+const RIVER_WIDTH_MAX: f32 = 120.0;
+const RIVER_WIDTH_DEFAULT: f32 = 24.0;
+const RIVER_WINDING_DEFAULT: f32 = 50.0;
 /// Random mountain ranges: length along the range and width across it, in meters.
 const RANGE_LENGTH_MIN: f32 = 500.0;
 const RANGE_LENGTH_MAX: f32 = 4000.0;
@@ -52,10 +57,11 @@ enum Tool {
     Islands,
     Mountains,
     Lakes,
+    Rivers,
 }
 
 impl Tool {
-    const ALL: [Tool; 5] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Mountains, Tool::Lakes];
+    const ALL: [Tool; 6] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Mountains, Tool::Lakes, Tool::Rivers];
 
     fn label(self) -> &'static str {
         match self {
@@ -64,6 +70,7 @@ impl Tool {
             Tool::Islands => "Islands",
             Tool::Mountains => "Mountains",
             Tool::Lakes => "Lakes",
+            Tool::Rivers => "Rivers",
         }
     }
 }
@@ -112,6 +119,8 @@ enum SliderId {
     LakeBrush,
     LakeCount,
     LakeSize,
+    RiverWidth,
+    RiverWinding,
 }
 
 struct NumberField {
@@ -298,12 +307,32 @@ impl BrushLayout {
     }
 }
 
+/// Where everything in the Rivers panel sits: a width and a winding slider, and notes.
+struct RiverLayout {
+    panel: Rect,
+    width: Rect,
+    winding: Rect,
+}
+
+impl RiverLayout {
+    fn new(origin: Vec2) -> Self {
+        let x = origin.x + PAD;
+        let slider = |y: f32| Rect::new(x, origin.y + y, INNER_WIDTH, 22.0);
+        Self {
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, 322.0),
+            width: slider(92.0),
+            winding: slider(154.0),
+        }
+    }
+}
+
 enum Layout {
     NewMap(NewMapLayout),
     Continents(ContinentsLayout),
     Islands(IslandsLayout),
     Mountains(BrushLayout),
     Lakes(BrushLayout),
+    Rivers(RiverLayout),
 }
 
 impl Layout {
@@ -313,6 +342,7 @@ impl Layout {
             Layout::Continents(l) => l.panel,
             Layout::Islands(l) => l.panel,
             Layout::Mountains(l) | Layout::Lakes(l) => l.panel,
+            Layout::Rivers(l) => l.panel,
         }
     }
 }
@@ -342,6 +372,9 @@ pub struct EditorUi {
     lake_brush: Slider,
     lake_count: Slider,
     lake_size: Slider,
+    /// Width of a river's channel in meters, and how much it winds, from 0 to 100.
+    river_width: Slider,
+    river_winding: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -522,6 +555,22 @@ impl EditorUi {
                 unit: " m",
                 ends: None,
             },
+            river_width: Slider {
+                label: "Width",
+                value: RIVER_WIDTH_DEFAULT,
+                min: RIVER_WIDTH_MIN,
+                max: RIVER_WIDTH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            river_winding: Slider {
+                label: "Winding",
+                value: RIVER_WINDING_DEFAULT,
+                min: 0.0,
+                max: 100.0,
+                unit: "",
+                ends: Some(("Straight", "Winding")),
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -538,6 +587,7 @@ impl EditorUi {
             Tool::Islands => Layout::Islands(IslandsLayout::new(origin)),
             Tool::Mountains => Layout::Mountains(BrushLayout::new(origin)),
             Tool::Lakes => Layout::Lakes(BrushLayout::new(origin)),
+            Tool::Rivers => Layout::Rivers(RiverLayout::new(origin)),
         })
     }
 
@@ -576,6 +626,8 @@ impl EditorUi {
             SliderId::LakeBrush => &mut self.lake_brush,
             SliderId::LakeCount => &mut self.lake_count,
             SliderId::LakeSize => &mut self.lake_size,
+            SliderId::RiverWidth => &mut self.river_width,
+            SliderId::RiverWinding => &mut self.river_winding,
         }
     }
 
@@ -585,8 +637,14 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Mountains) | Some(Tool::Lakes) | None => &[],
+            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | None => &[],
         }
+    }
+
+    /// The channel width in meters and the winding, from 0 to 1, of the river the Rivers tool
+    /// digs while it is open, else `None`.
+    pub fn river(&self) -> Option<(f32, f32)> {
+        (self.open_tool == Some(Tool::Rivers)).then(|| (self.river_width.value, self.river_winding.value / 100.0))
     }
 
     /// The radius in meters and what it paints while the Mountains or Lakes tool is open, else
@@ -745,6 +803,19 @@ impl EditorUi {
                     }
                 }
             }
+            Layout::Rivers(l) => {
+                let sliders = [(l.width, SliderId::RiverWidth), (l.winding, SliderId::RiverWinding)];
+                if clicked {
+                    if let Some((_, id)) = sliders.iter().find(|(r, _)| r.contains(mouse)) {
+                        self.dragging = Some(*id);
+                    }
+                }
+                if let Some(id) = self.dragging {
+                    if let Some((track, _)) = sliders.iter().find(|(_, s)| *s == id) {
+                        self.slider_mut(id).set_from_x(*track, mouse.x);
+                    }
+                }
+            }
             Layout::Islands(l) => {
                 let sliders = [
                     (l.count, SliderId::IslandCount),
@@ -820,6 +891,7 @@ impl EditorUi {
                 size: self.lake_size.value,
                 seed: random_seed(),
             }),
+            Layout::Rivers(_) => None,
         }
     }
 
@@ -946,6 +1018,7 @@ impl EditorUi {
                         button: "Add lakes",
                     },
                 ),
+                Layout::Rivers(l) => self.draw_river_panel(style, l, mouse, has_map),
             }
         }
     }
@@ -1034,6 +1107,34 @@ impl EditorUi {
             draw_slider(style, r, slider, self.dragging == Some(id), mouse);
         }
         draw_primary_button(style, l.button, panel.button, has_map, mouse);
+    }
+
+    fn draw_river_panel(&self, style: &Style, l: &RiverLayout, mouse: Vec2, has_map: bool) {
+        let subtitle = if has_map {
+            "Click where it starts and ends."
+        } else {
+            "Create a map first."
+        };
+        self.draw_header(style, l.panel, "Rivers", subtitle);
+        for (r, slider, id) in [
+            (l.width, &self.river_width, SliderId::RiverWidth),
+            (l.winding, &self.river_winding, SliderId::RiverWinding),
+        ] {
+            draw_slider(style, r, slider, self.dragging == Some(id), mouse);
+        }
+
+        let x = l.panel.x + PAD;
+        let mut y = l.winding.bottom() + 46.0;
+        for line in [
+            "Click the two ends of the river.",
+            "It flows from the higher one to the lower,",
+            "cutting through land where it must.",
+            "It stops at the sea or a lake it reaches.",
+            "Esc forgets the first point.",
+        ] {
+            style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
+            y += 18.0;
+        }
     }
 
     fn draw_islands_panel(&self, style: &Style, l: &IslandsLayout, mouse: Vec2, has_map: bool) {
@@ -1352,6 +1453,18 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             draw_ellipse_lines(c.x, c.y, 11.0, 7.5, 0.0, t, color);
             for (dx, dy, w) in [(-3.5, -1.5, 3.0), (2.0, 2.5, 3.5)] {
                 draw_line(c.x + dx - w, c.y + dy, c.x + dx + w, c.y + dy, 1.2, color);
+            }
+        }
+        Tool::Rivers => {
+            // A river winding across the icon, widening toward its mouth.
+            let steps = 24;
+            let point = |k: usize| {
+                let t = k as f32 / steps as f32;
+                vec2(c.x - 11.0 + 22.0 * t, c.y + 5.5 * (t * std::f32::consts::TAU * 1.1).sin())
+            };
+            for k in 0..steps {
+                let (p0, p1) = (point(k), point(k + 1));
+                draw_line(p0.x, p0.y, p1.x, p1.y, 1.0 + 1.6 * k as f32 / steps as f32, color);
             }
         }
         Tool::Islands => {

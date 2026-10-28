@@ -8,6 +8,7 @@ mod islands;
 mod noise;
 mod open_map;
 mod render;
+mod rivers;
 mod storage;
 mod style;
 mod toast;
@@ -37,6 +38,7 @@ const HELP: &[(&[&str], &str)] = &[
     (&["Wheel"], "Zoom"),
     (&["Right-drag"], "Look (not with brushes)"),
     (&["Left-drag"], "Raise mountains / dig lakes"),
+    (&["Click"], "Rivers: pick both ends"),
     (&["Right-drag"], "Lower mountains"),
     (&["[", "]"], "Brush size"),
     (&["Arrows"], "Look"),
@@ -137,7 +139,10 @@ async fn main() {
             ui.finish_generating();
         }
 
-        let quit = is_quit_requested() || (is_key_pressed(KeyCode::Escape) && !ui.escape());
+        // Esc drops the first end of a river, if one is picked, before it closes the panel.
+        let escape = is_key_pressed(KeyCode::Escape);
+        let dropped_end = escape && map.as_mut().is_some_and(|m| m.river_start.take().is_some());
+        let quit = is_quit_requested() || (escape && !dropped_end && !ui.escape());
         if quit && can_discard(map.as_mut(), "close NWorld", &mut toasts) {
             break;
         }
@@ -227,7 +232,8 @@ async fn main() {
                 m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush().is_none());
                 m.world.update(m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
-                draw_world(m, &terrain, &backdrop_material, time, show_topo, brush);
+                let river = place_river(m, &ui, &style, &mut toasts);
+                draw_world(m, &terrain, &backdrop_material, time, show_topo, brush, river);
                 if show_topo {
                     contour_labels.refresh(&m.world, get_time());
                     contour_labels.draw(&style, &m.world, &m.cam.camera(&m.world, 40_000.0), TOOLBAR_WIDTH);
@@ -283,7 +289,74 @@ fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2,
     center.filter(|_| over_map).map(|c| (c, radius))
 }
 
-fn draw_world(map: &mut OpenMap, terrain: &render::TerrainRenderer, backdrop_material: &Material, time: f32, topo: bool, brush: Option<(Vec2, f32)>) {
+/// What the Rivers tool shows on the map: where the first end was picked, where the mouse
+/// points, and half the width of the channel.
+struct RiverPreview {
+    start: Option<Vec2>,
+    cursor: Option<Vec2>,
+    radius: f32,
+}
+
+/// Digs rivers with the Rivers tool open: the first click on the map picks one end of the
+/// river, the second picks the other and digs it. Returns what to show on the map.
+fn place_river(map: &mut OpenMap, ui: &EditorUi, style: &Style, toasts: &mut Toasts) -> Option<RiverPreview> {
+    let Some((width, winding)) = ui.river() else {
+        map.river_start = None;
+        return None;
+    };
+    let mouse: Vec2 = mouse_position().into();
+    let over_map = !ui.mouse_over() && !hud_pills(style, Some(&*map)).covers(mouse, style);
+    let camera = map.cam.camera(&map.world, 40_000.0);
+    let cursor = over_map.then(|| hills::pick_terrain(&camera, &map.world, mouse)).flatten();
+    if let (true, Some(point)) = (is_mouse_button_pressed(MouseButton::Left), cursor) {
+        match map.river_start.take() {
+            None => map.river_start = Some(point),
+            Some(start) => {
+                map.end_stroke();
+                if let Err(message) = map.add_river(start, point, width, winding, rand::gen_range(1, 999_999_999)) {
+                    // Keep the first end, so another second one can be tried.
+                    map.river_start = Some(start);
+                    toasts.info(message);
+                }
+            }
+        }
+    }
+    Some(RiverPreview { start: map.river_start, cursor, radius: width * 0.5 })
+}
+
+/// Rings for the river's ends, a post to find the first one by, and a line between them.
+fn draw_river_preview(world: &world::World, cam: Vec3, river: &RiverPreview) {
+    const SEGMENTS: usize = 64;
+    if let Some(cursor) = river.cursor {
+        draw_brush_ring(world, cam, cursor, river.radius);
+    }
+    let Some(start) = river.start else {
+        return;
+    };
+    draw_brush_ring(world, cam, start, river.radius);
+    let base = vec3(start.x, world.surface_height(start.x, start.y), start.y);
+    draw_line_3d(base, base + vec3(0.0, 40.0, 0.0), WHITE);
+    if let Some(cursor) = river.cursor {
+        let point = |t: f32| {
+            let p = start.lerp(cursor, t);
+            let lift = (cam.distance(vec3(p.x, 0.0, p.y)) * 0.003).max(0.6);
+            vec3(p.x, world.surface_height(p.x, p.y) + lift, p.y)
+        };
+        for k in 0..SEGMENTS {
+            draw_line_3d(point(k as f32 / SEGMENTS as f32), point((k + 1) as f32 / SEGMENTS as f32), Color::new(1.0, 1.0, 1.0, 0.7));
+        }
+    }
+}
+
+fn draw_world(
+    map: &mut OpenMap,
+    terrain: &render::TerrainRenderer,
+    backdrop_material: &Material,
+    time: f32,
+    topo: bool,
+    brush: Option<(Vec2, f32)>,
+    river: Option<RiverPreview>,
+) {
     let pos = map.cam.position();
     let view_distance = BASE_VIEW_DISTANCE + pos.y.max(0.0) * 1.5;
     let camera = map.cam.camera(&map.world, view_distance * 1.5);
@@ -300,6 +373,9 @@ fn draw_world(map: &mut OpenMap, terrain: &render::TerrainRenderer, backdrop_mat
     gl_use_default_material();
     if let Some((center, radius)) = brush {
         draw_brush_ring(&map.world, pos, center, radius);
+    }
+    if let Some(river) = &river {
+        draw_river_preview(&map.world, pos, river);
     }
     set_default_camera();
 }

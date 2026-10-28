@@ -12,6 +12,7 @@ use crate::hills::{self, HillStroke, Peak};
 use crate::history::History;
 use crate::islands::{self, IslandParams};
 use crate::render;
+use crate::rivers::{self, RiverParams};
 use crate::storage::{self, SavedMap};
 use crate::toast::Toasts;
 use crate::ui::TOOLBAR_WIDTH;
@@ -30,6 +31,8 @@ pub struct OpenMap {
     hill_seed: u32,
     /// The hills brush stroke being painted, while the mouse button is held.
     stroke: Option<HillStroke>,
+    /// Where the first end of a river was picked, while the Rivers tool waits for the second.
+    pub river_start: Option<Vec2>,
     /// The file the map was last saved to or opened from.
     path: Option<PathBuf>,
     /// Whether the map has been edited since it was created, saved or opened.
@@ -61,6 +64,7 @@ impl OpenMap {
             history: History::default(),
             hill_seed: rand::gen_range(1, u32::MAX),
             stroke: None,
+            river_start: None,
             path: None,
             dirty: false,
         }
@@ -164,6 +168,21 @@ impl OpenMap {
         self.apply_terrain(heights, water);
         self.dirty = true;
         added
+    }
+
+    /// Digs a river between two points (world x and z) as one undoable step: `width` meters wide
+    /// in the middle, winding by `winding` from 0 to 1. It flows from the higher point to the
+    /// lower. Seeded like [`generate_continents`](Self::generate_continents). The error is a
+    /// message fit to show the user.
+    pub fn add_river(&mut self, from: Vec2, to: Vec2, width: f32, winding: f32, seed: u32) -> Result<(), &'static str> {
+        let (nx, nz) = self.world.samples();
+        let seed = self.next_seed(seed);
+        let params = RiverParams { from, to, width, winding, seed };
+        let dug = rivers::dig(self.world.heights(), self.world.water(), nx, nz, self.world.half_extents(), &params)?;
+        self.history.record(self.world.heights(), self.world.water(), &dug.heights, &dug.water);
+        self.apply_terrain(dug.heights, dug.water);
+        self.dirty = true;
+        Ok(())
     }
 
     /// Grows `peak`s with a brush of `radius` meters at `center` (world x and z), or with `erase`
