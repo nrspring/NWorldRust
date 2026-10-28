@@ -185,6 +185,22 @@ impl OpenMap {
         Ok(())
     }
 
+    /// Digs up to `count` rivers from random inland points down to the sea, as one undoable step,
+    /// and returns how many fit. Seeded like [`generate_continents`](Self::generate_continents).
+    pub fn add_rivers(&mut self, count: u32, width: f32, winding: f32, seed: u32) -> usize {
+        let (nx, nz) = self.world.samples();
+        let seed = self.next_seed(seed);
+        let Some((dug, added)) =
+            rivers::scatter(self.world.heights(), self.world.water(), nx, nz, self.world.half_extents(), seed, count, width, winding)
+        else {
+            return 0;
+        };
+        self.history.record(self.world.heights(), self.world.water(), &dug.heights, &dug.water);
+        self.apply_terrain(dug.heights, dug.water);
+        self.dirty = true;
+        added
+    }
+
     /// Grows `peak`s with a brush of `radius` meters at `center` (world x and z), or with `erase`
     /// wears the ground down, continuing the current stroke or starting one (`erase` and `peak`
     /// only matter when starting). `dt` is the seconds since the last call, which sets how much

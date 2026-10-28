@@ -189,6 +189,15 @@ async fn main() {
                     }
                 }
             }
+            Some(UiAction::AddRivers { count, width, winding, seed }) => {
+                if let Some(m) = &mut map {
+                    match m.add_rivers(count, width, winding, seed) {
+                        0 => toasts.info("No room for a river. It needs land at least 150 m from the sea."),
+                        n if n as u32 >= count => toasts.info(format!("Added {n} {}", if n == 1 { "river" } else { "rivers" })),
+                        n => toasts.info(format!("Added {n} of {count} rivers. There wasn't room for the rest.")),
+                    }
+                }
+            }
             Some(UiAction::AddMountainRange { length, width, seed }) => {
                 if let Some(m) = &mut map {
                     if m.add_mountain_range(length, width, seed) {

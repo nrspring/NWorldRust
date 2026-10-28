@@ -42,6 +42,7 @@ const RIVER_WIDTH_MIN: f32 = 8.0;
 const RIVER_WIDTH_MAX: f32 = 120.0;
 const RIVER_WIDTH_DEFAULT: f32 = 24.0;
 const RIVER_WINDING_DEFAULT: f32 = 50.0;
+const RIVER_COUNT_MAX: f32 = 10.0;
 /// Random mountain ranges: length along the range and width across it, in meters.
 const RANGE_LENGTH_MIN: f32 = 500.0;
 const RANGE_LENGTH_MAX: f32 = 4000.0;
@@ -86,6 +87,9 @@ pub enum UiAction {
     AddMountainRange { length: f32, width: f32, seed: u32 },
     /// Dig this many randomly placed lakes, about this many meters across.
     AddLakes { count: u32, size: f32, seed: u32 },
+    /// Dig this many rivers from random inland points to the sea, with this channel width in
+    /// meters and winding from 0 to 1.
+    AddRivers { count: u32, width: f32, winding: f32, seed: u32 },
     /// Undo the most recent edit.
     Undo,
     /// Save the map; `save_as` asks for a new file name even if the map already has a file.
@@ -121,6 +125,7 @@ enum SliderId {
     LakeSize,
     RiverWidth,
     RiverWinding,
+    RiverCount,
 }
 
 struct NumberField {
@@ -307,21 +312,32 @@ impl BrushLayout {
     }
 }
 
-/// Where everything in the Rivers panel sits: a width and a winding slider, and notes.
+/// Where everything in the Rivers panel sits: a width and winding slider, notes, and the
+/// random rivers: a count and a button.
 struct RiverLayout {
     panel: Rect,
     width: Rect,
     winding: Rect,
+    /// Where the line above the random rivers sits.
+    divider: f32,
+    count: Rect,
+    button: Rect,
 }
 
 impl RiverLayout {
     fn new(origin: Vec2) -> Self {
         let x = origin.x + PAD;
         let slider = |y: f32| Rect::new(x, origin.y + y, INNER_WIDTH, 22.0);
+        let divider = origin.y + 312.0;
+        let count = slider(divider - origin.y + 102.0);
+        let button = Rect::new(x, count.bottom() + 28.0, INNER_WIDTH, CONTROL_HEIGHT);
         Self {
-            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, 322.0),
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, button.bottom() + PAD - origin.y),
             width: slider(92.0),
             winding: slider(154.0),
+            divider,
+            count,
+            button,
         }
     }
 }
@@ -375,6 +391,8 @@ pub struct EditorUi {
     /// Width of a river's channel in meters, and how much it winds, from 0 to 100.
     river_width: Slider,
     river_winding: Slider,
+    /// How many random rivers to add.
+    river_count: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -571,6 +589,14 @@ impl EditorUi {
                 unit: "",
                 ends: Some(("Straight", "Winding")),
             },
+            river_count: Slider {
+                label: "Rivers",
+                value: 1.0,
+                min: 1.0,
+                max: RIVER_COUNT_MAX,
+                unit: "",
+                ends: None,
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -628,6 +654,7 @@ impl EditorUi {
             SliderId::LakeSize => &mut self.lake_size,
             SliderId::RiverWidth => &mut self.river_width,
             SliderId::RiverWinding => &mut self.river_winding,
+            SliderId::RiverCount => &mut self.river_count,
         }
     }
 
@@ -804,11 +831,16 @@ impl EditorUi {
                 }
             }
             Layout::Rivers(l) => {
-                let sliders = [(l.width, SliderId::RiverWidth), (l.winding, SliderId::RiverWinding)];
+                let sliders = [
+                    (l.width, SliderId::RiverWidth),
+                    (l.winding, SliderId::RiverWinding),
+                    (l.count, SliderId::RiverCount),
+                ];
                 if clicked {
                     if let Some((_, id)) = sliders.iter().find(|(r, _)| r.contains(mouse)) {
                         self.dragging = Some(*id);
                     }
+                    submit = l.button.contains(mouse);
                 }
                 if let Some(id) = self.dragging {
                     if let Some((track, _)) = sliders.iter().find(|(_, s)| *s == id) {
@@ -891,7 +923,12 @@ impl EditorUi {
                 size: self.lake_size.value,
                 seed: random_seed(),
             }),
-            Layout::Rivers(_) => None,
+            Layout::Rivers(_) => has_map.then(|| UiAction::AddRivers {
+                count: self.river_count.value as u32,
+                width: self.river_width.value,
+                winding: self.river_winding.value / 100.0,
+                seed: random_seed(),
+            }),
         }
     }
 
@@ -1135,6 +1172,13 @@ impl EditorUi {
             style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
             y += 18.0;
         }
+
+        draw_line(x, l.divider, l.panel.right() - PAD, l.divider, 1.0, style::BORDER);
+        style.text("Random rivers", x, l.divider + 28.0, 14, Weight::Semibold, style::TEXT);
+        style.text("Each starts inland and runs to the sea,", x, l.divider + 48.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text("with the width and winding set above.", x, l.divider + 64.0, 12, Weight::Regular, style::TEXT_MUTED);
+        draw_slider(style, l.count, &self.river_count, self.dragging == Some(SliderId::RiverCount), mouse);
+        draw_primary_button(style, l.button, "Add rivers", has_map, mouse);
     }
 
     fn draw_islands_panel(&self, style: &Style, l: &IslandsLayout, mouse: Vec2, has_map: bool) {

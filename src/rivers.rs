@@ -41,6 +41,17 @@ const BANK_LOOK: f32 = CELL_SIZE * 2.0;
 const EDGE_MARGIN: f32 = CELL_SIZE * 3.0;
 /// Courses tried for a winding river; the one that digs the least is kept.
 const CANDIDATES: u32 = 12;
+/// A random river starts at least this far from the sea, in meters.
+const RANDOM_MIN_LENGTH: f32 = 150.0;
+/// A random river's start counts as far enough from the sea, in meters, to be as likely as any
+/// farther one; nearer ones are less likely, in proportion.
+const RANDOM_LONG_ENOUGH: f32 = 500.0;
+/// Starting points drawn for each random river, which are then tried in a random order.
+const RANDOM_DRAWS: usize = 80;
+/// How many of the drawn starting points are tried before giving up.
+const RANDOM_TRIES: usize = 6;
+/// A random river's mouth is any shore within this many times the distance to the nearest.
+const RANDOM_MOUTH_SPREAD: f32 = 1.6;
 
 /// What river to dig.
 pub struct RiverParams {
@@ -170,6 +181,92 @@ pub fn dig(
     }
     let course = best.ok_or("A river needs dry land between its two points.")?;
     Ok(carve(&terrain, &course))
+}
+
+/// Digs up to `count` rivers `width` meters wide, winding by `winding` (0 to 1), each from a
+/// random point inland on a landmass down to the sea, and returns the map with them and how
+/// many fit, or `None` if none did.
+pub fn scatter(
+    heights: &[f32],
+    water: &[f32],
+    nx: usize,
+    nz: usize,
+    half: Vec2,
+    seed: u32,
+    count: u32,
+    width: f32,
+    winding: f32,
+) -> Option<(Dug, usize)> {
+    let mut rng = Rng::new(seed);
+    let mut current = Dug { heights: heights.to_vec(), water: water.to_vec() };
+    let mut added = 0;
+    for k in 0..count {
+        let terrain = Terrain { heights: &current.heights, water: &current.water, nx, nz, half };
+        let river_seed = seed.wrapping_add(k.wrapping_mul(0x85EB_CA6B));
+        if let Some(next) = random_river(&terrain, &mut rng, width, winding, river_seed) {
+            current = next;
+            added += 1;
+        }
+    }
+    (added > 0).then_some((current, added))
+}
+
+/// One river from a random inland point to the sea, or `None` if no point works.
+fn random_river(terrain: &Terrain, rng: &mut Rng, width: f32, winding: f32, seed: u32) -> Option<Dug> {
+    let (nx, n) = (terrain.nx, terrain.heights.len());
+    let ocean = |idx: usize| terrain.flooded(idx) && terrain.water[idx] <= SEA_LEVEL;
+    let pos = |idx: usize| vec2((idx % nx) as f32 * CELL_SIZE - terrain.half.x, (idx / nx) as f32 * CELL_SIZE - terrain.half.y);
+    // The sea's shore: ocean samples with dry ground beside them.
+    let shore: Vec<usize> = (0..n)
+        .filter(|&idx| {
+            let (i, j) = (idx % nx, idx / nx);
+            ocean(idx)
+                && [(i > 0).then(|| idx - 1), (i + 1 < nx).then(|| idx + 1), (j > 0).then(|| idx - nx), (idx + nx < n).then(|| idx + nx)]
+                    .into_iter()
+                    .flatten()
+                    .any(|k| !terrain.flooded(k))
+        })
+        .collect();
+    if shore.is_empty() {
+        return None;
+    }
+
+    // Draw a number of starting points over all the land and put them in a random order that
+    // leans toward the ones far from the sea, so rivers tend to be long, but only up to
+    // `RANDOM_LONG_ENOUGH`: past that, every spot is as likely as any other.
+    let mut starts: Vec<(f32, Vec2, f32)> = Vec::new();
+    for _ in 0..RANDOM_DRAWS {
+        let source = (rng.range(0.0, 1.0) * n as f32) as usize % n;
+        // Dry, inland ground that isn't a lake's bank.
+        if terrain.flooded(source) || terrain.heights[source] < 2.0 || terrain.water[source] > SEA_LEVEL {
+            continue;
+        }
+        let from = pos(source);
+        let nearest = shore.iter().map(|&k| pos(k).distance(from)).fold(f32::INFINITY, f32::min);
+        if nearest >= RANDOM_MIN_LENGTH {
+            let weight = nearest.min(RANDOM_LONG_ENOUGH) / RANDOM_LONG_ENOUGH;
+            starts.push((rng.range(0.0001, 1.0).powf(1.0 / weight), from, nearest));
+        }
+    }
+    starts.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    for (_, from, nearest) in starts.into_iter().take(RANDOM_TRIES) {
+        // The mouth is somewhere along the shore not much farther than the nearest part of it.
+        let (mut mouth, mut seen) = (shore[0], 0.0);
+        for &k in &shore {
+            if pos(k).distance(from) <= nearest * RANDOM_MOUTH_SPREAD {
+                seen += 1.0;
+                if rng.range(0.0, 1.0) * seen < 1.0 {
+                    mouth = k;
+                }
+            }
+        }
+        let params = RiverParams { from, to: pos(mouth), width, winding, seed };
+        if let Ok(dug) = dig(terrain.heights, terrain.water, nx, terrain.nz, terrain.half, &params) {
+            return Some(dug);
+        }
+    }
+    None
 }
 
 /// A meandering line of stations from `from` to `to`: straight at both ends, and in between
@@ -436,6 +533,30 @@ mod tests {
         let (h, w) = map(|x, _| 20.0 - 0.01 * x);
         let area = |width: f32| channel((&h, &w), &river(&h, &w, vec2(-250.0, 0.0), vec2(250.0, 0.0), width, 0.0).unwrap()).len();
         assert!(area(60.0) > area(20.0) * 2);
+    }
+
+    #[test]
+    fn random_rivers_run_from_inland_to_the_sea() {
+        // An island: land falling from a high middle to the shore, in open sea.
+        let (h, w) = map(|x, z| {
+            let d = (x * x / 4.0 + z * z).sqrt();
+            if d < 190.0 { 2.0 + 0.04 * (190.0 - d) } else { -30.0 }
+        });
+        let (dug, added) = scatter(&h, &w, NX, NZ, half(), 3, 2, 16.0, 0.5).unwrap();
+        assert!(added >= 1);
+        let wet = channel((&h, &w), &dug);
+        assert!(wet.len() > 50);
+        // Every river reaches the sea: wet samples lie beside the ocean.
+        let beside_sea = wet.iter().any(|&k| {
+            [k - 1, k + 1, k - NX, k + NX, k - NX - 1, k - NX + 1, k + NX - 1, k + NX + 1].into_iter().any(|n| h[n] < w[n])
+        });
+        assert!(beside_sea);
+        // Same seed, same rivers.
+        let (again, _) = scatter(&h, &w, NX, NZ, half(), 3, 2, 16.0, 0.5).unwrap();
+        assert!(again.heights == dug.heights);
+        // No land, no rivers.
+        let (sea, _) = map(|_, _| -50.0);
+        assert!(scatter(&sea, &w, NX, NZ, half(), 3, 2, 16.0, 0.5).is_none());
     }
 
     #[test]
