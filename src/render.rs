@@ -540,14 +540,14 @@ uniform float topo;
     sky_glsl!(),
     r#"
 // Hills are drawn in 25 shades of green, one per metre: shade 1 (up to 2 m) is the lightest and
-// shade 25 (25 m) the darkest. Mountains are grey rock from 26 m and snow from 40 m.
+// shade 25 (25 m) the darkest. Mountains are dark rock from 26 m and a dull snow from 44 m.
 const float GREEN_SHADES = 25.0;
 const float ROCK_START = 26.0;
-const float SNOW_START = 40.0;
+const float SNOW_START = 44.0;
 const float ELEVATION_RANGE = 50.0;
-const vec3 ROCK = vec3(0.42, 0.42, 0.43);
-const vec3 HIGH_ROCK = vec3(0.60, 0.60, 0.62);
-const vec3 SNOW = vec3(0.96, 0.97, 1.0);
+const vec3 ROCK = vec3(0.30, 0.29, 0.27);
+const vec3 HIGH_ROCK = vec3(0.43, 0.41, 0.39);
+const vec3 SNOW = vec3(0.70, 0.72, 0.75);
 const vec3 GRASS = vec3(0.62, 0.80, 0.30);
 const vec3 HIGH_GRASS = vec3(0.03, 0.14, 0.05);
 const vec3 WATER = vec3(0.02, 0.10, 0.26);

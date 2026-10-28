@@ -301,7 +301,7 @@ impl World {
     /// water) to 255 (1 m or more above); the shader traces the coast where it crosses the
     /// middle, which follows a smooth curve between samples. Green encodes
     /// elevation from 0 to 50 m, which the shader colors: 25 shades of green up to 25 m, grey
-    /// rock from 26 m and snow from 40 m. Alpha is how far the ground stands above the water, up
+    /// rock from 26 m and snow from 44 m. Alpha is how far the ground stands above the water, up
     /// to 8 m, which is as far up as a beach goes, and where the ground is under water, how deep
     /// the water is, up to 64 m (stored as a square root), which tells shallow water from deep. Lakes and rivers, whose
     /// water is above sea level, are shallow however deep they are dug.

@@ -15,9 +15,22 @@ pub const MAX_MOUNTAIN: f32 = 50.0;
 /// How far the hill noise is stretched toward the ends of the range.
 const HILL_CONTRAST: f32 = 2.4;
 /// How narrow mountain ridges are: higher drops the ground away from a ridge line faster.
-const MOUNTAIN_RIDGE_SHARPNESS: f32 = 2.4;
+const MOUNTAIN_RIDGE_SHARPNESS: f32 = 2.0;
+/// How narrow the secondary ridges that branch off the main ones are.
+const MOUNTAIN_SPUR_SHARPNESS: f32 = 2.2;
+/// How far below the bottom of the mountain range, as a share of its height, the ground between
+/// peaks can fall.
+const MOUNTAIN_VALLEY: f32 = 0.45;
+/// How hard mountain heights are stretched toward the top of their range.
+const MOUNTAIN_STRETCH: f32 = 2.5;
 /// How much the crags roughen mountain tops, as a share of their height range.
-const MOUNTAIN_CRAGS: f32 = 0.3;
+const MOUNTAIN_CRAGS: f32 = 0.12;
+/// Wavelengths in meters of the mountains' features: the massifs that group tall peaks
+/// together, the main ridges, the spurs off them and the crags.
+const MASSIF_SIZE: f32 = 380.0;
+const RIDGE_SIZE: f32 = 150.0;
+const SPUR_SIZE: f32 = 62.0;
+const CRAG_SIZE: f32 = 22.0;
 /// A mountain stroke also grows hills this many times as far out as the brush reaches.
 const FOOTHILL_REACH: f32 = 2.5;
 /// How strongly each smoothing pass of a finished stroke's rim pulls toward the neighbors.
@@ -246,15 +259,32 @@ impl HillStroke {
             }
             Peak::Mountains => {
                 // Ridge lines run where the noise crosses zero, with the ground falling away
-                // steeply to either side; rough noise on top breaks them into crags.
-                let n = self.noise.fbm(x / 130.0 + 7.0, z / 130.0 - 3.0, 4, 0.55);
-                let ridge = (1.0 - n.abs() * MOUNTAIN_RIDGE_SHARPNESS).clamp(0.0, 1.0);
-                let crags = self.noise.fbm(x / 28.0 + 11.0, z / 28.0 - 23.0, 2, 0.5);
-                0.4 + 0.6 * ridge * ridge + MOUNTAIN_CRAGS * crags
+                // steeply to either side. Spurs branch off the main ridges, and the highest
+                // summits are where the two meet, within a massif that is tall; elsewhere the
+                // peaks are lower and the ground between them drops to saddles and valleys.
+                // Rough noise on top breaks everything into crags.
+                let massif = self.noise.fbm(x / MASSIF_SIZE - 17.0, z / MASSIF_SIZE + 9.0, 3, 0.5);
+                let height = smoothstep(-0.30, 0.45, massif);
+                let ridge = (1.0 - self.noise.fbm(x / RIDGE_SIZE + 7.0, z / RIDGE_SIZE - 3.0, 4, 0.55).abs() * MOUNTAIN_RIDGE_SHARPNESS)
+                    .clamp(0.0, 1.0);
+                let spur = (1.0 - self.noise.fbm(x / SPUR_SIZE - 5.0, z / SPUR_SIZE + 13.0, 3, 0.5).abs() * MOUNTAIN_SPUR_SHARPNESS)
+                    .clamp(0.0, 1.0);
+                let summit = ridge * ridge * (0.55 + 0.45 * spur * spur);
+                let crags = self.noise.fbm(x / CRAG_SIZE + 11.0, z / CRAG_SIZE - 23.0, 2, 0.5);
+                let raw = 0.08 + 0.92 * summit * (0.3 + 0.7 * height) + MOUNTAIN_CRAGS * crags;
+                // Noise rarely strays far from its middle, so stretch it, easing off toward the
+                // top so the tallest summits come to a rounded point instead of a flat cap.
+                let stretched = (MOUNTAIN_STRETCH * raw.max(0.0)).tanh() / MOUNTAIN_STRETCH.tanh();
+                // The lowest ground between peaks is below the foot of the mountains, down to
+                // the height of hills, so valleys show green between the rock.
+                stretched * (1.0 + MOUNTAIN_VALLEY) - MOUNTAIN_VALLEY
             }
             Peak::Lakes => 0.0,
         };
-        (low + (high - low) * unit.clamp(0.0, 1.0)).clamp(low, high)
+        match peak {
+            Peak::Mountains => (low + (high - low) * unit.clamp(-MOUNTAIN_VALLEY, 1.0)).clamp(MIN_HILL, high),
+            _ => (low + (high - low) * unit.clamp(0.0, 1.0)).clamp(low, high),
+        }
     }
 
     /// Raises the sample at `idx` (at world `x`, `z`) by up to `amount` meters toward the
@@ -1246,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn most_mountain_tops_stand_near_the_top_of_the_range() {
+    fn mountain_tops_vary_from_low_peaks_to_tall_ones() {
         let stroke = HillStroke::begin(&[0.0; 4], 2, 2, 11, false, Peak::Mountains);
         let mut tops = Vec::new();
         for j in 0..200 {
@@ -1254,14 +1284,19 @@ mod tests {
                 tops.push(stroke.target(Peak::Mountains, i as f32 * 15.0, j as f32 * 15.0));
             }
         }
+        let share = |test: &dyn Fn(f32) -> bool| tops.iter().filter(|&&t| test(t)).count() as f32 / tops.len() as f32;
         let mean = tops.iter().sum::<f32>() / tops.len() as f32;
-        let high = tops.iter().filter(|&&t| t >= 45.0).count() as f32 / tops.len() as f32;
-        assert!(mean > 40.0, "mountain tops average {mean} m");
-        assert!(high > 0.15, "only {high} of mountain tops reach 45 m");
+        let (low, mid, tall) = (share(&|t| t < 26.0), share(&|t| (26.0..42.0).contains(&t)), share(&|t| t >= 42.0));
+        eprintln!("mean {mean:.1} m; below 26 m {low:.2}, 26 to 42 m {mid:.2}, 42 m and up {tall:.2}");
+        // Some of everything: lots of low ground and saddles, a good share of middling peaks,
+        // and a few tall ones standing above the rest.
+        assert!(low > 0.12, "only {low} of the ground is below 26 m");
+        assert!(mid > 0.3, "only {mid} is 26 to 42 m");
+        assert!(tall > 0.03 && tall < 0.35, "{tall} reaches 42 m");
     }
 
     #[test]
-    fn mountain_heights_span_26_to_50() {
+    fn mountain_heights_run_from_valleys_to_the_top_of_the_range() {
         let stroke = HillStroke::begin(&[0.0; 4], 2, 2, 11, false, Peak::Mountains);
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
         for j in 0..300 {
@@ -1271,7 +1306,7 @@ mod tests {
                 hi = hi.max(t);
             }
         }
-        assert!(lo >= MIN_MOUNTAIN && lo < MIN_MOUNTAIN + 6.0, "lowest was {lo}");
+        assert!(lo >= MIN_HILL && lo < MIN_MOUNTAIN, "lowest was {lo}");
         assert!(hi <= MAX_MOUNTAIN && hi > MAX_MOUNTAIN - 1.0, "tallest was {hi}");
     }
 }
