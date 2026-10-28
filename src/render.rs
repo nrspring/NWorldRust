@@ -551,6 +551,13 @@ const vec3 SNOW = vec3(0.96, 0.97, 1.0);
 const vec3 GRASS = vec3(0.62, 0.80, 0.30);
 const vec3 HIGH_GRASS = vec3(0.03, 0.14, 0.05);
 const vec3 WATER = vec3(0.02, 0.10, 0.26);
+// Deep water is dark blue. Shallow water, which is all of the lakes and rivers and the sea where
+// its floor is within a few meters, is a lighter blue-green, palest at the shore, giving way to
+// the dark blue as the floor drops away. How deep the water is, in meters, is in the surface
+// texture's alpha; must match `MAX_WATER_DEPTH` in world.rs.
+const float WATER_DEPTH_RANGE = 64.0;
+const vec3 SHALLOW_EDGE = vec3(0.30, 0.68, 0.66);
+const vec3 SHALLOW = vec3(0.09, 0.42, 0.56);
 const vec3 SAND = vec3(0.86, 0.77, 0.53);
 const vec3 WET_SAND = vec3(0.60, 0.52, 0.34);
 // Beaches reach about this far from the water, in meters (varied along the shore).
@@ -741,7 +748,11 @@ void main() {
         sand *= 1.0 + (vnoise(v_world.xz / 1.7) - 0.5) * 0.12 * (1.0 - smoothstep(20.0, 150.0, dist));
         ground = mix(ground, sand, beach);
     }
-    vec3 base = mix(WATER, ground, land);
+    // Stored as a square root of the depth.
+    float depth = terrain.a * terrain.a * WATER_DEPTH_RANGE;
+    vec3 water = mix(SHALLOW_EDGE, SHALLOW, smoothstep(0.0, 3.0, depth));
+    water = mix(water, WATER, smoothstep(5.0, 30.0, depth));
+    vec3 base = mix(water, ground, land);
 
     vec3 n = mix(vec3(0.0, 1.0, 0.0), normalize(v_normal.xyz), land);
 

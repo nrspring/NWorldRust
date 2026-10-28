@@ -43,6 +43,13 @@ const RIVER_WIDTH_MAX: f32 = 120.0;
 const RIVER_WIDTH_DEFAULT: f32 = 24.0;
 const RIVER_WINDING_DEFAULT: f32 = 50.0;
 const RIVER_COUNT_MAX: f32 = 10.0;
+/// Shallows brush width in meters, and how far out from the coast the shelf of shallows reaches.
+const SHALLOW_BRUSH_MIN: f32 = 30.0;
+const SHALLOW_BRUSH_MAX: f32 = 600.0;
+const SHALLOW_BRUSH_DEFAULT: f32 = 150.0;
+const SHELF_WIDTH_MIN: f32 = 10.0;
+const SHELF_WIDTH_MAX: f32 = 100.0;
+const SHELF_WIDTH_DEFAULT: f32 = 40.0;
 /// Random mountain ranges: length along the range and width across it, in meters.
 const RANGE_LENGTH_MIN: f32 = 500.0;
 const RANGE_LENGTH_MAX: f32 = 4000.0;
@@ -59,10 +66,12 @@ enum Tool {
     Mountains,
     Lakes,
     Rivers,
+    Shallows,
 }
 
 impl Tool {
-    const ALL: [Tool; 6] = [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Mountains, Tool::Lakes, Tool::Rivers];
+    const ALL: [Tool; 7] =
+        [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Mountains, Tool::Lakes, Tool::Rivers, Tool::Shallows];
 
     fn label(self) -> &'static str {
         match self {
@@ -72,6 +81,7 @@ impl Tool {
             Tool::Mountains => "Mountains",
             Tool::Lakes => "Lakes",
             Tool::Rivers => "Rivers",
+            Tool::Shallows => "Shallows",
         }
     }
 }
@@ -90,6 +100,8 @@ pub enum UiAction {
     /// Dig this many rivers from random inland points to the sea, with this channel width in
     /// meters and winding from 0 to 1.
     AddRivers { count: u32, width: f32, winding: f32, seed: u32 },
+    /// Make the sea this many meters out from every coast shallow.
+    AddShallows { width: f32 },
     /// Undo the most recent edit.
     Undo,
     /// Save the map; `save_as` asks for a new file name even if the map already has a file.
@@ -126,6 +138,8 @@ enum SliderId {
     RiverWidth,
     RiverWinding,
     RiverCount,
+    ShallowBrush,
+    ShelfWidth,
 }
 
 struct NumberField {
@@ -342,6 +356,42 @@ impl RiverLayout {
     }
 }
 
+/// Where everything in the Shallows panel sits: a brush size and notes, then the shelf along
+/// coasts: a width and a button.
+struct ShallowLayout {
+    panel: Rect,
+    brush: Rect,
+    /// Where the line above the shelf controls sits.
+    divider: f32,
+    width: Rect,
+    button: Rect,
+}
+
+impl ShallowLayout {
+    fn new(origin: Vec2) -> Self {
+        let x = origin.x + PAD;
+        let brush = Rect::new(x, origin.y + 92.0, INNER_WIDTH, 22.0);
+        let divider = brush.bottom() + 110.0;
+        let width = Rect::new(x, divider + 84.0, INNER_WIDTH, 22.0);
+        let button = Rect::new(x, width.bottom() + 28.0, INNER_WIDTH, CONTROL_HEIGHT);
+        Self {
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, button.bottom() + PAD - origin.y),
+            brush,
+            divider,
+            width,
+            button,
+        }
+    }
+}
+
+/// What a brush paints.
+#[derive(Clone, Copy)]
+pub enum Brush {
+    Peak(Peak),
+    /// Shallow water onto deep sea (left button) or deep water onto shallow (right).
+    Shallows,
+}
+
 enum Layout {
     NewMap(NewMapLayout),
     Continents(ContinentsLayout),
@@ -349,6 +399,7 @@ enum Layout {
     Mountains(BrushLayout),
     Lakes(BrushLayout),
     Rivers(RiverLayout),
+    Shallows(ShallowLayout),
 }
 
 impl Layout {
@@ -359,6 +410,7 @@ impl Layout {
             Layout::Islands(l) => l.panel,
             Layout::Mountains(l) | Layout::Lakes(l) => l.panel,
             Layout::Rivers(l) => l.panel,
+            Layout::Shallows(l) => l.panel,
         }
     }
 }
@@ -393,6 +445,9 @@ pub struct EditorUi {
     river_winding: Slider,
     /// How many random rivers to add.
     river_count: Slider,
+    /// Width of the shallows brush in meters, and how far out from coasts the shelf reaches.
+    shallow_brush: Slider,
+    shelf_width: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -597,6 +652,22 @@ impl EditorUi {
                 unit: "",
                 ends: None,
             },
+            shallow_brush: Slider {
+                label: "Brush size",
+                value: SHALLOW_BRUSH_DEFAULT,
+                min: SHALLOW_BRUSH_MIN,
+                max: SHALLOW_BRUSH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            shelf_width: Slider {
+                label: "Shallows reach",
+                value: SHELF_WIDTH_DEFAULT,
+                min: SHELF_WIDTH_MIN,
+                max: SHELF_WIDTH_MAX,
+                unit: " m",
+                ends: None,
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -614,6 +685,7 @@ impl EditorUi {
             Tool::Mountains => Layout::Mountains(BrushLayout::new(origin)),
             Tool::Lakes => Layout::Lakes(BrushLayout::new(origin)),
             Tool::Rivers => Layout::Rivers(RiverLayout::new(origin)),
+            Tool::Shallows => Layout::Shallows(ShallowLayout::new(origin)),
         })
     }
 
@@ -655,6 +727,8 @@ impl EditorUi {
             SliderId::RiverWidth => &mut self.river_width,
             SliderId::RiverWinding => &mut self.river_winding,
             SliderId::RiverCount => &mut self.river_count,
+            SliderId::ShallowBrush => &mut self.shallow_brush,
+            SliderId::ShelfWidth => &mut self.shelf_width,
         }
     }
 
@@ -664,7 +738,7 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | None => &[],
+            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | None => &[],
         }
     }
 
@@ -674,12 +748,13 @@ impl EditorUi {
         (self.open_tool == Some(Tool::Rivers)).then(|| (self.river_width.value, self.river_winding.value / 100.0))
     }
 
-    /// The radius in meters and what it paints while the Mountains or Lakes tool is open, else
-    /// `None`.
-    pub fn brush(&self) -> Option<(f32, Peak)> {
+    /// The radius in meters and what it paints while the Mountains, Lakes or Shallows tool is
+    /// open, else `None`.
+    pub fn brush(&self) -> Option<(f32, Brush)> {
         match self.open_tool {
-            Some(Tool::Mountains) => Some((self.mountain_brush.value * 0.5, Peak::Mountains)),
-            Some(Tool::Lakes) => Some((self.lake_brush.value * 0.5, Peak::Lakes)),
+            Some(Tool::Mountains) => Some((self.mountain_brush.value * 0.5, Brush::Peak(Peak::Mountains))),
+            Some(Tool::Lakes) => Some((self.lake_brush.value * 0.5, Brush::Peak(Peak::Lakes))),
+            Some(Tool::Shallows) => Some((self.shallow_brush.value * 0.5, Brush::Shallows)),
             _ => None,
         }
     }
@@ -835,6 +910,28 @@ impl EditorUi {
                     }
                 }
             }
+            Layout::Shallows(l) => {
+                let sliders = [(l.brush, SliderId::ShallowBrush), (l.width, SliderId::ShelfWidth)];
+                if clicked {
+                    if let Some((_, id)) = sliders.iter().find(|(r, _)| r.contains(mouse)) {
+                        self.dragging = Some(*id);
+                    }
+                    submit = l.button.contains(mouse);
+                }
+                if let Some(id) = self.dragging {
+                    if let Some((track, _)) = sliders.iter().find(|(_, s)| *s == id) {
+                        self.slider_mut(id).set_from_x(*track, mouse.x);
+                    }
+                }
+                // [ and ] resize the brush without leaving the map.
+                let slider = self.slider_mut(SliderId::ShallowBrush);
+                let notch = (slider.max - slider.min) / 58.0;
+                for (key, sign) in [(KeyCode::LeftBracket, -1.0), (KeyCode::RightBracket, 1.0)] {
+                    if is_key_pressed(key) {
+                        slider.value = (slider.value + sign * notch).round().clamp(slider.min, slider.max);
+                    }
+                }
+            }
             Layout::Rivers(l) => {
                 let sliders = [
                     (l.width, SliderId::RiverWidth),
@@ -928,6 +1025,7 @@ impl EditorUi {
                 size: self.lake_size.value,
                 seed: random_seed(),
             }),
+            Layout::Shallows(_) => has_map.then(|| UiAction::AddShallows { width: self.shelf_width.value }),
             Layout::Rivers(_) => has_map.then(|| UiAction::AddRivers {
                 count: self.river_count.value as u32,
                 width: self.river_width.value,
@@ -1061,6 +1159,7 @@ impl EditorUi {
                     },
                 ),
                 Layout::Rivers(l) => self.draw_river_panel(style, l, mouse, has_map),
+                Layout::Shallows(l) => self.draw_shallow_panel(style, l, mouse, has_map),
             }
         }
     }
@@ -1149,6 +1248,35 @@ impl EditorUi {
             draw_slider(style, r, slider, self.dragging == Some(id), mouse);
         }
         draw_primary_button(style, l.button, panel.button, has_map, mouse);
+    }
+
+    fn draw_shallow_panel(&self, style: &Style, l: &ShallowLayout, mouse: Vec2, has_map: bool) {
+        let subtitle = if has_map {
+            "Paint shallow water onto the sea."
+        } else {
+            "Create a map first."
+        };
+        self.draw_header(style, l.panel, "Shallows", subtitle);
+        draw_slider(style, l.brush, &self.shallow_brush, self.dragging == Some(SliderId::ShallowBrush), mouse);
+
+        let x = l.panel.x + PAD;
+        let mut y = l.brush.bottom() + 30.0;
+        for line in [
+            "Hold left to paint shallow water.",
+            "Hold right to paint deep water.",
+            "Land, lakes and rivers are left alone.",
+            "[ and ] resize the brush.",
+        ] {
+            style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
+            y += 18.0;
+        }
+
+        draw_line(x, l.divider, l.panel.right() - PAD, l.divider, 1.0, style::BORDER);
+        style.text("Along the coasts", x, l.divider + 28.0, 14, Weight::Semibold, style::TEXT);
+        style.text("Shallows beside every coast, easing", x, l.divider + 48.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text("to deep water this far out.", x, l.divider + 64.0, 12, Weight::Regular, style::TEXT_MUTED);
+        draw_slider(style, l.width, &self.shelf_width, self.dragging == Some(SliderId::ShelfWidth), mouse);
+        draw_primary_button(style, l.button, "Add shallows", has_map, mouse);
     }
 
     fn draw_river_panel(&self, style: &Style, l: &RiverLayout, mouse: Vec2, has_map: bool) {
@@ -1502,6 +1630,20 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             draw_ellipse_lines(c.x, c.y, 11.0, 7.5, 0.0, t, color);
             for (dx, dy, w) in [(-3.5, -1.5, 3.0), (2.0, 2.5, 3.5)] {
                 draw_line(c.x + dx - w, c.y + dy, c.x + dx + w, c.y + dy, 1.2, color);
+            }
+        }
+        Tool::Shallows => {
+            // Waves over water that is shallower toward the shore: three wavy lines, the
+            // topmost the faintest.
+            for (k, dy) in [-7.0f32, 0.0, 7.0].into_iter().enumerate() {
+                let mut shade = color;
+                shade.a *= 0.45 + 0.275 * k as f32;
+                let steps = 16;
+                for s in 0..steps {
+                    let (x0, x1) = (c.x - 10.0 + 20.0 * s as f32 / steps as f32, c.x - 10.0 + 20.0 * (s + 1) as f32 / steps as f32);
+                    let wave = |x: f32| c.y + dy + 2.2 * ((x - c.x) * 0.55 + k as f32).sin();
+                    draw_line(x0, wave(x0), x1, wave(x1), t, shade);
+                }
             }
         }
         Tool::Rivers => {

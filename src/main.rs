@@ -9,6 +9,7 @@ mod noise;
 mod open_map;
 mod render;
 mod rivers;
+mod shallows;
 mod storage;
 mod style;
 mod toast;
@@ -27,7 +28,7 @@ use islands::IslandParams;
 use open_map::{can_discard, open_map, save_map, OpenMap};
 use style::{Style, Weight};
 use toast::Toasts;
-use ui::{EditorUi, UiAction, TOOLBAR_WIDTH};
+use ui::{Brush, EditorUi, UiAction, TOOLBAR_WIDTH};
 
 /// Fog distance at sea level; it grows with altitude so the overview shows the whole world.
 const BASE_VIEW_DISTANCE: f32 = 4000.0;
@@ -200,6 +201,15 @@ async fn main() {
                     }
                 }
             }
+            Some(UiAction::AddShallows { width }) => {
+                if let Some(m) = &mut map {
+                    if m.add_shallows(width) {
+                        toasts.info("Added shallows along the coasts");
+                    } else {
+                        toasts.info("No deep water near land to make shallow.");
+                    }
+                }
+            }
             Some(UiAction::AddMountainRange { length, width, seed }) => {
                 if let Some(m) = &mut map {
                     if m.add_mountain_range(length, width, seed) {
@@ -268,7 +278,7 @@ async fn main() {
 /// Slowly raises hills or mountains with the left button, or lowers the ground with the right,
 /// while the Mountains tool is open and the mouse is held over the map. Returns where the brush ring should be drawn: its center and radius.
 fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2, f32)> {
-    let Some((radius, peak)) = ui.brush() else {
+    let Some((radius, brush)) = ui.brush() else {
         map.end_stroke();
         return None;
     };
@@ -296,7 +306,11 @@ fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2,
         .then(|| hills::pick_terrain(&camera, &map.world, mouse))
         .flatten();
     if let (Some(erase), true, Some(center)) = (erase, painting, center) {
-        map.paint_peaks(center, radius, erase, peak, get_frame_time().min(0.1));
+        let dt = get_frame_time().min(0.1);
+        match brush {
+            Brush::Peak(peak) => map.paint_peaks(center, radius, erase, peak, dt),
+            Brush::Shallows => map.paint_shallows(center, radius, erase, dt),
+        }
     }
     center.filter(|_| over_map).map(|c| (c, radius))
 }

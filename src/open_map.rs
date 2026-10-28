@@ -13,6 +13,7 @@ use crate::history::History;
 use crate::islands::{self, IslandParams};
 use crate::render;
 use crate::rivers::{self, RiverParams};
+use crate::shallows::{self, ShallowStroke};
 use crate::storage::{self, SavedMap};
 use crate::toast::Toasts;
 use crate::ui::TOOLBAR_WIDTH;
@@ -31,6 +32,8 @@ pub struct OpenMap {
     hill_seed: u32,
     /// The hills brush stroke being painted, while the mouse button is held.
     stroke: Option<HillStroke>,
+    /// The shallows brush stroke being painted, while the mouse button is held.
+    shallow_stroke: Option<ShallowStroke>,
     /// Where the first end of a river was picked, while the Rivers tool waits for the second.
     pub river_start: Option<Vec2>,
     /// The file the map was last saved to or opened from.
@@ -64,6 +67,7 @@ impl OpenMap {
             history: History::default(),
             hill_seed: rand::gen_range(1, u32::MAX),
             stroke: None,
+            shallow_stroke: None,
             river_start: None,
             path: None,
             dirty: false,
@@ -201,6 +205,33 @@ impl OpenMap {
         added
     }
 
+    /// Makes the sea within `width` meters of land shallow, as one undoable step. Returns false if
+    /// there was nowhere to: no land, or the sea there is already shallow.
+    pub fn add_shallows(&mut self, width: f32) -> bool {
+        let (nx, nz) = self.world.samples();
+        let Some(heights) = shallows::shelf(self.world.heights(), self.world.water(), nx, nz, width) else {
+            return false;
+        };
+        self.history.record(self.world.heights(), self.world.water(), &heights, self.world.water());
+        self.apply_heights(heights);
+        self.dirty = true;
+        true
+    }
+
+    /// Paints shallow water onto deep sea with a brush of `radius` meters at `center` (world x
+    /// and z), or with `deepen` paints deep water back, continuing the current stroke or starting
+    /// one (`deepen` only matters when starting). [`end_stroke`](Self::end_stroke) finishes it.
+    pub fn paint_shallows(&mut self, center: Vec2, radius: f32, deepen: bool, dt: f32) {
+        let (nx, nz) = self.world.samples();
+        let half = self.world.half_extents();
+        let stroke = self
+            .shallow_stroke
+            .get_or_insert_with(|| ShallowStroke::begin(self.world.heights(), self.world.water(), nx, nz, deepen));
+        if let Some(region) = stroke.paint(self.world.heights_mut(), half, center, radius, dt) {
+            self.refresh(region);
+        }
+    }
+
     /// Grows `peak`s with a brush of `radius` meters at `center` (world x and z), or with `erase`
     /// wears the ground down, continuing the current stroke or starting one (`erase` and `peak`
     /// only matter when starting). `dt` is the seconds since the last call, which sets how much
@@ -221,6 +252,12 @@ impl OpenMap {
     /// Finishes the hills or mountains stroke being painted: smooths its rim and records it as one undoable
     /// step.
     pub fn end_stroke(&mut self) {
+        if let Some(stroke) = self.shallow_stroke.take() {
+            if stroke.base() != self.world.heights() {
+                self.history.record(stroke.base(), self.world.water(), self.world.heights(), self.world.water());
+                self.dirty = true;
+            }
+        }
         let Some(mut stroke) = self.stroke.take() else {
             return;
         };
@@ -235,7 +272,10 @@ impl OpenMap {
 
     /// The hills stroke being painted, if any: `Some(true)` if it lowers the ground.
     pub fn stroke_erases(&self) -> Option<bool> {
-        self.stroke.as_ref().map(HillStroke::erases)
+        self.stroke
+            .as_ref()
+            .map(HillStroke::erases)
+            .or_else(|| self.shallow_stroke.as_ref().map(ShallowStroke::deepens))
     }
 
     /// Redraws the part of the map that changed, without touching the rest.

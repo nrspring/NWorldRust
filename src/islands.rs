@@ -135,7 +135,9 @@ fn coast_profile(d: f32) -> f32 {
         (0.25 + 0.25 * d).min(LAND_HEIGHT)
     } else {
         let out = -d;
-        -(0.25 + 0.25 * out + 0.05 * out * out).min(-DEEP_OCEAN)
+        // Gentle for the first couple of meters off the coast, which is as far as the renderer
+        // looks to place it, then a plunge to the deep, leaving no shallows around the island.
+        -(0.25 + 0.25 * out + 8.0 * (out - 2.0).max(0.0).powi(2)).min(-DEEP_OCEAN)
     }
 }
 

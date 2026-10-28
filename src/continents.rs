@@ -20,9 +20,18 @@ use crate::world::DEEP_OCEAN;
 
 /// Meters of elevation per unit of landness right at the coast.
 const COAST_SLOPE: f32 = 60.0;
-/// How quickly the sea floor drops away from the coast (meters per squared unit of landness);
-/// sets the width of the shallow coastal shelf.
+/// How quickly the sea floor drops away from the coast (meters per squared unit of landness).
 const SHELF_DROP: f32 = 3000.0;
+/// The floor is only gentle for the first sample or so off the coast, which is all the renderer
+/// needs to trace the coastline smoothly; past this much landness it plunges to the deep ocean,
+/// so continents leave no shallow water around them.
+const SHELF_KNEE: f32 = 0.015;
+const SHELF_CLIFF: f32 = 800_000.0;
+/// The fine wobble of every coast: its waves per map side, and how far it moves a coast, in
+/// shares of the longest side, on the smoothest and (added) the roughest setting.
+const FINE_FREQ: f32 = 40.0;
+const FINE_WARP: f32 = 0.008;
+const FINE_WARP_ROUGH: f32 = 0.025;
 /// How far the keep-out line outside the edge buffer wanders inland, and the width of the
 /// band beyond it over which land is eased back in, as shares of the longest side.
 const EDGE_WOBBLE: f32 = 0.06;
@@ -115,7 +124,16 @@ impl Shape {
             n.fbm(u.x * 2.0 + a.x * 1.5 + 5.2, u.y * 2.0 + a.y * 1.5 + 1.7, 3, 0.5),
             n.fbm(u.x * 2.0 + a.x * 1.5 + 9.4, u.y * 2.0 + a.y * 1.5 + 6.1, 3, 0.5),
         );
+        // A fine wobble on top, which moves every coast sideways by about the same amount
+        // wherever it runs. The coastline detail added to the landness can't do that: where the
+        // landness slopes steeply, as along the channels between continents, it hardly moves the
+        // coast, which would come out smooth next to ragged ones.
+        let fine = vec2(
+            n.fbm(u.x * FINE_FREQ + 3.7, u.y * FINE_FREQ - 8.1, 4, 0.55),
+            n.fbm(u.x * FINE_FREQ - 12.9, u.y * FINE_FREQ + 4.4, 4, 0.55),
+        );
         u + b * (0.07 + 0.05 * self.roughness + 0.04 * self.irregularity)
+            + fine * (FINE_WARP + FINE_WARP_ROUGH * self.roughness)
     }
 
     /// Landness at `u`, or `None` where only water is allowed: the edge buffer, the channels
@@ -356,12 +374,13 @@ pub fn generate(params: &ContinentParams, cells_x: usize, cells_z: usize, existi
             // Elevation follows landness smoothly through the coast, changing gently over
             // several samples there, so the renderer can trace the coastline between samples
             // as a smooth curve. Land rises to its baseline height near the coast; the sea
-            // deepens slowly at first and then drops off the shelf to deep ocean.
+            // deepens slowly for a sample or so and then plunges to deep ocean.
             let x = v - sea_level;
             let new = if x >= 0.0 {
                 (0.25 + x * COAST_SLOPE).min(LAND_HEIGHT)
             } else {
-                -(0.25 - x * COAST_SLOPE + x * x * SHELF_DROP).min(-DEEP_OCEAN)
+                -(0.25 - x * COAST_SLOPE + x * x * SHELF_DROP + SHELF_CLIFF * (-x - SHELF_KNEE).max(0.0).powi(2))
+                    .min(-DEEP_OCEAN)
             };
             // Keep whichever is higher, so existing land and its shallows survive untouched.
             new.max(old)

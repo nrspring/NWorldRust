@@ -63,7 +63,7 @@ mod surface_tests {
         let texels = world.surface_texels();
         let texel = |i: usize, j: usize| &texels[(j * nx + i) * 4..(j * nx + i) * 4 + 4];
         assert_eq!(texel(32, 32)[0], 0, "the pit is water");
-        assert_eq!(texel(32, 32)[3], 0);
+        assert!(texel(32, 32)[3] > 0, "the pit's water has some depth");
         // Ground at the lake's level is its shore, and ground beyond its water is dry.
         assert_eq!(texel(31, 32)[0], 128);
         assert_eq!(texel(10, 10)[0], 255);
@@ -72,6 +72,25 @@ mod surface_tests {
         // Beaches are found beside the lake, not far from it.
         assert!(world.near_water[32 * nx + 36]);
         assert!(!world.near_water[10 * nx + 10]);
+    }
+
+    #[test]
+    fn the_surface_tells_shallow_water_from_deep() {
+        let mut world = World::new(256.0, 256.0);
+        let (nx, nz) = world.samples();
+        let mut heights = vec![DEEP_OCEAN; nx * nz];
+        let mut water = vec![SEA_LEVEL; nx * nz];
+        heights[0] = -3.0;
+        // A lake dug 60 m below its surface.
+        heights[1] = -40.0;
+        water[1] = 20.0;
+        world.set_terrain(heights, water);
+        let texels = world.surface_texels();
+        let depth = |k: usize| texels[k * 4 + 3];
+        assert_eq!(depth(2), 255, "the open sea is as deep as it gets");
+        assert!(depth(0) > 0 && depth(0) < 80, "shallow sea reads as {}", depth(0));
+        assert!(depth(1) <= 70, "a lake is shallow however deep it is dug, not {}", depth(1));
+        assert!(depth(0) < depth(1), "3 m is shallower than 4 m");
     }
 
     #[test]
@@ -283,7 +302,9 @@ impl World {
     /// middle, which follows a smooth curve between samples. Green encodes
     /// elevation from 0 to 50 m, which the shader colors: 25 shades of green up to 25 m, grey
     /// rock from 26 m and snow from 40 m. Alpha is how far the ground stands above the water, up
-    /// to 8 m, which is as far up as a beach goes.
+    /// to 8 m, which is as far up as a beach goes, and where the ground is under water, how deep
+    /// the water is, up to 64 m (stored as a square root), which tells shallow water from deep. Lakes and rivers, whose
+    /// water is above sea level, are shallow however deep they are dug.
     pub fn surface_texels(&self) -> Vec<u8> {
         self.surface_texels_in(Region { i0: 0, j0: 0, i1: self.cells_x, j1: self.cells_z })
     }
@@ -599,14 +620,30 @@ pub const MAX_SURFACE_ELEVATION: f32 = 50.0;
 /// How far above the water the shader tells ground apart, in the alpha channel.
 const MAX_ABOVE_WATER: f32 = 8.0;
 
+/// How deep the water is told apart, in the alpha channel; deeper water reads as this. Must
+/// match `WATER_DEPTH_RANGE` in the terrain shader.
+const MAX_WATER_DEPTH: f32 = 64.0;
+
+/// Lakes and rivers read as water no deeper than this, in meters, so they stay shallow water.
+const MAX_INLAND_DEPTH: f32 = 4.0;
+
 /// A texel for the terrain shader: the coast in red, elevation in green, whether water is near
-/// in blue and the height above the water in alpha, as described on [`World::surface_texels`].
+/// in blue and the height above the water, or the depth of it, in alpha, as described on
+/// [`World::surface_texels`].
 /// `w` is the water level at the sample.
 fn surface_texel(h: f32, w: f32, near_water: bool) -> [u8; 4] {
     let coast = ((0.5 + (h - w) * 0.5).clamp(0.0, 1.0) * 255.0).round();
     let elevation = (((h - SEA_LEVEL).max(0.0) / MAX_SURFACE_ELEVATION).min(1.0) * 255.0).round();
-    let above = (((h - w) / MAX_ABOVE_WATER).clamp(0.0, 1.0) * 255.0).round();
-    [coast as u8, elevation as u8, if near_water { 255 } else { 0 }, above as u8]
+    // Depth is stored as a square root, which tells shallow depths apart finely and deep ones
+    // coarsely.
+    let above = if h >= w {
+        ((h - w) / MAX_ABOVE_WATER).clamp(0.0, 1.0)
+    } else if w <= SEA_LEVEL {
+        ((w - h) / MAX_WATER_DEPTH).clamp(0.0, 1.0).sqrt()
+    } else {
+        ((w - h).min(MAX_INLAND_DEPTH) / MAX_WATER_DEPTH).clamp(0.0, 1.0).sqrt()
+    };
+    [coast as u8, elevation as u8, if near_water { 255 } else { 0 }, (above * 255.0).round() as u8]
 }
 
 /// Samples this close to water (in samples) can have beach; beaches are at most about 12 m
