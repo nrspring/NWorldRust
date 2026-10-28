@@ -40,6 +40,8 @@ pub struct EditorCamera {
     /// Where to return when leaving the overview; cleared once the camera is moved away from it.
     before_overview: Option<Pose>,
     last_mouse: Vec2,
+    /// A left-button drag that pans the view is under way.
+    panning: bool,
 }
 
 fn axis(positive: &[KeyCode], negative: &[KeyCode]) -> f32 {
@@ -94,6 +96,7 @@ impl EditorCamera {
             transition: None,
             before_overview: Some(Self::start_pose(world)),
             last_mouse: mouse_position().into(),
+            panning: false,
         }
     }
 
@@ -175,14 +178,23 @@ impl EditorCamera {
     /// `keyboard` and `mouse` say whether those devices drive the camera this frame; they are
     /// off while the editor UI is using them (typing into a field, pointer over a panel).
     /// `mouse_look` says whether dragging with the right button turns the camera; a tool can
-    /// claim that button, and the arrow keys still look around.
-    pub fn update(&mut self, dt: f32, world: &World, keyboard: bool, mouse: bool, mouse_look: bool) {
+    /// claim that button, and the arrow keys still look around. `pan` says whether a drag with
+    /// the left button, started now, pans the view: it grabs the ground and moves it with the
+    /// pointer.
+    pub fn update(&mut self, dt: f32, world: &World, keyboard: bool, mouse: bool, mouse_look: bool, pan: bool) {
         let keys = |positive: &[KeyCode], negative: &[KeyCode]| {
             if keyboard { axis(positive, negative) } else { 0.0 }
         };
         let mouse_pos: Vec2 = mouse_position().into();
         let mouse_delta = mouse_pos - self.last_mouse;
         self.last_mouse = mouse_pos;
+
+        if is_mouse_button_pressed(MouseButton::Left) {
+            self.panning = pan && mouse && self.transition.is_none();
+        }
+        if !is_mouse_button_down(MouseButton::Left) {
+            self.panning = false;
+        }
 
         if let Some(tr) = &mut self.transition {
             tr.t = (tr.t + dt / TRANSITION_SECONDS).min(1.0);
@@ -223,6 +235,17 @@ impl EditorCamera {
 
         self.pose.yaw += turn;
         self.pose.pitch = (self.pose.pitch + tilt).clamp(-FRAC_PI_2, 1.45);
+        if self.panning && mouse_delta != Vec2::ZERO {
+            // Slide the camera so the ground that was under the pointer stays under it.
+            let level = world.surface_height(self.pose.pos.x, self.pose.pos.z);
+            if let (Some(before), Some(now)) =
+                (self.ground_point(world, mouse_pos - mouse_delta, level), self.ground_point(world, mouse_pos, level))
+            {
+                self.pose.pos.x += before.x - now.x;
+                self.pose.pos.z += before.y - now.y;
+                self.before_overview = None;
+            }
+        }
         let view_dir = self.forward();
 
         let p = &mut self.pose;
@@ -249,6 +272,19 @@ impl EditorCamera {
         p.pos.z = p.pos.z.clamp(-limit.y, limit.y);
         let floor = world.surface_height(p.pos.x, p.pos.z) + MIN_CLEARANCE;
         p.pos.y = p.pos.y.clamp(floor, world.size().max_element() * 2.0);
+    }
+
+    /// Where the ray through the screen position `at` meets the horizontal plane `height` meters
+    /// up, as world x and z, or `None` if the ray doesn't point down at it.
+    fn ground_point(&self, world: &World, at: Vec2, height: f32) -> Option<Vec2> {
+        let inverse = self.camera(world, 10_000.0).matrix().inverse();
+        let ndc = vec2(at.x / screen_width() * 2.0 - 1.0, 1.0 - at.y / screen_height() * 2.0);
+        let far = inverse * vec4(ndc.x, ndc.y, 1.0, 1.0);
+        let dir = (far.truncate() / far.w - self.pose.pos).normalize();
+        (dir.y < -0.02).then(|| {
+            let p = self.pose.pos + dir * ((height - self.pose.pos.y) / dir.y);
+            vec2(p.x, p.z)
+        })
     }
 
     /// Height above the surface directly below the camera.

@@ -684,6 +684,11 @@ impl EditorUi {
         }
     }
 
+    /// Whether a tool's panel is open.
+    pub fn tool_open(&self) -> bool {
+        self.open_tool.is_some()
+    }
+
     /// True while a text field has focus, so keyboard shortcuts and camera keys should pause.
     pub fn wants_keyboard(&self) -> bool {
         self.focused.is_some()

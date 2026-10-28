@@ -37,6 +37,7 @@ const HELP: &[(&[&str], &str)] = &[
     (&["E", "Q"], "Up / down"),
     (&["Wheel"], "Zoom"),
     (&["Right-drag"], "Look (not with brushes)"),
+    (&["Left-drag"], "Pan (no tool open)"),
     (&["Left-drag"], "Raise mountains / dig lakes"),
     (&["Click"], "Rivers: pick both ends"),
     (&["Right-drag"], "Lower mountains"),
@@ -239,7 +240,8 @@ async fn main() {
                     m.cam.angled_view(&m.world);
                 }
 
-                m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush().is_none());
+                let pan = !ui.tool_open() && !pills.covers(mouse_position().into(), &style);
+                m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush().is_none(), pan);
                 m.world.update(m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
                 let river = place_river(m, &ui, &style, &mut toasts);
