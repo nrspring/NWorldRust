@@ -104,6 +104,7 @@ fn shift_down() -> bool {
 async fn main() {
     let terrain = render::TerrainRenderer::new();
     let backdrop_material = render::load_backdrop_material();
+    let sky_material = render::load_sky_material();
     let style = Style::load();
 
     // Closing the window goes through the same unsaved-changes check as Esc.
@@ -242,7 +243,7 @@ async fn main() {
                 m.world.update(m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
                 let river = place_river(m, &ui, &style, &mut toasts);
-                draw_world(m, &terrain, &backdrop_material, time, show_topo, brush, river);
+                draw_world(m, &terrain, &sky_material, &backdrop_material, time, show_topo, brush, river);
                 if show_topo {
                     contour_labels.refresh(&m.world, get_time());
                     contour_labels.draw(&style, &m.world, &m.cam.camera(&m.world, 40_000.0), TOOLBAR_WIDTH);
@@ -360,6 +361,7 @@ fn draw_river_preview(world: &world::World, cam: Vec3, river: &RiverPreview) {
 fn draw_world(
     map: &mut OpenMap,
     terrain: &render::TerrainRenderer,
+    sky_material: &Material,
     backdrop_material: &Material,
     time: f32,
     topo: bool,
@@ -369,8 +371,10 @@ fn draw_world(
     let pos = map.cam.position();
     let view_distance = BASE_VIEW_DISTANCE + pos.y.max(0.0) * 1.5;
     let camera = map.cam.camera(&map.world, view_distance * 1.5);
-    set_camera(&camera);
+    set_default_camera();
     clear_background(render::background_color());
+    render::draw_sky(sky_material, camera.matrix(), pos, time);
+    set_camera(&camera);
 
     let half = map.world.half_extents();
     render::apply_backdrop_uniforms(backdrop_material, pos, view_distance, half);
