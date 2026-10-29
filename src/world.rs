@@ -185,8 +185,12 @@ pub struct World {
     /// For each sample, whether water is close enough for the terrain shader to look for a
     /// beach there; see [`near_water`].
     near_water: Vec<bool>,
+    /// How much forest there is at each sample, from 0 (none) to 255 (the densest).
+    forest: Vec<u8>,
     chunks_x: usize,
     chunks: Vec<Option<Chunk>>,
+    /// For each chunk, a number that changes whenever anything its trees depend on does.
+    stamps: Vec<u32>,
     blocks_x: usize,
     blocks: Vec<Block>,
     /// Which world this is, and how many times its terrain has changed; see [`World::revision`].
@@ -209,8 +213,10 @@ impl World {
             heights: vec![DEEP_OCEAN; samples],
             water: vec![SEA_LEVEL; samples],
             near_water: vec![true; samples],
+            forest: vec![0; samples],
             chunks_x,
             chunks: (0..chunks_x * chunks_z).map(|_| None).collect(),
+            stamps: vec![0; chunks_x * chunks_z],
             id: NEXT_WORLD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             version: 0,
             blocks_x,
@@ -251,6 +257,65 @@ impl World {
         &self.water
     }
 
+    /// How much forest there is at every sample, laid out as in `heights`: 0 for none up to 255
+    /// for the densest. Where trees actually stand is worked out from this and the terrain.
+    pub fn forest(&self) -> &[u8] {
+        &self.forest
+    }
+
+    /// Mutable forest densities. After changing some, call
+    /// [`forest_changed`](Self::forest_changed) for the part that changed.
+    pub fn forest_mut(&mut self) -> &mut [u8] {
+        &mut self.forest
+    }
+
+    /// Replaces every forest density (laid out as in `heights`).
+    pub fn set_forest(&mut self, forest: Vec<u8>) {
+        assert_eq!(forest.len(), self.heights.len(), "forest map size mismatch");
+        self.forest = forest;
+        self.stamps.iter_mut().for_each(|s| *s = s.wrapping_add(1));
+    }
+
+    /// Notes that the forest densities of the samples in `region` changed.
+    pub fn forest_changed(&mut self, region: Region) {
+        let (cx0, cx1) = (region.i0.saturating_sub(1) / CHUNK_CELLS, ((region.i1 + 1) / CHUNK_CELLS).min(self.chunks_x - 1));
+        let chunks_z = self.stamps.len() / self.chunks_x;
+        let (cz0, cz1) = (region.j0.saturating_sub(1) / CHUNK_CELLS, ((region.j1 + 1) / CHUNK_CELLS).min(chunks_z - 1));
+        for cz in cz0..=cz1 {
+            for cx in cx0..=cx1 {
+                let stamp = &mut self.stamps[cz * self.chunks_x + cx];
+                *stamp = stamp.wrapping_add(1);
+            }
+        }
+    }
+
+    /// Chunks along x and along z.
+    pub fn chunk_counts(&self) -> (usize, usize) {
+        (self.chunks_x, self.stamps.len() / self.chunks_x)
+    }
+
+    /// A number that is different whenever the terrain, water or forest in or around chunk
+    /// (`cx`, `cz`) has changed since it was last read.
+    pub fn chunk_stamp(&self, cx: usize, cz: usize) -> u32 {
+        self.stamps[cz * self.chunks_x + cx]
+    }
+
+    /// Whether the sample is close to water, which is where beaches are; see [`near_water`].
+    pub fn beach_nearby(&self, idx: usize) -> bool {
+        self.near_water[idx]
+    }
+
+    /// The forest densities of the samples in `region` as RGBA texels for the terrain shader,
+    /// row by row: the density in red.
+    pub fn forest_texels_in(&self, region: Region) -> Vec<u8> {
+        let nx = self.cells_x + 1;
+        let mut texels = Vec::with_capacity(region.width() * region.height() * 4);
+        for j in region.j0..=region.j1 {
+            texels.extend(self.forest[j * nx + region.i0..=j * nx + region.i1].iter().flat_map(|&d| [d, 0, 0, 255]));
+        }
+        texels
+    }
+
     /// Replaces every elevation sample (laid out as in `heights`), keeping the water levels, and
     /// drops the built chunks so they are rebuilt from the new terrain.
     pub fn set_heights(&mut self, heights: Vec<f32>) {
@@ -267,6 +332,7 @@ impl World {
         self.heights = heights;
         self.water = water;
         self.version += 1;
+        self.stamps.iter_mut().for_each(|s| *s = s.wrapping_add(1));
         self.chunks.iter_mut().for_each(|c| *c = None);
         self.blocks.iter_mut().for_each(|b| b.dirty = true);
     }
@@ -358,6 +424,7 @@ impl World {
         for cz in cz0..=cz1 {
             for cx in cx0..=cx1 {
                 let idx = cz * self.chunks_x + cx;
+                self.stamps[idx] = self.stamps[idx].wrapping_add(1);
                 let lod = lod_for(self.chunk_center(idx).distance(cam));
                 self.set_chunk(idx, self.build_chunk(cx, cz, lod));
             }

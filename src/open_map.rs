@@ -8,6 +8,7 @@ use macroquad::prelude::*;
 use crate::camera::EditorCamera;
 use crate::continents::{self, ContinentParams};
 use crate::dialogs::{self, Unsaved};
+use crate::forest::ForestStroke;
 use crate::hills::{self, HillStroke, Peak};
 use crate::history::History;
 use crate::islands::{self, IslandParams};
@@ -25,6 +26,8 @@ pub struct OpenMap {
     pub cam: EditorCamera,
     pub backdrop: Mesh,
     pub surface: Texture2D,
+    /// The forest densities, for the terrain shader.
+    pub forest: Texture2D,
     /// How many times continents have been generated on this map, undone or not.
     generations: u32,
     pub history: History,
@@ -34,6 +37,8 @@ pub struct OpenMap {
     stroke: Option<HillStroke>,
     /// The shallows brush stroke being painted, while the mouse button is held.
     shallow_stroke: Option<ShallowStroke>,
+    /// The forest brush stroke being painted, while the mouse button is held.
+    forest_stroke: Option<ForestStroke>,
     /// Where the first end of a river was picked, while the Rivers tool waits for the second.
     pub river_start: Option<Vec2>,
     /// The file the map was last saved to or opened from.
@@ -58,16 +63,19 @@ impl OpenMap {
         world.update(cam.position(), Duration::from_secs(10));
         let backdrop = render::backdrop_mesh(world.half_extents());
         let surface = render::surface_texture(&world);
+        let forest = render::forest_texture(&world);
         Self {
             world,
             cam,
             backdrop,
             surface,
+            forest,
             generations: 0,
             history: History::default(),
             hill_seed: rand::gen_range(1, u32::MAX),
             stroke: None,
             shallow_stroke: None,
+            forest_stroke: None,
             river_start: None,
             path: None,
             dirty: false,
@@ -82,6 +90,7 @@ impl OpenMap {
             return Err("The map size in this file isn't supported.".to_owned());
         }
         map.apply_terrain(saved.heights, saved.water);
+        map.apply_forest(saved.forest);
         map.generations = saved.generations;
         map.path = Some(path);
         Ok(map)
@@ -95,6 +104,7 @@ impl OpenMap {
             generations: self.generations,
             heights: self.world.heights().to_vec(),
             water: self.world.water().to_vec(),
+            forest: self.world.forest().to_vec(),
         }
     }
 
@@ -205,6 +215,22 @@ impl OpenMap {
         added
     }
 
+    /// Paints forest of `density` (0 to 1) onto dry land with a brush of `radius` meters at `center`
+    /// (world x and z), or with `erase` clears it, continuing the current stroke or starting one
+    /// (`erase` and `density` only matter when starting). `dt` is the seconds since the last
+    /// call. [`end_stroke`](Self::end_stroke) finishes it.
+    pub fn paint_forest(&mut self, center: Vec2, radius: f32, erase: bool, density: f32, dt: f32) {
+        let (nx, nz) = self.world.samples();
+        let half = self.world.half_extents();
+        let stroke = self.forest_stroke.get_or_insert_with(|| {
+            ForestStroke::begin(self.world.forest(), self.world.heights(), self.world.water(), nx, nz, erase, density)
+        });
+        if let Some(region) = stroke.paint(self.world.forest_mut(), half, center, radius, dt) {
+            self.world.forest_changed(region);
+            render::update_forest(&self.forest, &self.world, region);
+        }
+    }
+
     /// Makes the sea within `width` meters of land shallow, as one undoable step. Returns false if
     /// there was nowhere to: no land, or the sea there is already shallow.
     pub fn add_shallows(&mut self, width: f32) -> bool {
@@ -252,6 +278,12 @@ impl OpenMap {
     /// Finishes the hills or mountains stroke being painted: smooths its rim and records it as one undoable
     /// step.
     pub fn end_stroke(&mut self) {
+        if let Some(stroke) = self.forest_stroke.take() {
+            if stroke.base() != self.world.forest() {
+                self.history.record_forest(stroke.base(), self.world.forest());
+                self.dirty = true;
+            }
+        }
         if let Some(stroke) = self.shallow_stroke.take() {
             if stroke.base() != self.world.heights() {
                 self.history.record(stroke.base(), self.world.water(), self.world.heights(), self.world.water());
@@ -276,6 +308,7 @@ impl OpenMap {
             .as_ref()
             .map(HillStroke::erases)
             .or_else(|| self.shallow_stroke.as_ref().map(ShallowStroke::deepens))
+            .or_else(|| self.forest_stroke.as_ref().map(ForestStroke::erases))
     }
 
     /// Redraws the part of the map that changed, without touching the rest.
@@ -297,10 +330,14 @@ impl OpenMap {
     pub fn undo(&mut self) -> bool {
         let mut heights = self.world.heights().to_vec();
         let mut water = self.world.water().to_vec();
-        if !self.history.undo(&mut heights, &mut water) {
+        let mut forest = self.world.forest().to_vec();
+        if !self.history.undo(&mut heights, &mut water, &mut forest) {
             return false;
         }
         self.apply_terrain(heights, water);
+        if forest != self.world.forest() {
+            self.apply_forest(forest);
+        }
         self.dirty = true;
         true
     }
@@ -310,6 +347,12 @@ impl OpenMap {
     fn apply_heights(&mut self, heights: Vec<f32>) {
         self.world.set_heights(heights);
         self.redraw();
+    }
+
+    /// Puts new forest densities on the map and refreshes everything drawn from them.
+    fn apply_forest(&mut self, forest: Vec<u8>) {
+        self.world.set_forest(forest);
+        self.forest = render::forest_texture(&self.world);
     }
 
     /// Puts new heights and water levels on the map and refreshes everything drawn from them.

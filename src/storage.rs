@@ -1,6 +1,7 @@
 //! Saving and loading maps.
 //!
-//! A map file is a small header followed by the heightmap and the water levels, compressed:
+//! A map file is a small header followed by the heightmap, the water levels and the forest
+//! densities, compressed:
 //!
 //! | bytes | meaning |
 //! | --- | --- |
@@ -8,11 +9,11 @@
 //! | 4 | format version (little endian) |
 //! | 4, 4 | heightmap cells along x and z |
 //! | 4 | how many times continents have been generated on the map |
-//! | rest | the (cells_x + 1) × (cells_z + 1) heights, then as many water levels, as `f32`, byte-shuffled and deflated |
+//! | rest | the (cells_x + 1) × (cells_z + 1) heights, then as many water levels, as `f32`, byte-shuffled, then as many forest densities, as `u8`, all deflated |
 //!
 //! Shuffling groups the first bytes of every height together, then the second bytes, and so
 //! on, which makes the flat stretches of ocean and land compress far better. Version 1 files
-//! have no water levels: the water is at sea level everywhere.
+//! have no water levels: the water is at sea level everywhere. Versions before 3 have no forest.
 
 use std::fs;
 use std::path::Path;
@@ -26,7 +27,7 @@ use crate::world::{cells_valid, DEEP_OCEAN, SEA_LEVEL};
 pub const EXTENSION: &str = "nworld";
 
 const MAGIC: &[u8; 8] = b"NWORLDMP";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const HEADER_LEN: usize = 8 + 4 + 4 + 4 + 4;
 /// Deflate effort; 6 is the usual balance of speed and size.
 const COMPRESSION: u8 = 6;
@@ -43,12 +44,14 @@ pub struct SavedMap {
     pub heights: Vec<f32>,
     /// The water level at each of the same samples.
     pub water: Vec<f32>,
+    /// The forest density at each of the same samples, 0 to 255.
+    pub forest: Vec<u8>,
 }
 
 /// The file contents for a map.
 pub fn encode(map: &SavedMap) -> Vec<u8> {
     let n = map.heights.len();
-    let mut shuffled = vec![0u8; n * 8];
+    let mut shuffled = vec![0u8; n * 9];
     for (layer, values) in [&map.heights, &map.water].into_iter().enumerate() {
         for (i, h) in values.iter().enumerate() {
             for (plane, byte) in h.to_le_bytes().into_iter().enumerate() {
@@ -62,6 +65,7 @@ pub fn encode(map: &SavedMap) -> Vec<u8> {
     for value in [VERSION, map.cells_x as u32, map.cells_z as u32, map.generations] {
         out.extend_from_slice(&value.to_le_bytes());
     }
+    shuffled[n * 8..].copy_from_slice(&map.forest);
     out.extend(compress_to_vec(&shuffled, COMPRESSION));
     out
 }
@@ -86,9 +90,10 @@ pub fn decode(bytes: &[u8]) -> Result<SavedMap, String> {
 
     let n = (cells_x + 1) * (cells_z + 1);
     let layers = if version == 1 { 1 } else { 2 };
-    let shuffled = decompress_to_vec_with_limit(&bytes[HEADER_LEN..], n * 4 * layers)
+    let expected = n * 4 * layers + if version >= 3 { n } else { 0 };
+    let shuffled = decompress_to_vec_with_limit(&bytes[HEADER_LEN..], expected)
         .map_err(|_| "The map data in this file is damaged.".to_owned())?;
-    if shuffled.len() != n * 4 * layers {
+    if shuffled.len() != expected {
         return Err("The map data in this file is incomplete.".to_owned());
     }
 
@@ -110,12 +115,14 @@ pub fn decode(bytes: &[u8]) -> Result<SavedMap, String> {
         }
         water.push(w);
     }
+    let forest = if version >= 3 { shuffled[n * 8..].to_vec() } else { vec![0; n] };
     Ok(SavedMap {
         cells_x,
         cells_z,
         generations,
         heights,
         water,
+        forest,
     })
 }
 
@@ -159,12 +166,14 @@ mod tests {
                 *w = 10.0;
             }
         }
+        let forest = (0..heights.len()).map(|i| (i % 5 * 60) as u8).collect();
         SavedMap {
             cells_x,
             cells_z,
             generations: 7,
             heights,
             water,
+            forest,
         }
     }
 
@@ -175,6 +184,30 @@ mod tests {
         assert_eq!((back.cells_x, back.cells_z, back.generations), (64, 80, 7));
         assert_eq!(back.heights, map.heights);
         assert_eq!(back.water, map.water);
+        assert_eq!(back.forest, map.forest);
+    }
+
+    #[test]
+    fn maps_saved_before_forests_load_without_any() {
+        let map = sample_map();
+        let n = map.heights.len();
+        let mut shuffled = vec![0u8; n * 8];
+        for (layer, values) in [&map.heights, &map.water].into_iter().enumerate() {
+            for (i, v) in values.iter().enumerate() {
+                for (plane, byte) in v.to_le_bytes().into_iter().enumerate() {
+                    shuffled[layer * n * 4 + plane * n + i] = byte;
+                }
+            }
+        }
+        let mut old = Vec::new();
+        old.extend_from_slice(MAGIC);
+        for value in [2u32, map.cells_x as u32, map.cells_z as u32, map.generations] {
+            old.extend_from_slice(&value.to_le_bytes());
+        }
+        old.extend(compress_to_vec(&shuffled, COMPRESSION));
+        let back = decode(&old).unwrap();
+        assert_eq!(back.water, map.water);
+        assert!(back.forest.iter().all(|&d| d == 0) && back.forest.len() == n);
     }
 
     #[test]
@@ -207,6 +240,7 @@ mod tests {
             generations: 0,
             heights: vec![DEEP_OCEAN; (cells_x + 1) * (cells_z + 1)],
             water: vec![SEA_LEVEL; (cells_x + 1) * (cells_z + 1)],
+            forest: vec![0; (cells_x + 1) * (cells_z + 1)],
         };
         let bytes = encode(&map);
         assert!(bytes.len() * 50 < map.heights.len() * 4, "{} bytes", bytes.len());

@@ -12,6 +12,8 @@ struct Step {
     /// (sample index, height before the step, water level before the step) for every sample the
     /// step changed.
     changes: Vec<(u32, f32, f32)>,
+    /// (sample index, forest density before the step) for every sample the step changed.
+    forest: Vec<(u32, u8)>,
 }
 
 #[derive(Default)]
@@ -34,21 +36,38 @@ impl History {
         if changes.is_empty() {
             return;
         }
-        self.steps.push_back(Step { changes });
+        self.push(Step { changes, forest: Vec::new() });
+    }
+
+    /// Records an edit that turned the forest densities `before` into `after`, with the same
+    /// rules as [`record`](Self::record).
+    pub fn record_forest(&mut self, before: &[u8], after: &[u8]) {
+        debug_assert_eq!(before.len(), after.len());
+        let forest: Vec<(u32, u8)> = (0..before.len()).filter(|&i| before[i] != after[i]).map(|i| (i as u32, before[i])).collect();
+        if !forest.is_empty() {
+            self.push(Step { changes: Vec::new(), forest });
+        }
+    }
+
+    fn push(&mut self, step: Step) {
+        self.steps.push_back(step);
         if self.steps.len() > MAX_STEPS {
             self.steps.pop_front();
         }
     }
 
-    /// Undoes the most recent step on `heights` and `water`. Returns false if there was nothing
-    /// to undo.
-    pub fn undo(&mut self, heights: &mut [f32], water: &mut [f32]) -> bool {
+    /// Undoes the most recent step on `heights`, `water` and `forest`. Returns false if there
+    /// was nothing to undo.
+    pub fn undo(&mut self, heights: &mut [f32], water: &mut [f32], forest: &mut [u8]) -> bool {
         let Some(step) = self.steps.pop_back() else {
             return false;
         };
         for (i, h, w) in step.changes {
             heights[i as usize] = h;
             water[i as usize] = w;
+        }
+        for (i, d) in step.forest {
+            forest[i as usize] = d;
         }
         true
     }
@@ -62,6 +81,27 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Undoes a step of terrain edits, with no forest.
+    fn undo(history: &mut History, heights: &mut [f32], water: &mut [f32]) -> bool {
+        history.undo(heights, water, &mut vec![0; heights.len()])
+    }
+
+    #[test]
+    fn forest_edits_are_steps_of_their_own() {
+        let mut history = History::default();
+        let (mut heights, mut water) = (vec![0.0f32; 6], vec![0.0f32; 6]);
+        let before = vec![0u8, 10, 20, 30, 40, 50];
+        let mut forest = before.clone();
+        forest[1] = 200;
+        forest[4] = 0;
+        history.record_forest(&before, &forest);
+        history.record_forest(&forest, &forest);
+        assert_eq!(history.steps(), 1, "an edit that changed nothing isn't a step");
+        assert!(history.undo(&mut heights, &mut water, &mut forest));
+        assert_eq!(forest, before);
+        assert!(!history.undo(&mut heights, &mut water, &mut forest));
+    }
 
     #[test]
     fn undo_restores_each_state_exactly() {
@@ -85,11 +125,11 @@ mod tests {
         }
         assert_eq!(history.steps(), MAX_STEPS);
         for (expected_heights, expected_water) in states.iter().rev().skip(1) {
-            assert!(history.undo(&mut heights, &mut water));
+            assert!(undo(&mut history, &mut heights, &mut water));
             assert_eq!(&heights, expected_heights);
             assert_eq!(&water, expected_water);
         }
-        assert!(!history.undo(&mut heights, &mut water));
+        assert!(!undo(&mut history, &mut heights, &mut water));
     }
 
     #[test]
@@ -102,7 +142,7 @@ mod tests {
         history.record(&heights, &before, &heights, &water);
         assert_eq!(history.steps(), 1);
         let mut heights = heights;
-        assert!(history.undo(&mut heights, &mut water));
+        assert!(undo(&mut history, &mut heights, &mut water));
         assert_eq!(water, before);
     }
 
@@ -120,11 +160,11 @@ mod tests {
         }
         assert_eq!(history.steps(), MAX_STEPS);
         for _ in 0..MAX_STEPS {
-            assert!(history.undo(&mut heights, &mut water));
+            assert!(undo(&mut history, &mut heights, &mut water));
         }
         // Ten undos reach the state three steps after the start; the first three steps are gone.
         assert_eq!(heights, states[3]);
-        assert!(!history.undo(&mut heights, &mut water));
+        assert!(!undo(&mut history, &mut heights, &mut water));
     }
 
     #[test]

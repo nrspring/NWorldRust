@@ -15,8 +15,8 @@ use crate::world::{Frustum, Region, World, CELL_SIZE, SEA_LEVEL};
 pub const BACKGROUND: Vec3 = Vec3::new(0.64, 0.76, 0.88);
 const SUN_ELEVATION: f32 = 0.6;
 const SUN_AZIMUTH: f32 = 2.4;
-const SUN_COLOR: Vec3 = Vec3::new(1.0, 0.95, 0.85);
-const AMBIENT: Vec3 = Vec3::new(0.34, 0.39, 0.47);
+pub const SUN_COLOR: Vec3 = Vec3::new(1.0, 0.95, 0.85);
+pub const AMBIENT: Vec3 = Vec3::new(0.34, 0.39, 0.47);
 /// How far the backdrop plane extends past the world's edge.
 const BACKDROP_EXTENT: f32 = 40_000.0;
 /// Texels along each side of the repeating random texture the terrain shader's noise reads.
@@ -25,6 +25,10 @@ const NOISE_SIZE: u16 = 512;
 
 pub fn background_color() -> Color {
     Color::new(BACKGROUND.x, BACKGROUND.y, BACKGROUND.z, 1.0)
+}
+
+pub fn sun_direction() -> Vec3 {
+    sun_dir()
 }
 
 fn sun_dir() -> Vec3 {
@@ -36,7 +40,7 @@ fn sun_dir() -> Vec3 {
 }
 
 /// Fog starts and ends at these fractions of the view distance.
-fn fog_range(view_distance: f32) -> Vec2 {
+pub fn fog_range(view_distance: f32) -> Vec2 {
     vec2(view_distance * 0.4, view_distance)
 }
 
@@ -106,7 +110,7 @@ impl TerrainRenderer {
                 },
                 ShaderMeta {
                     uniforms: terrain_uniform_layout(),
-                    images: vec!["surface".to_owned(), "noise".to_owned()],
+                    images: vec!["surface".to_owned(), "noise".to_owned(), "forest".to_owned()],
                 },
             )
             .expect("terrain shader failed to compile");
@@ -128,7 +132,7 @@ impl TerrainRenderer {
     /// Draws the terrain of `world`, colored from its `surface` texture, as seen by `camera`
     /// from `cam`, out to `view_distance`. Whatever macroquad has queued is drawn first, so the
     /// terrain lands on top of it.
-    pub fn draw(&self, world: &mut World, surface: &Texture2D, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
+    pub fn draw(&self, world: &mut World, surface: &Texture2D, forest: &Texture2D, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
         let mut gl = unsafe { get_internal_gl() };
         gl.flush();
         let ctx: &mut dyn RenderingBackend = gl.quad_context;
@@ -161,7 +165,7 @@ impl TerrainRenderer {
         ctx.apply_pipeline(&self.pipeline);
         ctx.apply_viewport(0, 0, width as i32, height as i32);
         ctx.apply_scissor_rect(0, 0, width as i32, height as i32);
-        let images = vec![surface.raw_miniquad_id(), self.noise.raw_miniquad_id()];
+        let images = vec![surface.raw_miniquad_id(), self.noise.raw_miniquad_id(), forest.raw_miniquad_id()];
         for block in blocks {
             ctx.apply_bindings(&miniquad::Bindings {
                 vertex_buffers: vec![block.vertices],
@@ -187,6 +191,28 @@ pub fn surface_texture(world: &World) -> Texture2D {
 pub fn update_surface(texture: &Texture2D, world: &World, region: Region) {
     let image = Image {
         bytes: world.surface_texels_in(region),
+        width: region.width() as u16,
+        height: region.height() as u16,
+    };
+    texture.update_part(&image, region.i0 as i32, region.j0 as i32, image.width as i32, image.height as i32);
+}
+
+/// Uploads the world's forest densities for the terrain shader.
+pub fn forest_texture(world: &World) -> Texture2D {
+    let (nx, nz) = world.samples();
+    let texture = Texture2D::from_rgba8(
+        nx as u16,
+        nz as u16,
+        &world.forest_texels_in(Region { i0: 0, j0: 0, i1: nx - 1, j1: nz - 1 }),
+    );
+    texture.set_filter(FilterMode::Linear);
+    texture
+}
+
+/// Re-uploads the part of the forest texture inside `region` after its densities changed.
+pub fn update_forest(texture: &Texture2D, world: &World, region: Region) {
+    let image = Image {
+        bytes: world.forest_texels_in(region),
         width: region.width() as u16,
         height: region.height() as u16,
     };
@@ -269,7 +295,7 @@ pub fn load_sky_material() -> Material {
     .expect("sky shader failed to compile")
 }
 
-fn opaque_pipeline() -> PipelineParams {
+pub fn opaque_pipeline() -> PipelineParams {
     PipelineParams {
         depth_write: true,
         depth_test: Comparison::LessOrEqual,
@@ -527,6 +553,8 @@ uniform float time;
 // water is close enough for a beach and in alpha how high the ground stands above the water
 // (0-8 m).
 uniform sampler2D surface;
+// How dense the forest is, in red, at the same texels.
+uniform sampler2D forest;
 // Repeating random values, for noise.
 uniform sampler2D noise;
 const float NOISE_SIZE = 512.0;
@@ -736,6 +764,21 @@ void main() {
     }
     vec3 ground = mix(grass, rock, rocky);
     ground = mix(ground, SNOW, smoothstep(SNOW_START - 1.0, SNOW_START, elevation));
+    // Forest. Near the camera the trees themselves are drawn, over ground gone dark and mossy; far
+    // away, where they aren't drawn, mottled greens stand in for their canopy. Forest keeps to
+    // the same ground the trees do: off beaches, cliffs and the high rock.
+    float density = texture2D(forest, v_world.xz * surface_scale + surface_offset).r;
+    if (density > 0.01 && land > 0.0 && rocky < 1.0) {
+        float wet_edge = terrain.b > 0.0 ? smoothstep(2.0, 4.5, terrain.a * 8.0) : 1.0;
+        float mask = density * land * (1.0 - rocky) * wet_edge
+            * smoothstep(0.78, 0.92, normalize(v_normal.xyz).y)
+            * (1.0 - smoothstep(34.0, 40.0, elevation));
+        float far = smoothstep(220.0, 620.0, dist);
+        float mottle = 0.6 * vnoise(v_world.xz / 7.0 + 60.0) + 0.4 * vnoise(v_world.xz / 23.0 - 30.0);
+        vec3 canopy = mix(vec3(0.04, 0.14, 0.06), vec3(0.15, 0.31, 0.11), mottle);
+        vec3 floor_col = vec3(0.09, 0.17, 0.07) * (0.75 + 0.5 * vnoise(v_world.xz / 3.0 + 12.0));
+        ground = mix(ground, mix(floor_col, canopy, far), mask * (0.65 + 0.35 * far));
+    }
     // A narrow sandy beach along every shore, damp where it meets the water. Far away it would
     // only be a hair-thin line, so it fades out with distance.
     float above_water = terrain.a * 8.0;

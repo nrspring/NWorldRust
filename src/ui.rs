@@ -50,6 +50,12 @@ const SHALLOW_BRUSH_DEFAULT: f32 = 150.0;
 const SHELF_WIDTH_MIN: f32 = 10.0;
 const SHELF_WIDTH_MAX: f32 = 100.0;
 const SHELF_WIDTH_DEFAULT: f32 = 40.0;
+/// Forest brush width in meters, and the density it paints, as a percentage.
+const FOREST_BRUSH_MIN: f32 = 20.0;
+const FOREST_BRUSH_MAX: f32 = 400.0;
+const FOREST_BRUSH_DEFAULT: f32 = 120.0;
+const FOREST_DENSITY_MIN: f32 = 10.0;
+const FOREST_DENSITY_DEFAULT: f32 = 80.0;
 /// Random mountain ranges: length along the range and width across it, in meters.
 const RANGE_LENGTH_MIN: f32 = 500.0;
 const RANGE_LENGTH_MAX: f32 = 4000.0;
@@ -67,11 +73,20 @@ enum Tool {
     Lakes,
     Rivers,
     Shallows,
+    Forest,
 }
 
 impl Tool {
-    const ALL: [Tool; 7] =
-        [Tool::NewMap, Tool::Continents, Tool::Islands, Tool::Mountains, Tool::Lakes, Tool::Rivers, Tool::Shallows];
+    const ALL: [Tool; 8] = [
+        Tool::NewMap,
+        Tool::Continents,
+        Tool::Islands,
+        Tool::Mountains,
+        Tool::Lakes,
+        Tool::Rivers,
+        Tool::Shallows,
+        Tool::Forest,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -82,6 +97,7 @@ impl Tool {
             Tool::Lakes => "Lakes",
             Tool::Rivers => "Rivers",
             Tool::Shallows => "Shallows",
+            Tool::Forest => "Forest",
         }
     }
 }
@@ -140,6 +156,8 @@ enum SliderId {
     RiverCount,
     ShallowBrush,
     ShelfWidth,
+    ForestBrush,
+    ForestDensity,
 }
 
 struct NumberField {
@@ -384,9 +402,30 @@ impl ShallowLayout {
     }
 }
 
+/// Where everything in the Forest panel sits: a brush size and a density slider, and notes.
+struct ForestLayout {
+    panel: Rect,
+    brush: Rect,
+    density: Rect,
+}
+
+impl ForestLayout {
+    fn new(origin: Vec2) -> Self {
+        let x = origin.x + PAD;
+        let slider = |y: f32| Rect::new(x, origin.y + y, INNER_WIDTH, 22.0);
+        Self {
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, 312.0),
+            brush: slider(92.0),
+            density: slider(154.0),
+        }
+    }
+}
+
 /// What a brush paints.
 #[derive(Clone, Copy)]
 pub enum Brush {
+    /// Forest of this density, 0 to 1, on land (left button) or bare ground (right).
+    Forest(f32),
     Peak(Peak),
     /// Shallow water onto deep sea (left button) or deep water onto shallow (right).
     Shallows,
@@ -400,6 +439,7 @@ enum Layout {
     Lakes(BrushLayout),
     Rivers(RiverLayout),
     Shallows(ShallowLayout),
+    Forest(ForestLayout),
 }
 
 impl Layout {
@@ -411,6 +451,7 @@ impl Layout {
             Layout::Mountains(l) | Layout::Lakes(l) => l.panel,
             Layout::Rivers(l) => l.panel,
             Layout::Shallows(l) => l.panel,
+            Layout::Forest(l) => l.panel,
         }
     }
 }
@@ -448,6 +489,9 @@ pub struct EditorUi {
     /// Width of the shallows brush in meters, and how far out from coasts the shelf reaches.
     shallow_brush: Slider,
     shelf_width: Slider,
+    /// Width of the forest brush in meters, and the density it paints, from 0 to 100.
+    forest_brush: Slider,
+    forest_density: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -668,6 +712,22 @@ impl EditorUi {
                 unit: " m",
                 ends: None,
             },
+            forest_brush: Slider {
+                label: "Brush size",
+                value: FOREST_BRUSH_DEFAULT,
+                min: FOREST_BRUSH_MIN,
+                max: FOREST_BRUSH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            forest_density: Slider {
+                label: "Density",
+                value: FOREST_DENSITY_DEFAULT,
+                min: FOREST_DENSITY_MIN,
+                max: 100.0,
+                unit: "%",
+                ends: Some(("Sparse", "Dense")),
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -686,6 +746,7 @@ impl EditorUi {
             Tool::Lakes => Layout::Lakes(BrushLayout::new(origin)),
             Tool::Rivers => Layout::Rivers(RiverLayout::new(origin)),
             Tool::Shallows => Layout::Shallows(ShallowLayout::new(origin)),
+            Tool::Forest => Layout::Forest(ForestLayout::new(origin)),
         })
     }
 
@@ -729,6 +790,8 @@ impl EditorUi {
             SliderId::RiverCount => &mut self.river_count,
             SliderId::ShallowBrush => &mut self.shallow_brush,
             SliderId::ShelfWidth => &mut self.shelf_width,
+            SliderId::ForestBrush => &mut self.forest_brush,
+            SliderId::ForestDensity => &mut self.forest_density,
         }
     }
 
@@ -738,7 +801,7 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | None => &[],
+            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | Some(Tool::Forest) | None => &[],
         }
     }
 
@@ -755,6 +818,7 @@ impl EditorUi {
             Some(Tool::Mountains) => Some((self.mountain_brush.value * 0.5, Brush::Peak(Peak::Mountains))),
             Some(Tool::Lakes) => Some((self.lake_brush.value * 0.5, Brush::Peak(Peak::Lakes))),
             Some(Tool::Shallows) => Some((self.shallow_brush.value * 0.5, Brush::Shallows)),
+            Some(Tool::Forest) => Some((self.forest_brush.value * 0.5, Brush::Forest(self.forest_density.value / 100.0))),
             _ => None,
         }
     }
@@ -910,6 +974,27 @@ impl EditorUi {
                     }
                 }
             }
+            Layout::Forest(l) => {
+                let sliders = [(l.brush, SliderId::ForestBrush), (l.density, SliderId::ForestDensity)];
+                if clicked {
+                    if let Some((_, id)) = sliders.iter().find(|(r, _)| r.contains(mouse)) {
+                        self.dragging = Some(*id);
+                    }
+                }
+                if let Some(id) = self.dragging {
+                    if let Some((track, _)) = sliders.iter().find(|(_, s)| *s == id) {
+                        self.slider_mut(id).set_from_x(*track, mouse.x);
+                    }
+                }
+                // [ and ] resize the brush without leaving the map.
+                let slider = self.slider_mut(SliderId::ForestBrush);
+                let notch = (slider.max - slider.min) / 58.0;
+                for (key, sign) in [(KeyCode::LeftBracket, -1.0), (KeyCode::RightBracket, 1.0)] {
+                    if is_key_pressed(key) {
+                        slider.value = (slider.value + sign * notch).round().clamp(slider.min, slider.max);
+                    }
+                }
+            }
             Layout::Shallows(l) => {
                 let sliders = [(l.brush, SliderId::ShallowBrush), (l.width, SliderId::ShelfWidth)];
                 if clicked {
@@ -1026,6 +1111,7 @@ impl EditorUi {
                 seed: random_seed(),
             }),
             Layout::Shallows(_) => has_map.then(|| UiAction::AddShallows { width: self.shelf_width.value }),
+            Layout::Forest(_) => None,
             Layout::Rivers(_) => has_map.then(|| UiAction::AddRivers {
                 count: self.river_count.value as u32,
                 width: self.river_width.value,
@@ -1160,6 +1246,7 @@ impl EditorUi {
                 ),
                 Layout::Rivers(l) => self.draw_river_panel(style, l, mouse, has_map),
                 Layout::Shallows(l) => self.draw_shallow_panel(style, l, mouse, has_map),
+                Layout::Forest(l) => self.draw_forest_panel(style, l, mouse, has_map),
             }
         }
     }
@@ -1248,6 +1335,30 @@ impl EditorUi {
             draw_slider(style, r, slider, self.dragging == Some(id), mouse);
         }
         draw_primary_button(style, l.button, panel.button, has_map, mouse);
+    }
+
+    fn draw_forest_panel(&self, style: &Style, l: &ForestLayout, mouse: Vec2, has_map: bool) {
+        let subtitle = if has_map {
+            "Paint forest onto the land."
+        } else {
+            "Create a map first."
+        };
+        self.draw_header(style, l.panel, "Forest", subtitle);
+        draw_slider(style, l.brush, &self.forest_brush, self.dragging == Some(SliderId::ForestBrush), mouse);
+        draw_slider(style, l.density, &self.forest_density, self.dragging == Some(SliderId::ForestDensity), mouse);
+
+        let x = l.panel.x + PAD;
+        let mut y = l.density.bottom() + 46.0;
+        for line in [
+            "Hold left to paint forest.",
+            "Hold right to clear it.",
+            "Trees keep off water, beaches, cliffs",
+            "and the high rock.",
+            "[ and ] resize the brush.",
+        ] {
+            style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
+            y += 18.0;
+        }
     }
 
     fn draw_shallow_panel(&self, style: &Style, l: &ShallowLayout, mouse: Vec2, has_map: bool) {
@@ -1630,6 +1741,21 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             draw_ellipse_lines(c.x, c.y, 11.0, 7.5, 0.0, t, color);
             for (dx, dy, w) in [(-3.5, -1.5, 3.0), (2.0, 2.5, 3.5)] {
                 draw_line(c.x + dx - w, c.y + dy, c.x + dx + w, c.y + dy, 1.2, color);
+            }
+        }
+        Tool::Forest => {
+            // Two conifers, a small one behind and left of a bigger one: a trunk and three
+            // stacked tiers of foliage each.
+            let ground = c.y + 10.0;
+            for (dx, scale) in [(-6.0f32, 0.7f32), (3.0, 1.0)] {
+                let x = c.x + dx;
+                draw_line(x, ground - 2.0 * scale, x, ground, t, color);
+                for (apex, bottom, half) in [(-15.0f32, -9.0f32, 4.0f32), (-11.0, -5.0, 5.5), (-7.0, -2.0, 7.0)] {
+                    let (top, base) = (ground + apex * scale, ground + bottom * scale);
+                    draw_line(x, top, x - half * scale, base, 1.3, color);
+                    draw_line(x, top, x + half * scale, base, 1.3, color);
+                    draw_line(x - half * scale, base, x + half * scale, base, 1.3, color);
+                }
             }
         }
         Tool::Shallows => {
