@@ -26,7 +26,7 @@ pub struct OpenMap {
     pub cam: EditorCamera,
     pub backdrop: Mesh,
     pub surface: Texture2D,
-    /// The forest and stone densities, for the terrain shader.
+    /// The forest, stone, iron and copper densities, for the terrain shader.
     pub resources: Texture2D,
     /// How many times continents have been generated on this map, undone or not.
     generations: u32,
@@ -37,7 +37,7 @@ pub struct OpenMap {
     stroke: Option<HillStroke>,
     /// The shallows brush stroke being painted, while the mouse button is held.
     shallow_stroke: Option<ShallowStroke>,
-    /// The forest or stone brush stroke being painted, while the mouse button is held.
+    /// The brush stroke of a resource being painted, while the mouse button is held.
     resource_stroke: Option<(Resource, DensityStroke)>,
     /// Where the first end of a river was picked, while the Rivers tool waits for the second.
     pub river_start: Option<Vec2>,
@@ -350,9 +350,9 @@ impl OpenMap {
         self.redraw();
     }
 
-    /// Puts new resource densities (forest, then stone) on the map and refreshes everything drawn
+    /// Puts new resource densities (in the order of [`Resource::ALL`]) on the map and refreshes everything drawn
     /// from them.
-    fn apply_resources(&mut self, resources: [Vec<u8>; 2]) {
+    fn apply_resources(&mut self, resources: [Vec<u8>; Resource::COUNT]) {
         for (kind, layer) in Resource::ALL.into_iter().zip(resources) {
             self.world.set_resource(kind, layer);
         }

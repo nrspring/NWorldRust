@@ -280,15 +280,20 @@ pub struct BlockDraw {
 }
 
 /// Something painted onto the map as a layer of density, from 0 to 255 at each sample, which
-/// shows as props on the ground: trees or rocks.
+/// shows as props on the ground: trees, rocks or ore. The terrain shader reads four resources, one
+/// per channel of a texture, so a fifth needs a second texture.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Resource {
     Forest,
     Stone,
+    Iron,
+    Copper,
 }
 
 impl Resource {
-    pub const ALL: [Resource; 2] = [Resource::Forest, Resource::Stone];
+    pub const ALL: [Resource; 4] = [Resource::Forest, Resource::Stone, Resource::Iron, Resource::Copper];
+    /// How many resources there are.
+    pub const COUNT: usize = Self::ALL.len();
 
     /// The resource's place in lists with one entry per resource.
     pub fn index(self) -> usize {
@@ -322,12 +327,12 @@ pub struct World {
     /// beach there; see [`near_water`].
     near_water: Vec<bool>,
     /// How much of each [`Resource`] there is at each sample, from 0 (none) to 255 (the densest).
-    resources: [Vec<u8>; 2],
+    resources: [Vec<u8>; Resource::COUNT],
     chunks_x: usize,
     chunks: Vec<Option<Chunk>>,
     /// For each chunk and resource, a number that changes whenever anything its props depend on
     /// does.
-    stamps: Vec<[u32; 2]>,
+    stamps: Vec<[u32; Resource::COUNT]>,
     blocks_x: usize,
     blocks: Vec<Block>,
     /// Which world this is, and how many times its terrain has changed; see [`World::revision`].
@@ -350,10 +355,10 @@ impl World {
             heights: vec![DEEP_OCEAN; samples],
             water: vec![SEA_LEVEL; samples],
             near_water: vec![true; samples],
-            resources: [vec![0; samples], vec![0; samples]],
+            resources: std::array::from_fn(|_| vec![0; samples]),
             chunks_x,
             chunks: (0..chunks_x * chunks_z).map(|_| None).collect(),
-            stamps: vec![[0; 2]; chunks_x * chunks_z],
+            stamps: vec![[0; Resource::COUNT]; chunks_x * chunks_z],
             id: NEXT_WORLD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             version: 0,
             blocks_x,
@@ -500,13 +505,13 @@ impl World {
     }
 
     /// The resource densities of the samples in `region` as RGBA texels for the terrain shader,
-    /// row by row: forest in red and stone in green.
+    /// row by row: forest in red, stone in green, iron in blue and copper in alpha.
     pub fn resource_texels_in(&self, region: Region) -> Vec<u8> {
         let nx = self.cells_x + 1;
         let mut texels = Vec::with_capacity(region.width() * region.height() * 4);
         for j in region.j0..=region.j1 {
             for k in j * nx + region.i0..=j * nx + region.i1 {
-                texels.extend([self.resources[0][k], self.resources[1][k], 0, 255]);
+                texels.extend([self.resources[0][k], self.resources[1][k], self.resources[2][k], self.resources[3][k]]);
             }
         }
         texels

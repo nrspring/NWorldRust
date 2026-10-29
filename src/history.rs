@@ -16,7 +16,7 @@ struct Step {
     changes: Vec<(u32, f32, f32)>,
     /// For each resource, (sample index, density before the step) for every sample the step
     /// changed.
-    resources: [Vec<(u32, u8)>; 2],
+    resources: [Vec<(u32, u8)>; Resource::COUNT],
 }
 
 #[derive(Default)]
@@ -48,7 +48,7 @@ impl History {
         debug_assert_eq!(before.len(), after.len());
         let changed: Vec<(u32, u8)> = (0..before.len()).filter(|&i| before[i] != after[i]).map(|i| (i as u32, before[i])).collect();
         if !changed.is_empty() {
-            let mut resources: [Vec<(u32, u8)>; 2] = Default::default();
+            let mut resources: [Vec<(u32, u8)>; Resource::COUNT] = Default::default();
             resources[kind.index()] = changed;
             self.push(Step { changes: Vec::new(), resources });
         }
@@ -63,7 +63,7 @@ impl History {
 
     /// Undoes the most recent step on `heights`, `water` and the resource densities. Returns
     /// false if there was nothing to undo.
-    pub fn undo(&mut self, heights: &mut [f32], water: &mut [f32], resources: &mut [Vec<u8>; 2]) -> bool {
+    pub fn undo(&mut self, heights: &mut [f32], water: &mut [f32], resources: &mut [Vec<u8>; Resource::COUNT]) -> bool {
         let Some(step) = self.steps.pop_back() else {
             return false;
         };
@@ -92,7 +92,7 @@ mod tests {
     /// Undoes a step of terrain edits, with no resources.
     fn undo(history: &mut History, heights: &mut [f32], water: &mut [f32]) -> bool {
         let n = heights.len();
-        history.undo(heights, water, &mut [vec![0; n], vec![0; n]])
+        history.undo(heights, water, &mut std::array::from_fn(|_| vec![0; n]))
     }
 
     #[test]
@@ -106,10 +106,12 @@ mod tests {
         history.record_resource(Resource::Stone, &before, &stone);
         history.record_resource(Resource::Stone, &stone, &stone);
         assert_eq!(history.steps(), 1, "an edit that changed nothing isn't a step");
-        let mut resources = [before.clone(), stone];
+        let mut resources = [before.clone(), stone, before.clone(), before.clone()];
         assert!(history.undo(&mut heights, &mut water, &mut resources));
         assert_eq!(resources[1], before);
         assert_eq!(resources[0], before, "the forest was never touched");
+        assert_eq!(resources[2], before, "nor was the iron");
+        assert_eq!(resources[3], before, "nor was the copper");
         assert!(!history.undo(&mut heights, &mut water, &mut resources));
     }
 

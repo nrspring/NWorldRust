@@ -553,7 +553,8 @@ uniform float time;
 // water is close enough for a beach and in alpha how high the ground stands above the water
 // (0-8 m).
 uniform sampler2D surface;
-// How dense the forest is, in red, and the stone, in green, at the same texels.
+// How dense the forest is, in red, the stone, in green, the iron, in blue, and the copper, in alpha,
+// at the same texels.
 uniform sampler2D resources;
 // Repeating random values, for noise.
 uniform sampler2D noise;
@@ -790,6 +791,22 @@ void main() {
         float grit = 0.5 * vnoise(v_world.xz / 2.5 + 40.0) + 0.5 * vnoise(v_world.xz / 9.0 - 15.0);
         vec3 scree = mix(vec3(0.27, 0.26, 0.24), vec3(0.50, 0.48, 0.44), grit);
         ground = mix(ground, scree, stone * land * 0.8);
+    }
+    // Iron: ore-bearing ground is stained rusty brown, in streaks, standing in for the outcrops
+    // where they aren't drawn.
+    float iron = resources_here.b;
+    if (iron > 0.01 && land > 0.0) {
+        float streak = 0.55 * vnoise(v_world.xz / 3.0 + 70.0) + 0.45 * vnoise(vec2(v_world.x + v_world.z, v_world.z - v_world.x) / 8.0);
+        vec3 rust = mix(vec3(0.26, 0.13, 0.08), vec3(0.58, 0.29, 0.14), streak);
+        ground = mix(ground, rust, iron * land * 0.8);
+    }
+    // Copper: ground bearing ore is bronze-brown, with blue-green verdigris in patches.
+    float copper = resources_here.a;
+    if (copper > 0.01 && land > 0.0) {
+        float fleck = 0.5 * vnoise(v_world.xz / 2.2 - 90.0) + 0.5 * vnoise(v_world.xz / 7.0 + 25.0);
+        vec3 bronze = mix(vec3(0.27, 0.17, 0.10), vec3(0.52, 0.32, 0.17), fleck);
+        float patina = smoothstep(0.5, 0.7, vnoise(v_world.xz / 5.5 + 130.0));
+        ground = mix(ground, mix(bronze, vec3(0.22, 0.56, 0.45), patina), copper * land * 0.8);
     }
     // A narrow sandy beach along every shore, damp where it meets the water. Far away it would
     // only be a hair-thin line, so it fades out with distance.

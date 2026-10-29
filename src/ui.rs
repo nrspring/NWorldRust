@@ -61,6 +61,18 @@ const STONE_BRUSH_MIN: f32 = 20.0;
 const STONE_BRUSH_MAX: f32 = 400.0;
 const STONE_BRUSH_DEFAULT: f32 = 80.0;
 const STONE_DENSITY_DEFAULT: f32 = 70.0;
+/// Iron brush width in meters, and the density it paints, as a percentage.
+const IRON_BRUSH_MIN: f32 = 20.0;
+const IRON_BRUSH_MAX: f32 = 400.0;
+const IRON_BRUSH_DEFAULT: f32 = 60.0;
+const IRON_DENSITY_DEFAULT: f32 = 70.0;
+/// Copper brush width in meters, and the density it paints, as a percentage.
+const COPPER_BRUSH_MIN: f32 = 20.0;
+const COPPER_BRUSH_MAX: f32 = 400.0;
+const COPPER_BRUSH_DEFAULT: f32 = 60.0;
+const COPPER_DENSITY_DEFAULT: f32 = 70.0;
+/// Height of the panels of the resource tools.
+const RESOURCE_PANEL_HEIGHT: f32 = 312.0;
 /// Random mountain ranges: length along the range and width across it, in meters.
 const RANGE_LENGTH_MIN: f32 = 500.0;
 const RANGE_LENGTH_MAX: f32 = 4000.0;
@@ -80,10 +92,12 @@ enum Tool {
     Shallows,
     Forest,
     Stone,
+    Iron,
+    Copper,
 }
 
 impl Tool {
-    const ALL: [Tool; 9] = [
+    const ALL: [Tool; 11] = [
         Tool::NewMap,
         Tool::Continents,
         Tool::Islands,
@@ -93,6 +107,8 @@ impl Tool {
         Tool::Shallows,
         Tool::Forest,
         Tool::Stone,
+        Tool::Iron,
+        Tool::Copper,
     ];
 
     fn label(self) -> &'static str {
@@ -106,6 +122,8 @@ impl Tool {
             Tool::Shallows => "Shallows",
             Tool::Forest => "Forest",
             Tool::Stone => "Stone",
+            Tool::Iron => "Iron",
+            Tool::Copper => "Copper",
         }
     }
 }
@@ -168,6 +186,10 @@ enum SliderId {
     ForestDensity,
     StoneBrush,
     StoneDensity,
+    IronBrush,
+    IronDensity,
+    CopperBrush,
+    CopperDensity,
 }
 
 struct NumberField {
@@ -412,7 +434,7 @@ impl ShallowLayout {
     }
 }
 
-/// Where everything in the Forest and Stone panels sits: a brush size and a density slider, and
+/// Where everything in the resource panels sits: a brush size and a density slider, and
 /// notes.
 struct ResourceLayout {
     panel: Rect,
@@ -425,7 +447,7 @@ impl ResourceLayout {
         let x = origin.x + PAD;
         let slider = |y: f32| Rect::new(x, origin.y + y, INNER_WIDTH, 22.0);
         Self {
-            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, 312.0),
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, RESOURCE_PANEL_HEIGHT),
             brush: slider(92.0),
             density: slider(154.0),
         }
@@ -452,6 +474,8 @@ enum Layout {
     Shallows(ShallowLayout),
     Forest(ResourceLayout),
     Stone(ResourceLayout),
+    Iron(ResourceLayout),
+    Copper(ResourceLayout),
 }
 
 impl Layout {
@@ -463,7 +487,7 @@ impl Layout {
             Layout::Mountains(l) | Layout::Lakes(l) => l.panel,
             Layout::Rivers(l) => l.panel,
             Layout::Shallows(l) => l.panel,
-            Layout::Forest(l) | Layout::Stone(l) => l.panel,
+            Layout::Forest(l) | Layout::Stone(l) | Layout::Iron(l) | Layout::Copper(l) => l.panel,
         }
     }
 }
@@ -507,6 +531,12 @@ pub struct EditorUi {
     /// The same for stone.
     stone_brush: Slider,
     stone_density: Slider,
+    /// And for iron.
+    iron_brush: Slider,
+    iron_density: Slider,
+    /// And for copper.
+    copper_brush: Slider,
+    copper_density: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -759,6 +789,38 @@ impl EditorUi {
                 unit: "%",
                 ends: Some(("Sparse", "Dense")),
             },
+            iron_brush: Slider {
+                label: "Brush size",
+                value: IRON_BRUSH_DEFAULT,
+                min: IRON_BRUSH_MIN,
+                max: IRON_BRUSH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            iron_density: Slider {
+                label: "Density",
+                value: IRON_DENSITY_DEFAULT,
+                min: FOREST_DENSITY_MIN,
+                max: 100.0,
+                unit: "%",
+                ends: Some(("Sparse", "Dense")),
+            },
+            copper_brush: Slider {
+                label: "Brush size",
+                value: COPPER_BRUSH_DEFAULT,
+                min: COPPER_BRUSH_MIN,
+                max: COPPER_BRUSH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            copper_density: Slider {
+                label: "Density",
+                value: COPPER_DENSITY_DEFAULT,
+                min: FOREST_DENSITY_MIN,
+                max: 100.0,
+                unit: "%",
+                ends: Some(("Sparse", "Dense")),
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -768,7 +830,11 @@ impl EditorUi {
     fn layout(&self) -> Option<Layout> {
         let tool = self.open_tool?;
         let index = Tool::ALL.iter().position(|&t| t == tool)?;
-        let origin = vec2(TOOLBAR_WIDTH + PANEL_GAP, icon_rect(index).y);
+        let mut origin = vec2(TOOLBAR_WIDTH + PANEL_GAP, icon_rect(index).y);
+        // The resource panels, low in the toolbar, slide up to stay on the screen.
+        if matches!(tool, Tool::Forest | Tool::Stone | Tool::Iron | Tool::Copper) {
+            origin.y = origin.y.min(screen_height() - RESOURCE_PANEL_HEIGHT - PANEL_GAP).max(PANEL_GAP);
+        }
         Some(match tool {
             Tool::NewMap => Layout::NewMap(NewMapLayout::new(origin)),
             Tool::Continents => Layout::Continents(ContinentsLayout::new(origin)),
@@ -779,6 +845,8 @@ impl EditorUi {
             Tool::Shallows => Layout::Shallows(ShallowLayout::new(origin)),
             Tool::Forest => Layout::Forest(ResourceLayout::new(origin)),
             Tool::Stone => Layout::Stone(ResourceLayout::new(origin)),
+            Tool::Iron => Layout::Iron(ResourceLayout::new(origin)),
+            Tool::Copper => Layout::Copper(ResourceLayout::new(origin)),
         })
     }
 
@@ -826,6 +894,10 @@ impl EditorUi {
             SliderId::ForestDensity => &mut self.forest_density,
             SliderId::StoneBrush => &mut self.stone_brush,
             SliderId::StoneDensity => &mut self.stone_density,
+            SliderId::IronBrush => &mut self.iron_brush,
+            SliderId::IronDensity => &mut self.iron_density,
+            SliderId::CopperBrush => &mut self.copper_brush,
+            SliderId::CopperDensity => &mut self.copper_density,
         }
     }
 
@@ -835,7 +907,7 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | Some(Tool::Forest) | Some(Tool::Stone) | None => &[],
+            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | Some(Tool::Forest) | Some(Tool::Stone) | Some(Tool::Iron) | Some(Tool::Copper) | None => &[],
         }
     }
 
@@ -857,6 +929,12 @@ impl EditorUi {
             }
             Some(Tool::Stone) => {
                 Some((self.stone_brush.value * 0.5, Brush::Resource(Resource::Stone, self.stone_density.value / 100.0)))
+            }
+            Some(Tool::Iron) => {
+                Some((self.iron_brush.value * 0.5, Brush::Resource(Resource::Iron, self.iron_density.value / 100.0)))
+            }
+            Some(Tool::Copper) => {
+                Some((self.copper_brush.value * 0.5, Brush::Resource(Resource::Copper, self.copper_density.value / 100.0)))
             }
             _ => None,
         }
@@ -1013,11 +1091,12 @@ impl EditorUi {
                     }
                 }
             }
-            Layout::Forest(l) | Layout::Stone(l) => {
-                let (brush, density) = if self.open_tool == Some(Tool::Stone) {
-                    (SliderId::StoneBrush, SliderId::StoneDensity)
-                } else {
-                    (SliderId::ForestBrush, SliderId::ForestDensity)
+            Layout::Forest(l) | Layout::Stone(l) | Layout::Iron(l) | Layout::Copper(l) => {
+                let (brush, density) = match self.open_tool {
+                    Some(Tool::Stone) => (SliderId::StoneBrush, SliderId::StoneDensity),
+                    Some(Tool::Iron) => (SliderId::IronBrush, SliderId::IronDensity),
+                    Some(Tool::Copper) => (SliderId::CopperBrush, SliderId::CopperDensity),
+                    _ => (SliderId::ForestBrush, SliderId::ForestDensity),
                 };
                 let sliders = [(l.brush, brush), (l.density, density)];
                 if clicked {
@@ -1155,7 +1234,7 @@ impl EditorUi {
                 seed: random_seed(),
             }),
             Layout::Shallows(_) => has_map.then(|| UiAction::AddShallows { width: self.shelf_width.value }),
-            Layout::Forest(_) | Layout::Stone(_) => None,
+            Layout::Forest(_) | Layout::Stone(_) | Layout::Iron(_) | Layout::Copper(_) => None,
             Layout::Rivers(_) => has_map.then(|| UiAction::AddRivers {
                 count: self.river_count.value as u32,
                 width: self.river_width.value,
@@ -1323,6 +1402,44 @@ impl EditorUi {
                             "Hold left to paint stone.",
                             "Hold right to clear it.",
                             "Boulders and loose rock lie in patches,",
+                            "wherever the ground is dry.",
+                            "[ and ] resize the brush.",
+                        ],
+                    },
+                ),
+                Layout::Iron(l) => self.draw_resource_panel(
+                    style,
+                    l,
+                    mouse,
+                    has_map,
+                    ResourcePanel {
+                        title: "Iron",
+                        subtitle: "Paint iron ore onto the land.",
+                        brush: (&self.iron_brush, SliderId::IronBrush),
+                        density: (&self.iron_density, SliderId::IronDensity),
+                        lines: [
+                            "Hold left to paint iron.",
+                            "Hold right to clear it.",
+                            "Rusty outcrops show in veins,",
+                            "wherever the ground is dry.",
+                            "[ and ] resize the brush.",
+                        ],
+                    },
+                ),
+                Layout::Copper(l) => self.draw_resource_panel(
+                    style,
+                    l,
+                    mouse,
+                    has_map,
+                    ResourcePanel {
+                        title: "Copper",
+                        subtitle: "Paint copper ore onto the land.",
+                        brush: (&self.copper_brush, SliderId::CopperBrush),
+                        density: (&self.copper_density, SliderId::CopperDensity),
+                        lines: [
+                            "Hold left to paint copper.",
+                            "Hold right to clear it.",
+                            "Green-streaked nuggets lie in pockets,",
                             "wherever the ground is dry.",
                             "[ and ] resize the brush.",
                         ],
@@ -1850,6 +1967,17 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             draw_outline(&[c + vec2(6.5, 9.0), c + vec2(8.0, 4.5), c + vec2(12.0, 5.0), c + vec2(12.5, 9.0)], color);
             // A crack across the big one.
             draw_line(c.x - 2.0, c.y - 7.0, c.x + 1.0, c.y + 1.0, 1.1, color);
+        }
+        Tool::Iron => {
+            // Two stacked ingots, each wider at the foot.
+            draw_outline(&[c + vec2(-12.0, 9.0), c + vec2(12.0, 9.0), c + vec2(9.5, 2.0), c + vec2(-9.5, 2.0)], color);
+            draw_outline(&[c + vec2(-7.5, 2.0), c + vec2(7.5, 2.0), c + vec2(5.5, -6.0), c + vec2(-5.5, -6.0)], color);
+        }
+        Tool::Copper => {
+            // A coin: a rim, a smaller ring inside it, and a bar across the middle.
+            draw_circle_lines(c.x, c.y, 11.0, t, color);
+            draw_circle_lines(c.x, c.y, 7.0, 1.2, color);
+            draw_line(c.x - 3.5, c.y, c.x + 3.5, c.y, 1.4, color);
         }
         Tool::Shallows => {
             // Waves over water that is shallower toward the shore: three wavy lines, the

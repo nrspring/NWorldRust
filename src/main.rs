@@ -1,10 +1,12 @@
 mod camera;
 mod continents;
+mod copper;
 mod dialogs;
 mod forest;
 mod gen_common;
 mod hills;
 mod history;
+mod iron;
 mod islands;
 mod noise;
 mod open_map;
@@ -108,8 +110,13 @@ fn shift_down() -> bool {
 #[macroquad::main(window_conf)]
 async fn main() {
     let terrain = render::TerrainRenderer::new();
-    // The props of each resource: trees, then rocks.
-    let mut props = [props::PropRenderer::new(forest::kind()), props::PropRenderer::new(stone::kind())];
+    // The props of each resource: trees, rocks, then the ores.
+    let mut props = [
+        props::PropRenderer::new(forest::kind()),
+        props::PropRenderer::new(stone::kind()),
+        props::PropRenderer::new(iron::kind()),
+        props::PropRenderer::new(copper::kind()),
+    ];
     let backdrop_material = render::load_backdrop_material();
     let sky_material = render::load_sky_material();
     let style = Style::load();

@@ -1,8 +1,8 @@
-//! Resources painted onto the map, like forest and stone: a density layer painted with a brush,
+//! Resources painted onto the map, like forest, stone, iron and copper: a density layer painted with a brush,
 //! and the 3D props drawn from it.
 //!
 //! The map only stores how dense each resource is at each sample, from 0 to 255. The props
-//! themselves, trees or rocks, are worked out from that and the terrain when they are needed, on
+//! themselves, trees, rocks or ore, are worked out from that and the terrain when they are needed, on
 //! a fixed grid of spots across the world, so they stay where they are however the map is edited
 //! and cost nothing in a saved map. Each kind of resource says where its props may stand.
 //!
