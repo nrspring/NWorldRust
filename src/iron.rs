@@ -26,7 +26,8 @@ pub fn kind() -> PropKind {
         shapes: vec![lump_mesh(), cluster_mesh(), big_lump_mesh()],
         generate: outcrops_in_chunk,
         fade: (130.0, 380.0),
-        draw_chunks: 7,
+        far_shapes: vec![lump_far_mesh(), cluster_far_mesh(), big_lump_far_mesh()],
+        near_range: 110.0,
         wind: 0.0,
     }
 }
@@ -113,9 +114,33 @@ fn big_lump_mesh() -> Vec<PropVertex> {
     m.vertices
 }
 
+/// Each outcrop shape from afar: one coarse lump.
+fn lump_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.0, 0.75, 0.0), vec3(1.4, 0.95, 1.2), DARK, LIGHT);
+    m.vertices
+}
+
+fn cluster_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.2, 0.55, 0.0), vec3(1.9, 0.85, 1.5), DARK, LIGHT);
+    m.vertices
+}
+
+fn big_lump_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.3, 0.9, 0.1), vec3(1.9, 1.15, 1.5), DARK, LIGHT);
+    m.vertices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_far_shapes_are_simple_versions_of_the_near_ones() {
+        crate::props::check_far_shapes(&kind());
+    }
 
     /// A flat 10 m world with iron everywhere in its west half.
     fn mine() -> World {

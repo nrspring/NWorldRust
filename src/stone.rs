@@ -22,7 +22,8 @@ pub fn kind() -> PropKind {
         shapes: vec![boulder_mesh(), pile_mesh(), big_boulder_mesh()],
         generate: rocks_in_chunk,
         fade: (150.0, 420.0),
-        draw_chunks: 8,
+        far_shapes: vec![boulder_far_mesh(), pile_far_mesh(), big_boulder_far_mesh()],
+        near_range: 110.0,
         wind: 0.0,
     }
 }
@@ -106,9 +107,33 @@ fn big_boulder_mesh() -> Vec<PropVertex> {
     m.vertices
 }
 
+/// Each rock shape from afar: one coarse lump.
+fn boulder_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.0, 0.8, 0.0), vec3(1.6, 1.0, 1.4), DARK, LIGHT);
+    m.vertices
+}
+
+fn pile_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.3, 0.6, 0.1), vec3(2.2, 0.9, 1.8), DARK, LIGHT);
+    m.vertices
+}
+
+fn big_boulder_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.3, 0.9, 0.1), vec3(2.0, 1.15, 1.6), DARK, LIGHT);
+    m.vertices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_far_shapes_are_simple_versions_of_the_near_ones() {
+        crate::props::check_far_shapes(&kind());
+    }
 
     /// A flat 10 m world with stone everywhere in its west half.
     fn quarry() -> World {

@@ -24,7 +24,8 @@ pub fn kind() -> PropKind {
         shapes: vec![puddle_mesh(), pools_mesh(), seep_mesh()],
         generate: pools_in_chunk,
         fade: (110.0, 330.0),
-        draw_chunks: 6,
+        far_shapes: vec![puddle_far_mesh(), pools_far_mesh(), seep_far_mesh()],
+        near_range: 90.0,
         wind: 0.0,
     }
 }
@@ -124,9 +125,33 @@ fn seep_mesh() -> Vec<PropVertex> {
     m.vertices
 }
 
+/// Each pool shape from afar: one coarse flat lump.
+fn puddle_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.0, 0.1, 0.0), vec3(1.8, 0.16, 1.5), DARK, LIGHT);
+    m.vertices
+}
+
+fn pools_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.2, 0.1, -0.1), vec3(3.0, 0.16, 2.6), DARK, LIGHT);
+    m.vertices
+}
+
+fn seep_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.0, 0.3, 0.0), vec3(2.1, 0.5, 1.9), DARK, LIGHT);
+    m.vertices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_far_shapes_are_simple_versions_of_the_near_ones() {
+        crate::props::check_far_shapes(&kind());
+    }
 
     /// A flat 10 m world with oil everywhere in its west half.
     fn field() -> World {

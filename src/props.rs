@@ -6,9 +6,11 @@
 //! a fixed grid of spots across the world, so they stay where they are however the map is edited
 //! and cost nothing in a saved map. Each kind of resource says where its props may stand.
 //!
-//! Props are drawn as low-poly meshes, thousands at a time with one draw call per shape
-//! (instancing), out to a few hundred meters. They thin out and shrink away with distance, and
-//! beyond that the terrain shader tints the ground to show the resource.
+//! Props are drawn as low-poly meshes, thousands at a time (instancing), out to a few hundred
+//! meters. They are grouped in tiles of a few chunks, and only the tiles in view and in range are
+//! drawn, the near ones from detailed meshes and the rest from much simpler ones. Props thin out
+//! and shrink away with distance, and beyond that the terrain shader tints the ground to show
+//! the resource.
 
 use std::collections::HashMap;
 
@@ -19,13 +21,17 @@ use macroquad::miniquad::{
 use macroquad::prelude::*;
 
 use crate::noise::smoothstep;
-use crate::world::{Region, Resource, World, CELL_SIZE, CHUNK_SIZE};
+use crate::world::{Frustum, Region, Resource, World, CELL_SIZE, CHUNK_SIZE};
 
-/// Most chunks whose props are worked out in one frame, so the first view of a big forest
-/// doesn't stall.
-const CHUNKS_PER_FRAME: usize = 48;
-/// Most props of one kind drawn at once.
-const MAX_PROPS: usize = 400_000;
+/// Props are drawn in tiles this many chunks across, which are culled one at a time.
+const TILE_CHUNKS: usize = 2;
+const TILE_SIZE: f32 = CHUNK_SIZE * TILE_CHUNKS as f32;
+/// How far a tile's props can reach from the middle of the tile, in meters: half its diagonal,
+/// how far the ground can rise or fall across it, and the tallest prop.
+const TILE_REACH: f32 = TILE_SIZE * 0.7071 + 30.0 + 16.0;
+/// Most tiles whose props are worked out in one frame, so the first view of a big forest doesn't
+/// stall.
+const TILES_PER_FRAME: usize = 12;
 
 // ---------------------------------------------------------------------------------- painting
 
@@ -256,6 +262,19 @@ impl MeshBuilder {
         }
     }
 
+    /// A coarse rough ball: an octahedron stretched to `radii` around `center`, darker below.
+    /// Eight triangles, for things too far off for a rounder shape to show.
+    pub fn octa(&mut self, center: Vec3, radii: Vec3, dark: Vec3, light: Vec3) {
+        let corner = |u: Vec3| (center + u * radii, dark.lerp(light, (u.y * 0.5 + 0.5).clamp(0.0, 1.0)));
+        for sx in [-1.0, 1.0] {
+            for sy in [-1.0, 1.0] {
+                for sz in [-1.0, 1.0] {
+                    self.tri(center, corner(vec3(sx, 0.0, 0.0)), corner(vec3(0.0, sy, 0.0)), corner(vec3(0.0, 0.0, sz)));
+                }
+            }
+        }
+    }
+
     /// A rough ball: an icosahedron stretched to `radii` around `center`, darker below. `rough`
     /// (0 for a regular ball) pushes each corner in or out by up to that share of its radius,
     /// differently for each `seed`.
@@ -292,13 +311,14 @@ pub struct PropKind {
     pub resource: Resource,
     /// The meshes, as lists of separate triangles. A prop's `shape` picks one.
     pub shapes: Vec<Vec<PropVertex>>,
+    /// A much simpler mesh for each shape, for props seen from afar, where the detail is lost.
+    pub far_shapes: Vec<Vec<PropVertex>>,
+    /// Props in tiles farther than this many meters from the camera are drawn from the far shapes.
+    pub near_range: f32,
     /// The props in chunk (`cx`, `cz`).
     pub generate: fn(&World, usize, usize) -> Vec<Prop>,
     /// Props thin out and shrink away between these distances in meters from the camera.
     pub fade: (f32, f32),
-    /// Props are drawn in the chunks within this many chunks of the camera's, which should reach
-    /// past the fade.
-    pub draw_chunks: i32,
     /// How much the props sway in the wind, 1 for trees and 0 for rocks.
     pub wind: f32,
 }
@@ -331,30 +351,43 @@ struct GpuMesh {
     count: i32,
 }
 
-/// The instance data of one shape on the GPU.
+/// The instance data of one shape in one tile, on the GPU.
 struct GpuInstances {
     buffer: Option<BufferId>,
-    capacity: usize,
     count: usize,
+}
+
+/// The props of one square of the world, a few chunks wide, ready to draw. A tile is the unit of
+/// culling: one that is out of view or too far off to show costs nothing to draw.
+struct Tile {
+    /// The stamps of the tile's chunks when its props were worked out.
+    stamps: [u32; TILE_CHUNKS * TILE_CHUNKS],
+    /// The middle of the tile, at the ground's height there.
+    center: Vec3,
+    /// The props of each shape.
+    shapes: Vec<GpuInstances>,
 }
 
 /// Draws the props of one kind in a world.
 pub struct PropRenderer {
     kind: PropKind,
     pipeline: Pipeline,
-    meshes: Vec<GpuMesh>,
+    /// The meshes of each shape, close up and from afar.
+    near: Vec<GpuMesh>,
+    far: Vec<GpuMesh>,
     indices: BufferId,
-    instances: Vec<GpuInstances>,
-    /// Each chunk's props, and the state of the chunk when they were worked out.
-    cache: HashMap<(u64, usize), (u32, Vec<Prop>)>,
-    /// The world and chunk the instance buffers were last filled around.
-    filled: Option<(u64, i32, i32)>,
-    /// Some chunk's props changed since the instance buffers were filled.
-    stale: bool,
+    /// The tiles near enough the camera to draw, by their place in the grid of tiles.
+    tiles: HashMap<(i32, i32), Tile>,
+    /// The world the tiles were made for.
+    world_id: Option<u64>,
+    /// The tiles in range of the camera, nearest first, and how far each is: as of the last
+    /// refresh.
+    in_range: Vec<(f32, (i32, i32))>,
 }
 
 impl PropRenderer {
     pub fn new(kind: PropKind) -> Self {
+        assert_eq!(kind.shapes.len(), kind.far_shapes.len(), "every shape needs a far version");
         let ctx = unsafe { get_internal_gl() }.quad_context;
         let shader = ctx
             .new_shader(
@@ -375,25 +408,45 @@ impl PropRenderer {
             crate::render::opaque_pipeline(),
         );
         // The meshes are lists of separate triangles, so the indices just count up.
-        let longest = kind.shapes.iter().map(Vec::len).max().unwrap_or(0);
+        let longest = kind.shapes.iter().chain(&kind.far_shapes).map(Vec::len).max().unwrap_or(0);
         let counting: Vec<u16> = (0..longest as u16).collect();
-        let meshes = kind
-            .shapes
-            .iter()
-            .map(|mesh| GpuMesh {
-                vertices: ctx.new_buffer(BufferType::VertexBuffer, BufferUsage::Immutable, BufferSource::slice(mesh)),
-                count: mesh.len() as i32,
-            })
-            .collect();
+        let mut upload = |shapes: &[Vec<PropVertex>]| -> Vec<GpuMesh> {
+            shapes
+                .iter()
+                .map(|mesh| GpuMesh {
+                    vertices: ctx.new_buffer(BufferType::VertexBuffer, BufferUsage::Immutable, BufferSource::slice(mesh)),
+                    count: mesh.len() as i32,
+                })
+                .collect()
+        };
+        let (near, far) = (upload(&kind.shapes), upload(&kind.far_shapes));
         let indices = ctx.new_buffer(BufferType::IndexBuffer, BufferUsage::Immutable, BufferSource::slice(&counting));
-        let instances = kind.shapes.iter().map(|_| GpuInstances { buffer: None, capacity: 0, count: 0 }).collect();
-        Self { kind, pipeline, meshes, indices, instances, cache: HashMap::new(), filled: None, stale: true }
+        Self { kind, pipeline, near, far, indices, tiles: HashMap::new(), world_id: None, in_range: Vec::new() }
     }
 
-    /// Draws the props of `world` around the camera at `cam`, as seen by `camera`.
+    /// Draws the props of `world` around the camera at `cam`, as seen by `camera`: only those in
+    /// tiles that are in view and near enough to show, the near ones in full and the rest
+    /// from the simpler far meshes.
     pub fn draw(&mut self, world: &World, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32) {
         self.refresh(world, cam);
-        if self.instances.iter().all(|i| i.count == 0) {
+        let frustum = Frustum::from_matrix(camera.matrix());
+        // (mesh, instance buffer, how many) for everything to draw, nearest tiles first.
+        let mut draws: Vec<(BufferId, i32, BufferId, usize)> = Vec::new();
+        for &(distance, key) in &self.in_range {
+            let Some(tile) = self.tiles.get(&key) else {
+                continue;
+            };
+            if !frustum.sphere_visible(tile.center, TILE_REACH) {
+                continue;
+            }
+            let meshes = if distance > self.kind.near_range { &self.far } else { &self.near };
+            for (mesh, instances) in meshes.iter().zip(&tile.shapes) {
+                if let Some(buffer) = instances.buffer {
+                    draws.push((mesh.vertices, mesh.count, buffer, instances.count));
+                }
+            }
+        }
+        if draws.is_empty() {
             return;
         }
 
@@ -417,116 +470,123 @@ impl PropRenderer {
         ctx.apply_pipeline(&self.pipeline);
         ctx.apply_viewport(0, 0, width as i32, height as i32);
         ctx.apply_scissor_rect(0, 0, width as i32, height as i32);
-        for (mesh, instances) in self.meshes.iter().zip(&self.instances) {
-            let Some(buffer) = instances.buffer.filter(|_| instances.count > 0) else {
-                continue;
-            };
-            ctx.apply_bindings(&Bindings {
-                vertex_buffers: vec![mesh.vertices, buffer],
-                index_buffer: self.indices,
-                images: vec![],
-            });
+        for (vertices, count, buffer, instances) in draws {
+            ctx.apply_bindings(&Bindings { vertex_buffers: vec![vertices, buffer], index_buffer: self.indices, images: vec![] });
             ctx.apply_uniforms(UniformsSource::table(&uniforms));
-            ctx.draw(0, mesh.count, instances.count as i32);
+            ctx.draw(0, count, instances as i32);
         }
         ctx.end_render_pass();
     }
 
-    /// Brings the props around `cam` up to date, and refills the instance buffers if anything
-    /// changed.
+    /// Works out which tiles are in range of the camera, makes or remakes the ones that need it
+    /// (a few each frame, nearest first), and forgets those well out of range.
     fn refresh(&mut self, world: &World, cam: Vec3) {
+        let ctx = unsafe { get_internal_gl() }.quad_context;
         let (id, _) = world.revision();
-        let (chunks_x, chunks_z) = world.chunk_counts();
-        let half = world.half_extents();
-        let around = self.kind.draw_chunks;
-        let (ccx, ccz) = (
-            (((cam.x + half.x) / CHUNK_SIZE).floor() as i32).clamp(0, chunks_x as i32 - 1),
-            (((cam.z + half.y) / CHUNK_SIZE).floor() as i32).clamp(0, chunks_z as i32 - 1),
-        );
-        if self.filled.is_some_and(|(world_id, _, _)| world_id != id) {
-            self.cache.clear();
-            self.stale = true;
+        if self.world_id != Some(id) {
+            for (_, tile) in self.tiles.drain() {
+                free(ctx, tile);
+            }
+            self.world_id = Some(id);
         }
 
-        // The chunks to draw, nearest first.
-        let mut wanted: Vec<(i32, usize, usize)> = Vec::new();
-        for dz in -around..=around {
-            for dx in -around..=around {
-                let (cx, cz) = (ccx + dx, ccz + dz);
-                if dx * dx + dz * dz <= around * around
-                    && (0..chunks_x as i32).contains(&cx)
-                    && (0..chunks_z as i32).contains(&cz)
-                {
-                    wanted.push((dx * dx + dz * dz, cx as usize, cz as usize));
+        let half = world.half_extents();
+        let (chunks_x, chunks_z) = world.chunk_counts();
+        let (tiles_x, tiles_z) = (chunks_x.div_ceil(TILE_CHUNKS) as i32, chunks_z.div_ceil(TILE_CHUNKS) as i32);
+        // Props are gone beyond the fade, so tiles only count as in range if some of them could
+        // be within it.
+        let range = self.kind.fade.1 + TILE_REACH;
+        let span = |c: f32, half: f32, n: i32| {
+            let tile = |v: f32| (((v + half) / TILE_SIZE).floor() as i32).clamp(0, n - 1);
+            tile(c - range)..=tile(c + range)
+        };
+        self.in_range.clear();
+        for tz in span(cam.z, half.y, tiles_z) {
+            for tx in span(cam.x, half.x, tiles_x) {
+                let (x, z) = ((tx as f32 + 0.5) * TILE_SIZE - half.x, (tz as f32 + 0.5) * TILE_SIZE - half.y);
+                let distance = vec3(x, world.surface_height(x, z), z).distance(cam);
+                if distance <= range {
+                    self.in_range.push((distance, (tx, tz)));
                 }
             }
         }
-        wanted.sort_unstable();
+        self.in_range.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         let mut made = 0;
-        for &(_, cx, cz) in &wanted {
-            let stamp = world.chunk_stamp(self.kind.resource, cx, cz);
-            let key = (id, cz * chunks_x + cx);
-            if self.cache.get(&key).is_some_and(|(s, _)| *s == stamp) {
+        for k in 0..self.in_range.len() {
+            let key = self.in_range[k].1;
+            let stamps = tile_stamps(world, self.kind.resource, key);
+            if self.tiles.get(&key).is_some_and(|t| t.stamps == stamps) {
                 continue;
             }
-            if made == CHUNKS_PER_FRAME {
+            if made == TILES_PER_FRAME {
                 // The rest come next frame.
-                self.stale = true;
                 break;
             }
-            self.cache.insert(key, (stamp, (self.kind.generate)(world, cx, cz)));
+            let tile = self.build(ctx, world, key, stamps);
+            if let Some(old) = self.tiles.insert(key, tile) {
+                free(ctx, old);
+            }
             made += 1;
-            self.stale = true;
-        }
-        if self.filled != Some((id, ccx, ccz)) {
-            self.stale = true;
-        }
-        if !self.stale {
-            return;
-        }
-        self.stale = made == CHUNKS_PER_FRAME;
-        self.filled = Some((id, ccx, ccz));
-
-        let mut lists: Vec<Vec<Instance>> = vec![Vec::new(); self.meshes.len()];
-        for &(_, cx, cz) in &wanted {
-            let Some((_, props)) = self.cache.get(&(id, cz * chunks_x + cx)) else {
-                continue;
-            };
-            for p in props {
-                lists[p.shape].push(Instance {
-                    at: [p.pos.x, p.pos.y, p.pos.z, p.scale],
-                    look: [p.yaw, p.tint, p.rank, p.aspect],
-                });
-            }
-        }
-        for list in &mut lists {
-            list.truncate(MAX_PROPS / self.meshes.len());
-        }
-        // Forget chunks that are no longer around the camera.
-        if self.cache.len() > wanted.len() * 3 {
-            let keep: std::collections::HashSet<usize> = wanted.iter().map(|&(_, cx, cz)| cz * chunks_x + cx).collect();
-            self.cache.retain(|(world_id, idx), _| *world_id == id && keep.contains(idx));
         }
 
-        let ctx = unsafe { get_internal_gl() }.quad_context;
-        for (gpu, data) in self.instances.iter_mut().zip(&lists) {
-            gpu.count = data.len();
-            if data.is_empty() {
-                continue;
+        // Forget the tiles the camera has moved well away from.
+        let keep = range * 1.3;
+        let gone: Vec<(i32, i32)> = self.tiles.iter().filter(|(_, t)| t.center.distance(cam) > keep).map(|(&key, _)| key).collect();
+        for key in gone {
+            if let Some(tile) = self.tiles.remove(&key) {
+                free(ctx, tile);
             }
-            if gpu.capacity < data.len() {
-                if let Some(old) = gpu.buffer.take() {
-                    ctx.delete_buffer(old);
+        }
+    }
+
+    /// The props of tile `key`, worked out and put on the GPU.
+    fn build(&self, ctx: &mut dyn RenderingBackend, world: &World, key: (i32, i32), stamps: [u32; TILE_CHUNKS * TILE_CHUNKS]) -> Tile {
+        let (chunks_x, chunks_z) = world.chunk_counts();
+        let mut lists: Vec<Vec<Instance>> = vec![Vec::new(); self.near.len()];
+        for dz in 0..TILE_CHUNKS {
+            for dx in 0..TILE_CHUNKS {
+                let (cx, cz) = (key.0 as usize * TILE_CHUNKS + dx, key.1 as usize * TILE_CHUNKS + dz);
+                if cx >= chunks_x || cz >= chunks_z {
+                    continue;
                 }
-                gpu.capacity = (data.len() * 3 / 2).max(4096);
-                gpu.buffer = Some(ctx.new_buffer(
-                    BufferType::VertexBuffer,
-                    BufferUsage::Stream,
-                    BufferSource::empty::<Instance>(gpu.capacity),
-                ));
+                for p in (self.kind.generate)(world, cx, cz) {
+                    lists[p.shape].push(Instance { at: [p.pos.x, p.pos.y, p.pos.z, p.scale], look: [p.yaw, p.tint, p.rank, p.aspect] });
+                }
             }
-            ctx.buffer_update(gpu.buffer.unwrap(), BufferSource::slice(data));
+        }
+        let half = world.half_extents();
+        let (x, z) = ((key.0 as f32 + 0.5) * TILE_SIZE - half.x, (key.1 as f32 + 0.5) * TILE_SIZE - half.y);
+        let shapes = lists
+            .iter()
+            .map(|data| GpuInstances {
+                buffer: (!data.is_empty())
+                    .then(|| ctx.new_buffer(BufferType::VertexBuffer, BufferUsage::Immutable, BufferSource::slice(data))),
+                count: data.len(),
+            })
+            .collect();
+        Tile { stamps, center: vec3(x, world.surface_height(x, z), z), shapes }
+    }
+}
+
+/// The stamps of the chunks of tile `key` (see [`World::chunk_stamp`]); 0 for any off the map.
+fn tile_stamps(world: &World, kind: Resource, key: (i32, i32)) -> [u32; TILE_CHUNKS * TILE_CHUNKS] {
+    let (chunks_x, chunks_z) = world.chunk_counts();
+    std::array::from_fn(|k| {
+        let (cx, cz) = (key.0 as usize * TILE_CHUNKS + k % TILE_CHUNKS, key.1 as usize * TILE_CHUNKS + k / TILE_CHUNKS);
+        if cx < chunks_x && cz < chunks_z {
+            world.chunk_stamp(kind, cx, cz)
+        } else {
+            0
+        }
+    })
+}
+
+/// Gives back the GPU buffers of a tile.
+fn free(ctx: &mut dyn RenderingBackend, tile: Tile) {
+    for shape in tile.shapes {
+        if let Some(buffer) = shape.buffer {
+            ctx.delete_buffer(buffer);
         }
     }
 }
@@ -618,6 +678,28 @@ void main() {
     gl_FragColor = vec4(mix(col, fog_color, fog), 1.0);
 }
 "#;
+
+/// Checks that a kind's far shapes are much simpler than its near ones, and stand where they do
+/// and about as tall and wide.
+#[cfg(test)]
+pub fn check_far_shapes(kind: &PropKind) {
+    assert_eq!(kind.shapes.len(), kind.far_shapes.len());
+    let bounds = |mesh: &[PropVertex]| {
+        let top = mesh.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);
+        let bottom = mesh.iter().map(|v| v.position[1]).fold(f32::MAX, f32::min);
+        let wide = mesh.iter().map(|v| v.position[0].abs().max(v.position[2].abs())).fold(0.0, f32::max);
+        (bottom, top, wide)
+    };
+    for (k, (near, far)) in kind.shapes.iter().zip(&kind.far_shapes).enumerate() {
+        assert!(far.len() % 3 == 0 && !far.is_empty(), "shape {k}");
+        assert!(far.len() * 5 <= near.len() * 2, "shape {k}: {} vertices far, {} near", far.len(), near.len());
+        let ((nb, nt, nw), (fb, ft, fw)) = (bounds(near), bounds(far));
+        assert!((fb - nb).abs() < 0.6, "shape {k} starts at {fb} far and {nb} near");
+        assert!((0.6..1.4).contains(&(ft / nt)), "shape {k} is {ft} tall far and {nt} near");
+        assert!((0.6..1.5).contains(&(fw / nw)), "shape {k} is {fw} wide far and {nw} near");
+    }
+    assert!(kind.near_range > 0.0 && kind.near_range < kind.fade.1);
+}
 
 #[cfg(test)]
 mod tests {

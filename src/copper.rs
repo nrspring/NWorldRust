@@ -23,7 +23,8 @@ pub fn kind() -> PropKind {
         shapes: vec![nugget_mesh(), heap_mesh(), big_nugget_mesh()],
         generate: nuggets_in_chunk,
         fade: (130.0, 380.0),
-        draw_chunks: 7,
+        far_shapes: vec![nugget_far_mesh(), heap_far_mesh(), big_nugget_far_mesh()],
+        near_range: 110.0,
         wind: 0.0,
     }
 }
@@ -109,9 +110,33 @@ fn big_nugget_mesh() -> Vec<PropVertex> {
     m.vertices
 }
 
+/// Each nugget shape from afar: one coarse lump.
+fn nugget_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.0, 0.65, 0.0), vec3(1.2, 0.85, 1.1), DARK, LIGHT);
+    m.vertices
+}
+
+fn heap_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.2, 0.5, -0.1), vec3(1.7, 0.75, 1.5), DARK, LIGHT);
+    m.vertices
+}
+
+fn big_nugget_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.octa(vec3(0.25, 0.85, 0.1), vec3(1.8, 1.1, 1.4), DARK, LIGHT);
+    m.vertices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_far_shapes_are_simple_versions_of_the_near_ones() {
+        crate::props::check_far_shapes(&kind());
+    }
 
     /// A flat 10 m world with copper everywhere in its west half.
     fn mine() -> World {

@@ -25,7 +25,8 @@ pub fn kind() -> PropKind {
         shapes: vec![conifer_mesh(), broadleaf_mesh()],
         generate: trees_in_chunk,
         fade: (260.0, 620.0),
-        draw_chunks: 11,
+        far_shapes: vec![conifer_far_mesh(), broadleaf_far_mesh()],
+        near_range: 220.0,
         wind: 1.0,
     }
 }
@@ -107,9 +108,29 @@ fn broadleaf_mesh() -> Vec<PropVertex> {
     m.vertices
 }
 
+/// A conifer from afar: one cone, with no trunk.
+fn conifer_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.cone(0.5, 10.5, 2.6, 6, vec3(0.05, 0.17, 0.09), vec3(0.14, 0.33, 0.15));
+    m.vertices
+}
+
+/// A broadleaf tree from afar: one coarse ball of leaves on a thin spike of a trunk.
+fn broadleaf_far_mesh() -> Vec<PropVertex> {
+    let mut m = MeshBuilder::default();
+    m.cone(0.0, 4.6, 0.5, 3, vec3(0.20, 0.13, 0.08), vec3(0.30, 0.20, 0.12));
+    m.octa(vec3(0.0, 4.2, 0.0), vec3(3.6, 4.0, 3.6), vec3(0.07, 0.22, 0.08), vec3(0.22, 0.42, 0.14));
+    m.vertices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_far_shapes_are_simple_versions_of_the_near_ones() {
+        crate::props::check_far_shapes(&kind());
+    }
 
     #[test]
     fn trees_stand_where_the_forest_is_and_nowhere_else() {
