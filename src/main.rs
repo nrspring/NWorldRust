@@ -11,6 +11,7 @@ mod islands;
 mod noise;
 mod oil;
 mod open_map;
+mod passes;
 mod props;
 mod regions;
 mod render;
@@ -162,7 +163,7 @@ async fn main() {
 
         // Esc drops the first end of a river, if one is picked, before it closes the panel.
         let escape = is_key_pressed(KeyCode::Escape);
-        let dropped_end = escape && map.as_mut().is_some_and(|m| m.river_start.take().is_some());
+        let dropped_end = escape && map.as_mut().is_some_and(|m| m.river_start.take().is_some() || !std::mem::take(&mut m.pass_points).is_empty());
         let quit = is_quit_requested() || (escape && !dropped_end && !ui.escape());
         if quit && can_discard(map.as_mut(), "close NWorld", &mut toasts) {
             break;
@@ -291,8 +292,9 @@ async fn main() {
                 m.world.update(m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
                 let river = place_river(m, &ui, &style, &mut toasts);
+                let pass = place_pass(m, &ui, &style, &mut toasts);
                 let highlight = region_under_mouse(m, &ui, &style, &pills, show_regions);
-                draw_world(m, &terrain, &mut props, &sky_material, &backdrop_material, time, show_topo, ui.regions_open(), highlight, brush, river);
+                draw_world(m, &terrain, &mut props, &sky_material, &backdrop_material, time, show_topo, ui.regions_open(), highlight, brush, river, pass);
                 if show_topo {
                     contour_labels.refresh(&m.world, get_time());
                     contour_labels.draw(&style, &m.world, &m.cam.camera(&m.world, 40_000.0), TOOLBAR_WIDTH);
@@ -388,6 +390,78 @@ fn place_river(map: &mut OpenMap, ui: &EditorUi, style: &Style, toasts: &mut Toa
     Some(RiverPreview { start: map.river_start, cursor, radius: width * 0.5 })
 }
 
+/// What the Passes tool shows on the map: the points picked so far, where the mouse points, and
+/// half the width of the road.
+struct PassPreview {
+    points: Vec<Vec2>,
+    cursor: Option<Vec2>,
+    radius: f32,
+}
+
+/// Cuts passes with the Passes tool open: each click on the map adds a point the road runs
+/// through, and Enter, or a click on the last point again, cuts the pass. Backspace takes back the
+/// last point. Returns what to show on the map.
+fn place_pass(map: &mut OpenMap, ui: &EditorUi, style: &Style, toasts: &mut Toasts) -> Option<PassPreview> {
+    let Some((width, steepness, winding)) = ui.pass() else {
+        map.pass_points.clear();
+        return None;
+    };
+    let mouse: Vec2 = mouse_position().into();
+    let over_map = !ui.mouse_over() && !hud_pills(style, Some(&*map)).covers(mouse, style);
+    let camera = map.cam.camera(&map.world, 40_000.0);
+    let cursor = over_map.then(|| hills::pick_terrain(&camera, &map.world, mouse)).flatten();
+
+    let mut finish = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter);
+    if is_key_pressed(KeyCode::Backspace) {
+        map.pass_points.pop();
+    }
+    if let (true, Some(point)) = (is_mouse_button_pressed(MouseButton::Left), cursor) {
+        match map.pass_points.last() {
+            Some(&last) if last.distance(point) < (width * 0.5).max(12.0) => finish = true,
+            _ => map.pass_points.push(point),
+        }
+    }
+    if finish {
+        if map.pass_points.len() < 2 {
+            toasts.info("Click at least two points, then press Enter.");
+        } else {
+            map.end_stroke();
+            let points = map.pass_points.clone();
+            match map.add_pass(&points, width, steepness, winding, rand::gen_range(1, 999_999_999)) {
+                Ok(()) => map.pass_points.clear(),
+                // Keep the points, so one can be taken back and another tried.
+                Err(message) => toasts.info(message),
+            }
+        }
+    }
+    Some(PassPreview { points: map.pass_points.clone(), cursor, radius: width * 0.5 })
+}
+
+/// Rings for the pass's points, a post to find the first one by, and the line the road would
+/// take through them and on to the mouse.
+fn draw_pass_preview(world: &world::World, cam: Vec3, pass: &PassPreview) {
+    if let Some(cursor) = pass.cursor {
+        draw_brush_ring(world, cam, cursor, pass.radius);
+    }
+    for &point in &pass.points {
+        draw_brush_ring(world, cam, point, pass.radius);
+    }
+    if let Some(&first) = pass.points.first() {
+        let base = vec3(first.x, world.surface_height(first.x, first.y), first.y);
+        draw_line_3d(base, base + vec3(0.0, 40.0, 0.0), WHITE);
+    }
+    let mut through = pass.points.clone();
+    through.extend(pass.cursor);
+    let route = passes::route(&through);
+    let lifted = |p: Vec2| {
+        let lift = (cam.distance(vec3(p.x, 0.0, p.y)) * 0.003).max(0.6);
+        vec3(p.x, world.surface_height(p.x, p.y) + lift, p.y)
+    };
+    for pair in route.windows(2) {
+        draw_line_3d(lifted(pair[0]), lifted(pair[1]), Color::new(1.0, 1.0, 1.0, 0.7));
+    }
+}
+
 /// Rings for the river's ends, a post to find the first one by, and a line between them.
 fn draw_river_preview(world: &world::World, cam: Vec3, river: &RiverPreview) {
     const SEGMENTS: usize = 64;
@@ -439,6 +513,7 @@ fn draw_world(
     highlight: Option<u16>,
     brush: Option<(Vec2, f32)>,
     river: Option<RiverPreview>,
+    pass: Option<PassPreview>,
 ) {
     let pos = map.cam.position();
     let view_distance = BASE_VIEW_DISTANCE + pos.y.max(0.0) * 1.5;
@@ -466,6 +541,9 @@ fn draw_world(
     }
     if let Some(river) = &river {
         draw_river_preview(&map.world, pos, river);
+    }
+    if let Some(pass) = &pass {
+        draw_pass_preview(&map.world, pos, pass);
     }
     set_default_camera();
 }

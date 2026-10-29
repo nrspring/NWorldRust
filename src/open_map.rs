@@ -12,6 +12,7 @@ use crate::hills::{self, HillStroke, Peak};
 use crate::props::DensityStroke;
 use crate::history::History;
 use crate::islands::{self, IslandParams};
+use crate::passes::{self, PassParams};
 use crate::regions;
 use crate::render;
 use crate::rivers::{self, RiverParams};
@@ -46,6 +47,8 @@ pub struct OpenMap {
     resource_stroke: Option<(Resource, DensityStroke)>,
     /// Where the first end of a river was picked, while the Rivers tool waits for the second.
     pub river_start: Option<Vec2>,
+    /// The points of the pass picked so far, while the Passes tool waits for the rest.
+    pub pass_points: Vec<Vec2>,
     /// The file the map was last saved to or opened from.
     path: Option<PathBuf>,
     /// Whether the map has been edited since it was created, saved or opened.
@@ -89,6 +92,7 @@ impl OpenMap {
             shallow_stroke: None,
             resource_stroke: None,
             river_start: None,
+            pass_points: Vec::new(),
             path: None,
             dirty: false,
         }
@@ -196,6 +200,23 @@ impl OpenMap {
         self.apply_terrain(heights, water);
         self.dirty = true;
         added
+    }
+
+    /// Cuts a pass through the points (world x and z, at least two) as one undoable step: a level
+    /// road bed `width` meters wide, with walls of the given `steepness` (rise over run) where it
+    /// cuts through high ground and embankments where it crosses low, along a smooth line
+    /// winding by `winding` from 0 to 1 between the points. The error is a message fit to show
+    /// the user.
+    pub fn add_pass(&mut self, points: &[Vec2], width: f32, steepness: f32, winding: f32, seed: u32) -> Result<(), &'static str> {
+        let (nx, nz) = self.world.samples();
+        let seed = self.next_seed(seed);
+        let params = PassParams { points: points.to_vec(), width, steepness, winding, seed };
+        let heights = passes::cut(self.world.heights(), self.world.water(), nx, nz, self.world.half_extents(), &params)?;
+        let water = self.world.water().to_vec();
+        self.history.record(self.world.heights(), &water, &heights, &water);
+        self.apply_terrain(heights, water);
+        self.dirty = true;
+        Ok(())
     }
 
     /// Digs a river between two points (world x and z) as one undoable step: `width` meters wide

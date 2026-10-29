@@ -82,6 +82,17 @@ const OIL_BRUSH_DEFAULT: f32 = 90.0;
 const OIL_DENSITY_DEFAULT: f32 = 70.0;
 /// Average region size in meters across.
 const REGION_SIZE_MIN: f32 = 150.0;
+/// Passes: the width of the road bed in meters, how steep its walls are as a percentage (100 is a
+/// 45 degree slope), and how much it winds as a percentage.
+const PASS_WIDTH_MIN: f32 = 20.0;
+const PASS_WIDTH_MAX: f32 = 200.0;
+const PASS_WIDTH_DEFAULT: f32 = 40.0;
+const PASS_WALLS_MIN: f32 = 30.0;
+const PASS_WALLS_MAX: f32 = 200.0;
+const PASS_WALLS_DEFAULT: f32 = 100.0;
+const PASS_WINDING_DEFAULT: f32 = 20.0;
+/// Height of the Passes panel.
+const PASSES_PANEL_HEIGHT: f32 = 392.0;
 const REGION_SIZE_MAX: f32 = 3000.0;
 const REGION_SIZE_DEFAULT: f32 = 600.0;
 /// Height of the Regions panel.
@@ -104,6 +115,7 @@ enum Tool {
     Mountains,
     Lakes,
     Rivers,
+    Passes,
     Shallows,
     Forest,
     Stone,
@@ -115,13 +127,14 @@ enum Tool {
 }
 
 impl Tool {
-    const ALL: [Tool; 14] = [
+    const ALL: [Tool; 15] = [
         Tool::NewMap,
         Tool::Continents,
         Tool::Islands,
         Tool::Mountains,
         Tool::Lakes,
         Tool::Rivers,
+        Tool::Passes,
         Tool::Shallows,
         Tool::Forest,
         Tool::Stone,
@@ -140,6 +153,7 @@ impl Tool {
             Tool::Mountains => "Mountains",
             Tool::Lakes => "Lakes",
             Tool::Rivers => "Rivers",
+            Tool::Passes => "Passes",
             Tool::Shallows => "Shallows",
             Tool::Forest => "Forest",
             Tool::Stone => "Stone",
@@ -223,6 +237,9 @@ enum SliderId {
     OilBrush,
     OilDensity,
     RegionSize,
+    PassWidth,
+    PassWalls,
+    PassWinding,
 }
 
 struct NumberField {
@@ -467,6 +484,27 @@ impl ShallowLayout {
     }
 }
 
+/// Where everything in the Passes panel sits: three sliders and notes.
+struct PassLayout {
+    panel: Rect,
+    width: Rect,
+    walls: Rect,
+    winding: Rect,
+}
+
+impl PassLayout {
+    fn new(origin: Vec2) -> Self {
+        let x = origin.x + PAD;
+        let slider = |y: f32| Rect::new(x, origin.y + y, INNER_WIDTH, 22.0);
+        Self {
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, PASSES_PANEL_HEIGHT),
+            width: slider(92.0),
+            walls: slider(154.0),
+            winding: slider(216.0),
+        }
+    }
+}
+
 /// Where everything in the Regions panel sits: an average size, a key to the kinds of region,
 /// and two buttons.
 struct RegionsLayout {
@@ -539,6 +577,7 @@ enum Layout {
     Sulphur(ResourceLayout),
     Oil(ResourceLayout),
     Regions(RegionsLayout),
+    Passes(PassLayout),
 }
 
 impl Layout {
@@ -552,6 +591,7 @@ impl Layout {
             Layout::Shallows(l) => l.panel,
             Layout::Forest(l) | Layout::Stone(l) | Layout::Iron(l) | Layout::Copper(l) | Layout::Sulphur(l) | Layout::Oil(l) => l.panel,
             Layout::Regions(l) => l.panel,
+            Layout::Passes(l) => l.panel,
         }
     }
 }
@@ -609,6 +649,10 @@ pub struct EditorUi {
     oil_density: Slider,
     /// The average size of a region in meters.
     region_size: Slider,
+    /// A pass's road bed width in meters, how steep its walls are and how much it winds, from 0 to 100.
+    pass_width: Slider,
+    pass_walls: Slider,
+    pass_winding: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -930,6 +974,30 @@ impl EditorUi {
                 unit: "%",
                 ends: Some(("Sparse", "Dense")),
             },
+            pass_width: Slider {
+                label: "Road width",
+                value: PASS_WIDTH_DEFAULT,
+                min: PASS_WIDTH_MIN,
+                max: PASS_WIDTH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            pass_walls: Slider {
+                label: "Walls",
+                value: PASS_WALLS_DEFAULT,
+                min: PASS_WALLS_MIN,
+                max: PASS_WALLS_MAX,
+                unit: "",
+                ends: Some(("Gentle", "Steep")),
+            },
+            pass_winding: Slider {
+                label: "Winding",
+                value: PASS_WINDING_DEFAULT,
+                min: 0.0,
+                max: 100.0,
+                unit: "",
+                ends: Some(("Straight", "Winding")),
+            },
             region_size: Slider {
                 label: "Average size",
                 value: REGION_SIZE_DEFAULT,
@@ -953,6 +1021,8 @@ impl EditorUi {
             origin.y = origin.y.min(screen_height() - RESOURCE_PANEL_HEIGHT - PANEL_GAP).max(PANEL_GAP);
         } else if tool == Tool::Regions {
             origin.y = origin.y.min(screen_height() - REGIONS_PANEL_HEIGHT - PANEL_GAP).max(PANEL_GAP);
+        } else if tool == Tool::Passes {
+            origin.y = origin.y.min(screen_height() - PASSES_PANEL_HEIGHT - PANEL_GAP).max(PANEL_GAP);
         }
         Some(match tool {
             Tool::NewMap => Layout::NewMap(NewMapLayout::new(origin)),
@@ -961,6 +1031,7 @@ impl EditorUi {
             Tool::Mountains => Layout::Mountains(BrushLayout::new(origin)),
             Tool::Lakes => Layout::Lakes(BrushLayout::new(origin)),
             Tool::Rivers => Layout::Rivers(RiverLayout::new(origin)),
+            Tool::Passes => Layout::Passes(PassLayout::new(origin)),
             Tool::Shallows => Layout::Shallows(ShallowLayout::new(origin)),
             Tool::Forest => Layout::Forest(ResourceLayout::new(origin)),
             Tool::Stone => Layout::Stone(ResourceLayout::new(origin)),
@@ -1025,6 +1096,9 @@ impl EditorUi {
             SliderId::OilBrush => &mut self.oil_brush,
             SliderId::OilDensity => &mut self.oil_density,
             SliderId::RegionSize => &mut self.region_size,
+            SliderId::PassWidth => &mut self.pass_width,
+            SliderId::PassWalls => &mut self.pass_walls,
+            SliderId::PassWinding => &mut self.pass_winding,
         }
     }
 
@@ -1034,7 +1108,7 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | Some(Tool::Forest) | Some(Tool::Stone) | Some(Tool::Iron) | Some(Tool::Copper) | Some(Tool::Sulphur) | Some(Tool::Oil) | Some(Tool::Regions) | None => &[],
+            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Passes) | Some(Tool::Shallows) | Some(Tool::Forest) | Some(Tool::Stone) | Some(Tool::Iron) | Some(Tool::Copper) | Some(Tool::Sulphur) | Some(Tool::Oil) | Some(Tool::Regions) | None => &[],
         }
     }
 
@@ -1042,6 +1116,13 @@ impl EditorUi {
     /// digs while it is open, else `None`.
     pub fn river(&self) -> Option<(f32, f32)> {
         (self.open_tool == Some(Tool::Rivers)).then(|| (self.river_width.value, self.river_winding.value / 100.0))
+    }
+
+    /// The road bed width in meters, the steepness of the walls (rise over run) and the winding,
+    /// from 0 to 1, of the pass the Passes tool cuts while it is open, else `None`.
+    pub fn pass(&self) -> Option<(f32, f32, f32)> {
+        (self.open_tool == Some(Tool::Passes))
+            .then(|| (self.pass_width.value, self.pass_walls.value / 100.0, self.pass_winding.value / 100.0))
     }
 
     /// The radius in meters and what it paints while the Mountains, Lakes or Shallows tool is
@@ -1257,6 +1338,23 @@ impl EditorUi {
                     }
                 }
             }
+            Layout::Passes(l) => {
+                let sliders = [
+                    (l.width, SliderId::PassWidth),
+                    (l.walls, SliderId::PassWalls),
+                    (l.winding, SliderId::PassWinding),
+                ];
+                if clicked {
+                    if let Some((_, id)) = sliders.iter().find(|(r, _)| r.contains(mouse)) {
+                        self.dragging = Some(*id);
+                    }
+                }
+                if let Some(id) = self.dragging {
+                    if let Some((track, _)) = sliders.iter().find(|(_, s)| *s == id) {
+                        self.slider_mut(id).set_from_x(*track, mouse.x);
+                    }
+                }
+            }
             Layout::Regions(l) => {
                 if clicked {
                     if l.size.contains(mouse) {
@@ -1388,6 +1486,7 @@ impl EditorUi {
                 seed: random_seed(),
             }),
             Layout::Shallows(_) => has_map.then(|| UiAction::AddShallows { width: self.shelf_width.value }),
+            Layout::Passes(_) => None,
             Layout::Regions(_) => has_map.then(|| UiAction::BreakIntoRegions { size: self.region_size.value, seed: random_seed() }),
             Layout::Forest(_) | Layout::Stone(_) | Layout::Iron(_) | Layout::Copper(_) | Layout::Sulphur(_) | Layout::Oil(_) => None,
             Layout::Rivers(_) => has_map.then(|| UiAction::AddRivers {
@@ -1523,6 +1622,7 @@ impl EditorUi {
                     },
                 ),
                 Layout::Regions(l) => self.draw_regions_panel(style, l, mouse, has_map),
+                Layout::Passes(l) => self.draw_passes_panel(style, l, mouse, has_map),
                 Layout::Rivers(l) => self.draw_river_panel(style, l, mouse, has_map),
                 Layout::Shallows(l) => self.draw_shallow_panel(style, l, mouse, has_map),
                 Layout::Forest(l) => self.draw_resource_panel(
@@ -1740,6 +1840,35 @@ impl EditorUi {
         let x = l.panel.x + PAD;
         let mut y = l.density.bottom() + 46.0;
         for line in panel.lines {
+            style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
+            y += 18.0;
+        }
+    }
+
+    fn draw_passes_panel(&self, style: &Style, l: &PassLayout, mouse: Vec2, has_map: bool) {
+        let subtitle = if has_map {
+            "Click the points it runs through."
+        } else {
+            "Create a map first."
+        };
+        self.draw_header(style, l.panel, "Passes", subtitle);
+        for (r, slider, id) in [
+            (l.width, &self.pass_width, SliderId::PassWidth),
+            (l.walls, &self.pass_walls, SliderId::PassWalls),
+            (l.winding, &self.pass_winding, SliderId::PassWinding),
+        ] {
+            draw_slider(style, r, slider, self.dragging == Some(id), mouse);
+        }
+
+        let x = l.panel.x + PAD;
+        let mut y = l.winding.bottom() + 46.0;
+        for line in [
+            "Click each point the road runs through.",
+            "Enter, or a click on the last point again,",
+            "cuts it level through any mountain and",
+            "builds it up across valleys. Backspace",
+            "takes back a point; Esc forgets them all.",
+        ] {
             style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
             y += 18.0;
         }
@@ -2253,6 +2382,17 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             let hub = c + vec2(-1.0, 1.0);
             for end in [c + vec2(-3.0, -9.0), c + vec2(-5.0, 9.0), c + vec2(11.0, -3.0)] {
                 draw_line(hub.x, hub.y, end.x, end.y, 1.4, color);
+            }
+        }
+        Tool::Passes => {
+            // Two peaks with a road running through the gap between them.
+            draw_line(c.x - 12.0, c.y + 4.0, c.x - 6.0, c.y - 9.0, t, color);
+            draw_line(c.x - 6.0, c.y - 9.0, c.x, c.y - 1.0, t, color);
+            draw_line(c.x, c.y - 1.0, c.x + 6.0, c.y - 9.0, t, color);
+            draw_line(c.x + 6.0, c.y - 9.0, c.x + 12.0, c.y + 4.0, t, color);
+            for k in 0..4 {
+                let x = c.x - 11.0 + k as f32 * 6.0;
+                draw_line(x, c.y + 9.0, x + 3.5, c.y + 9.0, t, color);
             }
         }
         Tool::Rivers => {
