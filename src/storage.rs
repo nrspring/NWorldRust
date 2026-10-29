@@ -9,12 +9,12 @@
 //! | 4 | format version (little endian) |
 //! | 4, 4 | heightmap cells along x and z |
 //! | 4 | how many times continents have been generated on the map |
-//! | rest | the (cells_x + 1) × (cells_z + 1) heights, then as many water levels, as `f32`, byte-shuffled, then as many forest, stone, iron and copper densities each, as `u8`, all deflated |
+//! | rest | the (cells_x + 1) × (cells_z + 1) heights, then as many water levels, as `f32`, byte-shuffled, then as many density planes for each resource, as `u8`, all deflated |
 //!
 //! Shuffling groups the first bytes of every height together, then the second bytes, and so
 //! on, which makes the flat stretches of ocean and land compress far better. Version 1 files
 //! have no water levels: the water is at sea level everywhere. Versions before 3 have no forest,
-//! versions before 4 no stone, versions before 5 no iron and versions before 6 no copper.
+//! versions before 4 no stone, versions before 5 no iron, versions before 6 no copper and versions before 7 no sulphur or oil.
 
 use std::fs;
 use std::path::Path;
@@ -28,9 +28,9 @@ use crate::world::{cells_valid, Resource, DEEP_OCEAN, SEA_LEVEL};
 pub const EXTENSION: &str = "nworld";
 
 const MAGIC: &[u8; 8] = b"NWORLDMP";
-const VERSION: u32 = 6;
+const VERSION: u32 = 7;
 /// The format version that first saved each resource, in the order of [`Resource::ALL`].
-const RESOURCE_SINCE: [u32; Resource::COUNT] = [3, 4, 5, 6];
+const RESOURCE_SINCE: [u32; Resource::COUNT] = [3, 4, 5, 6, 7, 7];
 const HEADER_LEN: usize = 8 + 4 + 4 + 4 + 4;
 /// Deflate effort; 6 is the usual balance of speed and size.
 const COMPRESSION: u8 = 6;
@@ -177,13 +177,15 @@ mod tests {
         let stone = (0..heights.len()).map(|i| (i % 7 * 40) as u8).collect();
         let iron = (0..heights.len()).map(|i| (i % 11 * 25) as u8).collect();
         let copper = (0..heights.len()).map(|i| (i % 13 * 19) as u8).collect();
+        let sulphur = (0..heights.len()).map(|i| (i % 17 * 15) as u8).collect();
+        let oil = (0..heights.len()).map(|i| (i % 19 * 13) as u8).collect();
         SavedMap {
             cells_x,
             cells_z,
             generations: 7,
             heights,
             water,
-            resources: [forest, stone, iron, copper],
+            resources: [forest, stone, iron, copper, sulphur, oil],
         }
     }
 
@@ -271,7 +273,37 @@ mod tests {
         old.extend(compress_to_vec(&shuffled, COMPRESSION));
         let back = decode(&old).unwrap();
         assert_eq!(back.resources[..3], map.resources[..3]);
-        assert!(back.resources[3].len() == n && back.resources[3].iter().all(|&d| d == 0));
+        for layer in &back.resources[3..] {
+            assert!(layer.len() == n && layer.iter().all(|&d| d == 0));
+        }
+    }
+
+    #[test]
+    fn maps_saved_before_sulphur_and_oil_load_with_their_other_resources_and_none() {
+        let map = sample_map();
+        let n = map.heights.len();
+        let mut shuffled = vec![0u8; n * 12];
+        for (layer, values) in [&map.heights, &map.water].into_iter().enumerate() {
+            for (i, v) in values.iter().enumerate() {
+                for (plane, byte) in v.to_le_bytes().into_iter().enumerate() {
+                    shuffled[layer * n * 4 + plane * n + i] = byte;
+                }
+            }
+        }
+        for k in 0..4 {
+            shuffled[n * (8 + k)..n * (9 + k)].copy_from_slice(&map.resources[k]);
+        }
+        let mut old = Vec::new();
+        old.extend_from_slice(MAGIC);
+        for value in [6u32, map.cells_x as u32, map.cells_z as u32, map.generations] {
+            old.extend_from_slice(&value.to_le_bytes());
+        }
+        old.extend(compress_to_vec(&shuffled, COMPRESSION));
+        let back = decode(&old).unwrap();
+        assert_eq!(back.resources[..4], map.resources[..4]);
+        for layer in &back.resources[4..] {
+            assert!(layer.len() == n && layer.iter().all(|&d| d == 0));
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@ use macroquad::models::{Mesh, Vertex};
 use macroquad::prelude::*;
 
 use crate::camera::FOV_DEGREES;
-use crate::world::{Frustum, Region, World, CELL_SIZE, SEA_LEVEL};
+use crate::world::{Frustum, Region, Resource, World, CELL_SIZE, SEA_LEVEL};
 
 /// The pale haze of the sky at the horizon. Distant terrain and sea fog to it, so they fade
 /// into the sky.
@@ -110,7 +110,7 @@ impl TerrainRenderer {
                 },
                 ShaderMeta {
                     uniforms: terrain_uniform_layout(),
-                    images: vec!["surface".to_owned(), "noise".to_owned(), "resources".to_owned()],
+                    images: vec!["surface".to_owned(), "noise".to_owned(), "resources".to_owned(), "resources2".to_owned()],
                 },
             )
             .expect("terrain shader failed to compile");
@@ -132,7 +132,7 @@ impl TerrainRenderer {
     /// Draws the terrain of `world`, colored from its `surface` texture, as seen by `camera`
     /// from `cam`, out to `view_distance`. Whatever macroquad has queued is drawn first, so the
     /// terrain lands on top of it.
-    pub fn draw(&self, world: &mut World, surface: &Texture2D, resources: &Texture2D, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
+    pub fn draw(&self, world: &mut World, surface: &Texture2D, resources: &[Texture2D; Resource::TEXTURES], camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
         let mut gl = unsafe { get_internal_gl() };
         gl.flush();
         let ctx: &mut dyn RenderingBackend = gl.quad_context;
@@ -165,7 +165,12 @@ impl TerrainRenderer {
         ctx.apply_pipeline(&self.pipeline);
         ctx.apply_viewport(0, 0, width as i32, height as i32);
         ctx.apply_scissor_rect(0, 0, width as i32, height as i32);
-        let images = vec![surface.raw_miniquad_id(), self.noise.raw_miniquad_id(), resources.raw_miniquad_id()];
+        let images = vec![
+            surface.raw_miniquad_id(),
+            self.noise.raw_miniquad_id(),
+            resources[0].raw_miniquad_id(),
+            resources[1].raw_miniquad_id(),
+        ];
         for block in blocks {
             ctx.apply_bindings(&miniquad::Bindings {
                 vertex_buffers: vec![block.vertices],
@@ -198,25 +203,28 @@ pub fn update_surface(texture: &Texture2D, world: &World, region: Region) {
 }
 
 /// Uploads the world's resource densities for the terrain shader.
-pub fn resources_texture(world: &World) -> Texture2D {
+pub fn resources_texture(world: &World) -> [Texture2D; Resource::TEXTURES] {
     let (nx, nz) = world.samples();
-    let texture = Texture2D::from_rgba8(
-        nx as u16,
-        nz as u16,
-        &world.resource_texels_in(Region { i0: 0, j0: 0, i1: nx - 1, j1: nz - 1 }),
-    );
-    texture.set_filter(FilterMode::Linear);
-    texture
+    std::array::from_fn(|k| {
+        let texture = Texture2D::from_rgba8(
+            nx as u16,
+            nz as u16,
+            &world.resource_texels_in(Region { i0: 0, j0: 0, i1: nx - 1, j1: nz - 1 }, k),
+        );
+        texture.set_filter(FilterMode::Linear);
+        texture
+    })
 }
 
-/// Re-uploads the part of the resources texture inside `region` after its densities changed.
-pub fn update_resources(texture: &Texture2D, world: &World, region: Region) {
+/// Re-uploads the part of the texture holding `kind` inside `region` after its density changed.
+pub fn update_resources(textures: &[Texture2D; Resource::TEXTURES], world: &World, kind: Resource, region: Region) {
+    let k = kind.index() / 4;
     let image = Image {
-        bytes: world.resource_texels_in(region),
+        bytes: world.resource_texels_in(region, k),
         width: region.width() as u16,
         height: region.height() as u16,
     };
-    texture.update_part(&image, region.i0 as i32, region.j0 as i32, image.width as i32, image.height as i32);
+    textures[k].update_part(&image, region.i0 as i32, region.j0 as i32, image.width as i32, image.height as i32);
 }
 
 /// A repeating texture of random values for the terrain shader's noise. Reading noise from it
@@ -556,6 +564,8 @@ uniform sampler2D surface;
 // How dense the forest is, in red, the stone, in green, the iron, in blue, and the copper, in alpha,
 // at the same texels.
 uniform sampler2D resources;
+// The sulphur, in red, and the oil, in green.
+uniform sampler2D resources2;
 // Repeating random values, for noise.
 uniform sampler2D noise;
 const float NOISE_SIZE = 512.0;
@@ -771,7 +781,8 @@ void main() {
     // Forest. Near the camera the trees themselves are drawn, over ground gone dark and mossy; far
     // away, where they aren't drawn, mottled greens stand in for their canopy. Forest keeps to
     // the same ground the trees do: off beaches, cliffs and the high rock.
-    vec4 resources_here = texture2D(resources, v_world.xz * surface_scale + surface_offset);
+    vec2 resource_at = v_world.xz * surface_scale + surface_offset;
+    vec4 resources_here = texture2D(resources, resource_at);
     float density = resources_here.r;
     if (density > 0.01 && land > 0.0 && rocky < 1.0) {
         float wet_edge = terrain.b > 0.0 ? smoothstep(2.0, 4.5, terrain.a * 8.0) : 1.0;
@@ -807,6 +818,21 @@ void main() {
         vec3 bronze = mix(vec3(0.27, 0.17, 0.10), vec3(0.52, 0.32, 0.17), fleck);
         float patina = smoothstep(0.5, 0.7, vnoise(v_world.xz / 5.5 + 130.0));
         ground = mix(ground, mix(bronze, vec3(0.22, 0.56, 0.45), patina), copper * land * 0.8);
+    }
+    vec4 resources_more = texture2D(resources2, resource_at);
+    // Sulphur: yellow crust in patches over ochre ground.
+    float sulphur = resources_more.r;
+    if (sulphur > 0.01 && land > 0.0) {
+        float crust = smoothstep(0.42, 0.62, 0.6 * vnoise(v_world.xz / 4.0 + 150.0) + 0.4 * vnoise(v_world.xz / 1.7 - 60.0));
+        vec3 yellow = mix(vec3(0.62, 0.52, 0.12), vec3(0.93, 0.86, 0.26), crust);
+        ground = mix(ground, yellow, sulphur * land * (0.45 + 0.4 * crust));
+    }
+    // Oil: seeping ground is stained black in blotches.
+    float oil = resources_more.g;
+    if (oil > 0.01 && land > 0.0) {
+        float blotch = smoothstep(0.38, 0.58, 0.55 * vnoise(v_world.xz / 9.0 + 210.0) + 0.45 * vnoise(v_world.xz / 3.5 - 170.0));
+        vec3 tar = mix(vec3(0.06, 0.05, 0.05), vec3(0.03, 0.03, 0.05), vnoise(v_world.xz / 1.3));
+        ground = mix(ground, tar, oil * land * blotch * 0.9);
     }
     // A narrow sandy beach along every shore, damp where it meets the water. Far away it would
     // only be a hair-thin line, so it fades out with distance.

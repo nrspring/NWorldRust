@@ -26,8 +26,8 @@ pub struct OpenMap {
     pub cam: EditorCamera,
     pub backdrop: Mesh,
     pub surface: Texture2D,
-    /// The forest, stone, iron and copper densities, for the terrain shader.
-    pub resources: Texture2D,
+    /// The resource densities, for the terrain shader.
+    pub resources: [Texture2D; Resource::TEXTURES],
     /// How many times continents have been generated on this map, undone or not.
     generations: u32,
     pub history: History,
@@ -228,7 +228,7 @@ impl OpenMap {
         });
         if let Some(region) = stroke.paint(self.world.resource_mut(*kind), half, center, radius, dt) {
             self.world.resource_changed(*kind, region);
-            render::update_resources(&self.resources, &self.world, region);
+            render::update_resources(&self.resources, &self.world, *kind, region);
         }
     }
 

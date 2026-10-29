@@ -106,12 +106,12 @@ mod tests {
         history.record_resource(Resource::Stone, &before, &stone);
         history.record_resource(Resource::Stone, &stone, &stone);
         assert_eq!(history.steps(), 1, "an edit that changed nothing isn't a step");
-        let mut resources = [before.clone(), stone, before.clone(), before.clone()];
+        let mut resources: [Vec<u8>; Resource::COUNT] = std::array::from_fn(|k| if k == 1 { stone.clone() } else { before.clone() });
         assert!(history.undo(&mut heights, &mut water, &mut resources));
         assert_eq!(resources[1], before);
-        assert_eq!(resources[0], before, "the forest was never touched");
-        assert_eq!(resources[2], before, "nor was the iron");
-        assert_eq!(resources[3], before, "nor was the copper");
+        for (k, layer) in resources.iter().enumerate().filter(|&(k, _)| k != 1) {
+            assert_eq!(layer, &before, "resource {k} was never touched");
+        }
         assert!(!history.undo(&mut heights, &mut water, &mut resources));
     }
 

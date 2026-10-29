@@ -71,6 +71,15 @@ const COPPER_BRUSH_MIN: f32 = 20.0;
 const COPPER_BRUSH_MAX: f32 = 400.0;
 const COPPER_BRUSH_DEFAULT: f32 = 60.0;
 const COPPER_DENSITY_DEFAULT: f32 = 70.0;
+/// Sulphur and oil brush widths in meters, and the density they paint, as a percentage.
+const SULPHUR_BRUSH_MIN: f32 = 20.0;
+const SULPHUR_BRUSH_MAX: f32 = 400.0;
+const SULPHUR_BRUSH_DEFAULT: f32 = 50.0;
+const SULPHUR_DENSITY_DEFAULT: f32 = 70.0;
+const OIL_BRUSH_MIN: f32 = 20.0;
+const OIL_BRUSH_MAX: f32 = 400.0;
+const OIL_BRUSH_DEFAULT: f32 = 90.0;
+const OIL_DENSITY_DEFAULT: f32 = 70.0;
 /// Height of the panels of the resource tools.
 const RESOURCE_PANEL_HEIGHT: f32 = 312.0;
 /// Random mountain ranges: length along the range and width across it, in meters.
@@ -94,10 +103,12 @@ enum Tool {
     Stone,
     Iron,
     Copper,
+    Sulphur,
+    Oil,
 }
 
 impl Tool {
-    const ALL: [Tool; 11] = [
+    const ALL: [Tool; 13] = [
         Tool::NewMap,
         Tool::Continents,
         Tool::Islands,
@@ -109,6 +120,8 @@ impl Tool {
         Tool::Stone,
         Tool::Iron,
         Tool::Copper,
+        Tool::Sulphur,
+        Tool::Oil,
     ];
 
     fn label(self) -> &'static str {
@@ -124,6 +137,8 @@ impl Tool {
             Tool::Stone => "Stone",
             Tool::Iron => "Iron",
             Tool::Copper => "Copper",
+            Tool::Sulphur => "Sulphur",
+            Tool::Oil => "Oil",
         }
     }
 }
@@ -190,6 +205,10 @@ enum SliderId {
     IronDensity,
     CopperBrush,
     CopperDensity,
+    SulphurBrush,
+    SulphurDensity,
+    OilBrush,
+    OilDensity,
 }
 
 struct NumberField {
@@ -476,6 +495,8 @@ enum Layout {
     Stone(ResourceLayout),
     Iron(ResourceLayout),
     Copper(ResourceLayout),
+    Sulphur(ResourceLayout),
+    Oil(ResourceLayout),
 }
 
 impl Layout {
@@ -487,7 +508,7 @@ impl Layout {
             Layout::Mountains(l) | Layout::Lakes(l) => l.panel,
             Layout::Rivers(l) => l.panel,
             Layout::Shallows(l) => l.panel,
-            Layout::Forest(l) | Layout::Stone(l) | Layout::Iron(l) | Layout::Copper(l) => l.panel,
+            Layout::Forest(l) | Layout::Stone(l) | Layout::Iron(l) | Layout::Copper(l) | Layout::Sulphur(l) | Layout::Oil(l) => l.panel,
         }
     }
 }
@@ -537,6 +558,12 @@ pub struct EditorUi {
     /// And for copper.
     copper_brush: Slider,
     copper_density: Slider,
+    /// And for sulphur.
+    sulphur_brush: Slider,
+    sulphur_density: Slider,
+    /// And for oil.
+    oil_brush: Slider,
+    oil_density: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -570,9 +597,14 @@ impl ActionButton {
 }
 
 fn icon_rect(index: usize) -> Rect {
+    // The tool icons keep clear of the action buttons stacked up from the bottom, closing their
+    // gaps (but never overlapping) when the window is short.
+    let actions_top = ActionButton::Open.rect().y;
+    let room = actions_top - ICON_GAP - TOOLBAR_TOP - ICON_SIZE;
+    let step = (room / (Tool::ALL.len() - 1) as f32).clamp(ICON_SIZE, ICON_SIZE + ICON_GAP);
     Rect::new(
         (TOOLBAR_WIDTH - ICON_SIZE) * 0.5,
-        TOOLBAR_TOP + index as f32 * (ICON_SIZE + ICON_GAP),
+        TOOLBAR_TOP + index as f32 * step,
         ICON_SIZE,
         ICON_SIZE,
     )
@@ -821,6 +853,38 @@ impl EditorUi {
                 unit: "%",
                 ends: Some(("Sparse", "Dense")),
             },
+            sulphur_brush: Slider {
+                label: "Brush size",
+                value: SULPHUR_BRUSH_DEFAULT,
+                min: SULPHUR_BRUSH_MIN,
+                max: SULPHUR_BRUSH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            sulphur_density: Slider {
+                label: "Density",
+                value: SULPHUR_DENSITY_DEFAULT,
+                min: FOREST_DENSITY_MIN,
+                max: 100.0,
+                unit: "%",
+                ends: Some(("Sparse", "Dense")),
+            },
+            oil_brush: Slider {
+                label: "Brush size",
+                value: OIL_BRUSH_DEFAULT,
+                min: OIL_BRUSH_MIN,
+                max: OIL_BRUSH_MAX,
+                unit: " m",
+                ends: None,
+            },
+            oil_density: Slider {
+                label: "Density",
+                value: OIL_DENSITY_DEFAULT,
+                min: FOREST_DENSITY_MIN,
+                max: 100.0,
+                unit: "%",
+                ends: Some(("Sparse", "Dense")),
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -832,7 +896,7 @@ impl EditorUi {
         let index = Tool::ALL.iter().position(|&t| t == tool)?;
         let mut origin = vec2(TOOLBAR_WIDTH + PANEL_GAP, icon_rect(index).y);
         // The resource panels, low in the toolbar, slide up to stay on the screen.
-        if matches!(tool, Tool::Forest | Tool::Stone | Tool::Iron | Tool::Copper) {
+        if matches!(tool, Tool::Forest | Tool::Stone | Tool::Iron | Tool::Copper | Tool::Sulphur | Tool::Oil) {
             origin.y = origin.y.min(screen_height() - RESOURCE_PANEL_HEIGHT - PANEL_GAP).max(PANEL_GAP);
         }
         Some(match tool {
@@ -847,6 +911,8 @@ impl EditorUi {
             Tool::Stone => Layout::Stone(ResourceLayout::new(origin)),
             Tool::Iron => Layout::Iron(ResourceLayout::new(origin)),
             Tool::Copper => Layout::Copper(ResourceLayout::new(origin)),
+            Tool::Sulphur => Layout::Sulphur(ResourceLayout::new(origin)),
+            Tool::Oil => Layout::Oil(ResourceLayout::new(origin)),
         })
     }
 
@@ -898,6 +964,10 @@ impl EditorUi {
             SliderId::IronDensity => &mut self.iron_density,
             SliderId::CopperBrush => &mut self.copper_brush,
             SliderId::CopperDensity => &mut self.copper_density,
+            SliderId::SulphurBrush => &mut self.sulphur_brush,
+            SliderId::SulphurDensity => &mut self.sulphur_density,
+            SliderId::OilBrush => &mut self.oil_brush,
+            SliderId::OilDensity => &mut self.oil_density,
         }
     }
 
@@ -907,7 +977,7 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | Some(Tool::Forest) | Some(Tool::Stone) | Some(Tool::Iron) | Some(Tool::Copper) | None => &[],
+            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | Some(Tool::Forest) | Some(Tool::Stone) | Some(Tool::Iron) | Some(Tool::Copper) | Some(Tool::Sulphur) | Some(Tool::Oil) | None => &[],
         }
     }
 
@@ -936,6 +1006,10 @@ impl EditorUi {
             Some(Tool::Copper) => {
                 Some((self.copper_brush.value * 0.5, Brush::Resource(Resource::Copper, self.copper_density.value / 100.0)))
             }
+            Some(Tool::Sulphur) => {
+                Some((self.sulphur_brush.value * 0.5, Brush::Resource(Resource::Sulphur, self.sulphur_density.value / 100.0)))
+            }
+            Some(Tool::Oil) => Some((self.oil_brush.value * 0.5, Brush::Resource(Resource::Oil, self.oil_density.value / 100.0))),
             _ => None,
         }
     }
@@ -1091,11 +1165,13 @@ impl EditorUi {
                     }
                 }
             }
-            Layout::Forest(l) | Layout::Stone(l) | Layout::Iron(l) | Layout::Copper(l) => {
+            Layout::Forest(l) | Layout::Stone(l) | Layout::Iron(l) | Layout::Copper(l) | Layout::Sulphur(l) | Layout::Oil(l) => {
                 let (brush, density) = match self.open_tool {
                     Some(Tool::Stone) => (SliderId::StoneBrush, SliderId::StoneDensity),
                     Some(Tool::Iron) => (SliderId::IronBrush, SliderId::IronDensity),
                     Some(Tool::Copper) => (SliderId::CopperBrush, SliderId::CopperDensity),
+                    Some(Tool::Sulphur) => (SliderId::SulphurBrush, SliderId::SulphurDensity),
+                    Some(Tool::Oil) => (SliderId::OilBrush, SliderId::OilDensity),
                     _ => (SliderId::ForestBrush, SliderId::ForestDensity),
                 };
                 let sliders = [(l.brush, brush), (l.density, density)];
@@ -1234,7 +1310,7 @@ impl EditorUi {
                 seed: random_seed(),
             }),
             Layout::Shallows(_) => has_map.then(|| UiAction::AddShallows { width: self.shelf_width.value }),
-            Layout::Forest(_) | Layout::Stone(_) | Layout::Iron(_) | Layout::Copper(_) => None,
+            Layout::Forest(_) | Layout::Stone(_) | Layout::Iron(_) | Layout::Copper(_) | Layout::Sulphur(_) | Layout::Oil(_) => None,
             Layout::Rivers(_) => has_map.then(|| UiAction::AddRivers {
                 count: self.river_count.value as u32,
                 width: self.river_width.value,
@@ -1441,6 +1517,44 @@ impl EditorUi {
                             "Hold right to clear it.",
                             "Green-streaked nuggets lie in pockets,",
                             "wherever the ground is dry.",
+                            "[ and ] resize the brush.",
+                        ],
+                    },
+                ),
+                Layout::Sulphur(l) => self.draw_resource_panel(
+                    style,
+                    l,
+                    mouse,
+                    has_map,
+                    ResourcePanel {
+                        title: "Sulphur",
+                        subtitle: "Paint sulphur onto the land.",
+                        brush: (&self.sulphur_brush, SliderId::SulphurBrush),
+                        density: (&self.sulphur_density, SliderId::SulphurDensity),
+                        lines: [
+                            "Hold left to paint sulphur.",
+                            "Hold right to clear it.",
+                            "Yellow crystals gather around vents,",
+                            "wherever the ground is dry.",
+                            "[ and ] resize the brush.",
+                        ],
+                    },
+                ),
+                Layout::Oil(l) => self.draw_resource_panel(
+                    style,
+                    l,
+                    mouse,
+                    has_map,
+                    ResourcePanel {
+                        title: "Oil",
+                        subtitle: "Paint oil onto the land.",
+                        brush: (&self.oil_brush, SliderId::OilBrush),
+                        density: (&self.oil_density, SliderId::OilDensity),
+                        lines: [
+                            "Hold left to paint oil.",
+                            "Hold right to clear it.",
+                            "Tar pools collect in broad fields,",
+                            "on gentle dry ground.",
                             "[ and ] resize the brush.",
                         ],
                     },
@@ -1978,6 +2092,24 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             draw_circle_lines(c.x, c.y, 11.0, t, color);
             draw_circle_lines(c.x, c.y, 7.0, 1.2, color);
             draw_line(c.x - 3.5, c.y, c.x + 3.5, c.y, 1.4, color);
+        }
+        Tool::Sulphur => {
+            // A cluster of crystals: a tall one between two shorter ones.
+            draw_outline(&[c + vec2(-4.0, 9.0), c + vec2(-0.5, -11.0), c + vec2(4.5, 9.0)], color);
+            draw_outline(&[c + vec2(-12.0, 9.0), c + vec2(-9.0, -2.0), c + vec2(-4.0, 9.0)], color);
+            draw_outline(&[c + vec2(4.5, 9.0), c + vec2(8.5, -1.0), c + vec2(12.0, 9.0)], color);
+        }
+        Tool::Oil => {
+            // A drop: two sides meeting at a point above a round belly.
+            let belly = c + vec2(0.0, 4.0);
+            draw_line(c.x, c.y - 12.0, belly.x - 6.9, belly.y - 4.0, t, color);
+            draw_line(c.x, c.y - 12.0, belly.x + 6.9, belly.y - 4.0, t, color);
+            let steps = 18;
+            for k in 0..steps {
+                let angle = |k: usize| (-30.0 + 240.0 * k as f32 / steps as f32).to_radians();
+                let (a, b) = (angle(k), angle(k + 1));
+                draw_line(belly.x + 8.0 * a.cos(), belly.y + 8.0 * a.sin(), belly.x + 8.0 * b.cos(), belly.y + 8.0 * b.sin(), t, color);
+            }
         }
         Tool::Shallows => {
             // Waves over water that is shallower toward the shore: three wavy lines, the

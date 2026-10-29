@@ -280,20 +280,25 @@ pub struct BlockDraw {
 }
 
 /// Something painted onto the map as a layer of density, from 0 to 255 at each sample, which
-/// shows as props on the ground: trees, rocks or ore. The terrain shader reads four resources, one
-/// per channel of a texture, so a fifth needs a second texture.
+/// shows as props on the ground: trees, rocks, ore, crystals or tar. The terrain shader reads them
+/// from textures that hold four resources each, one per channel.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Resource {
     Forest,
     Stone,
     Iron,
     Copper,
+    Sulphur,
+    Oil,
 }
 
 impl Resource {
-    pub const ALL: [Resource; 4] = [Resource::Forest, Resource::Stone, Resource::Iron, Resource::Copper];
+    pub const ALL: [Resource; 6] =
+        [Resource::Forest, Resource::Stone, Resource::Iron, Resource::Copper, Resource::Sulphur, Resource::Oil];
     /// How many resources there are.
     pub const COUNT: usize = Self::ALL.len();
+    /// How many textures hold the resources for the terrain shader, four to a texture.
+    pub const TEXTURES: usize = Self::COUNT.div_ceil(4);
 
     /// The resource's place in lists with one entry per resource.
     pub fn index(self) -> usize {
@@ -504,14 +509,16 @@ impl World {
         self.near_water[idx]
     }
 
-    /// The resource densities of the samples in `region` as RGBA texels for the terrain shader,
-    /// row by row: forest in red, stone in green, iron in blue and copper in alpha.
-    pub fn resource_texels_in(&self, region: Region) -> Vec<u8> {
+    /// The resource densities of the samples in `region` as RGBA texels for texture `texture` of
+    /// the terrain shader, row by row. Texture 0 holds forest in red, stone in green, iron in blue
+    /// and copper in alpha; texture 1 sulphur in red and oil in green; see [`Resource::TEXTURES`].
+    pub fn resource_texels_in(&self, region: Region, texture: usize) -> Vec<u8> {
         let nx = self.cells_x + 1;
+        let channels: [Option<&Vec<u8>>; 4] = std::array::from_fn(|c| self.resources.get(texture * 4 + c));
         let mut texels = Vec::with_capacity(region.width() * region.height() * 4);
         for j in region.j0..=region.j1 {
             for k in j * nx + region.i0..=j * nx + region.i1 {
-                texels.extend([self.resources[0][k], self.resources[1][k], self.resources[2][k], self.resources[3][k]]);
+                texels.extend(channels.map(|layer| layer.map_or(0, |layer| layer[k])));
             }
         }
         texels

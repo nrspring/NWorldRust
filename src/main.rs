@@ -9,6 +9,7 @@ mod history;
 mod iron;
 mod islands;
 mod noise;
+mod oil;
 mod open_map;
 mod props;
 mod render;
@@ -16,6 +17,7 @@ mod rivers;
 mod shallows;
 mod stone;
 mod storage;
+mod sulphur;
 mod style;
 mod toast;
 mod topo;
@@ -110,12 +112,14 @@ fn shift_down() -> bool {
 #[macroquad::main(window_conf)]
 async fn main() {
     let terrain = render::TerrainRenderer::new();
-    // The props of each resource: trees, rocks, then the ores.
+    // The props of each resource, in the order of `Resource::ALL`.
     let mut props = [
         props::PropRenderer::new(forest::kind()),
         props::PropRenderer::new(stone::kind()),
         props::PropRenderer::new(iron::kind()),
         props::PropRenderer::new(copper::kind()),
+        props::PropRenderer::new(sulphur::kind()),
+        props::PropRenderer::new(oil::kind()),
     ];
     let backdrop_material = render::load_backdrop_material();
     let sky_material = render::load_sky_material();
