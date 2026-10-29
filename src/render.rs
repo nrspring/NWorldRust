@@ -534,7 +534,7 @@ void main() {
 "#
 );
 
-const TERRAIN_FRAGMENT: &str = concat!(
+pub(crate) const TERRAIN_FRAGMENT: &str = concat!(
     r#"#version 100
 #ifdef GL_ES
 precision highp float;

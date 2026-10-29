@@ -93,6 +93,84 @@ mod surface_tests {
         assert!(depth(0) < depth(1), "3 m is shallower than 4 m");
     }
 
+    /// A sea world with a 3 m shelf in its west quarter and a 6 m one beside it, an island in its
+    /// east, and a 60 m deep lake inland of the island.
+    fn world_for_ships() -> World {
+        let mut world = World::new(256.0, 256.0);
+        let (nx, nz) = world.samples();
+        let mut heights = vec![DEEP_OCEAN; nx * nz];
+        let mut water = vec![SEA_LEVEL; nx * nz];
+        for j in 0..nz {
+            for i in 0..nx {
+                heights[j * nx + i] = match i {
+                    0..=15 => -3.0,
+                    16..=31 => -6.0,
+                    48.. => 10.0,
+                    _ => DEEP_OCEAN,
+                };
+            }
+        }
+        for j in 30..=34 {
+            for i in 52..=56 {
+                heights[j * nx + i] = -50.0;
+                water[j * nx + i] = 10.0;
+            }
+        }
+        world.set_terrain(heights, water);
+        world
+    }
+
+    #[test]
+    fn ships_find_shallow_deep_and_dry_water() {
+        let world = world_for_ships();
+        // World x is -128 + 4 * sample column.
+        let at = |column: f32, row: f32| world.water_class(-128.0 + 4.0 * column, -128.0 + 4.0 * row);
+        assert_eq!(at(5.0, 20.0), WaterClass::Shallow, "3 m of sea");
+        assert_eq!(at(20.0, 20.0), WaterClass::Deep, "6 m of sea");
+        assert_eq!(at(40.0, 20.0), WaterClass::Deep, "the open sea");
+        assert_eq!(at(60.0, 20.0), WaterClass::Dry, "the island");
+        assert_eq!(at(54.0, 32.0), WaterClass::Shallow, "a lake is shallow however deep it is dug");
+        // Between a shallow and a deep sample the answer follows the water's depth there.
+        assert_eq!(at(15.5, 20.0), WaterClass::Shallow, "4.5 m of sea");
+        assert_eq!(at(16.0, 20.0), WaterClass::Deep);
+        // Off the map is the nearest edge.
+        assert_eq!(world.water_class(-5000.0, 0.0), WaterClass::Shallow);
+        assert_eq!(world.water_class(5000.0, 0.0), WaterClass::Dry);
+    }
+
+    #[test]
+    fn the_shader_starts_deep_water_where_ships_do() {
+        let from_the_limit = format!("smoothstep({:.1}, 30.0, depth)", SHALLOW_LIMIT);
+        assert!(crate::render::TERRAIN_FRAGMENT.contains(&from_the_limit), "update the shader's water colours");
+    }
+
+    #[test]
+    fn resources_near_a_point_add_up_by_area() {
+        let mut world = World::new(512.0, 512.0);
+        let (nx, nz) = world.samples();
+        world.set_terrain(vec![10.0; nx * nz], vec![SEA_LEVEL; nx * nz]);
+        // A solid 40 x 40 sample patch of forest at half density around the middle.
+        for j in 44..84 {
+            for i in 44..84 {
+                world.resource_mut(Resource::Forest)[j * nx + i] = 128;
+            }
+        }
+        // The patch covers samples 44 to 83, so its middle is at sample 63.5.
+        let middle = 63.5 * CELL_SIZE - world.half_extents().x;
+        let whole_patch = world.resource_near(Resource::Forest, middle, middle, 200.0);
+        let expected = 40.0 * 40.0 * CELL_SIZE * CELL_SIZE * 128.0 / 255.0;
+        assert!((whole_patch - expected).abs() < 1.0, "{whole_patch} vs {expected}");
+        // A small circle inside the patch holds about its own area at half density.
+        let inside = world.resource_near(Resource::Forest, middle, middle, 40.0);
+        let circle = std::f32::consts::PI * 40.0 * 40.0 * 128.0 / 255.0;
+        assert!((inside - circle).abs() < circle * 0.1, "{inside} vs {circle}");
+        // Other resources, and places far away, have none.
+        assert_eq!(world.resource_near(Resource::Stone, middle, middle, 200.0), 0.0);
+        assert_eq!(world.resource_near(Resource::Forest, middle + 600.0, middle, 100.0), 0.0);
+        // A circle hanging off the map edge only counts what is on it.
+        assert_eq!(world.resource_near(Resource::Forest, -5000.0, 0.0, 100.0), 0.0);
+    }
+
     #[test]
     fn painting_a_lake_moves_the_beaches_with_it() {
         let mut world = World::new(256.0, 256.0);
@@ -188,6 +266,18 @@ impl Resource {
     pub fn index(self) -> usize {
         self as usize
     }
+}
+
+/// What a point of the map is, as far as ships are concerned.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WaterClass {
+    /// Ground above the water.
+    Dry,
+    /// Lakes, rivers, and sea no deeper than [`SHALLOW_LIMIT`]: ships that can only sail shallow
+    /// water can go here.
+    Shallow,
+    /// Sea deeper than [`SHALLOW_LIMIT`].
+    Deep,
 }
 
 pub struct World {
@@ -316,6 +406,60 @@ impl World {
     /// around chunk (`cx`, `cz`) has changed since it was last read.
     pub fn chunk_stamp(&self, kind: Resource, cx: usize, cz: usize) -> u32 {
         self.stamps[cz * self.chunks_x + cx][kind.index()]
+    }
+
+    /// How much of `kind` lies within `radius` meters of (`x`, `z`), as the area in square meters
+    /// that fully dense cover would take up: painted at half density, a patch counts for half its
+    /// area. Divide by the circle's area, `PI * radius * radius`, for how much of it is covered.
+    /// Parts of the circle off the map count for nothing.
+    #[allow(dead_code)] // For gameplay, which doesn't exist yet.
+    pub fn resource_near(&self, kind: Resource, x: f32, z: f32, radius: f32) -> f32 {
+        let half = self.half_extents();
+        let (nx, nz) = self.samples();
+        // Samples sit at whole cells from the north-west corner.
+        let (cx, cz) = ((x + half.x) / CELL_SIZE, (z + half.y) / CELL_SIZE);
+        let reach = radius / CELL_SIZE;
+        let (i0, i1) = ((cx - reach).ceil().max(0.0) as usize, (cx + reach).floor().min((nx - 1) as f32) as usize);
+        let (j0, j1) = ((cz - reach).ceil().max(0.0) as usize, (cz + reach).floor().min((nz - 1) as f32) as usize);
+        let layer = &self.resources[kind.index()];
+        let mut total = 0.0;
+        for j in j0..=j1 {
+            let dz = j as f32 - cz;
+            for i in i0..=i1 {
+                let dx = i as f32 - cx;
+                if dx * dx + dz * dz <= reach * reach {
+                    total += layer[j * nx + i] as f32;
+                }
+            }
+        }
+        total / 255.0 * CELL_SIZE * CELL_SIZE
+    }
+
+    /// Whether the point (`x`, `z`) is dry ground, shallow water or deep water. Lakes and rivers
+    /// are shallow however deep they are dug; sea is deep below [`SHALLOW_LIMIT`]. Points off the
+    /// map count as the nearest edge.
+    #[allow(dead_code)] // For gameplay, which doesn't exist yet.
+    pub fn water_class(&self, x: f32, z: f32) -> WaterClass {
+        let half = self.half_extents();
+        let fx = ((x + half.x) / CELL_SIZE).clamp(0.0, self.cells_x as f32);
+        let fz = ((z + half.y) / CELL_SIZE).clamp(0.0, self.cells_z as f32);
+        let (i, j) = (fx.floor() as usize, fz.floor() as usize);
+        let (tx, tz) = (fx - i as f32, fz - j as f32);
+        let (i1, j1) = ((i + 1).min(self.cells_x), (j + 1).min(self.cells_z));
+        let nx = self.cells_x + 1;
+        let lerp = |layer: &[f32]| {
+            let top = layer[j * nx + i] + (layer[j * nx + i1] - layer[j * nx + i]) * tx;
+            let bottom = layer[j1 * nx + i] + (layer[j1 * nx + i1] - layer[j1 * nx + i]) * tx;
+            top + (bottom - top) * tz
+        };
+        let (ground, level) = (lerp(&self.heights), lerp(&self.water));
+        if ground >= level {
+            WaterClass::Dry
+        } else if level > SEA_LEVEL || level - ground <= SHALLOW_LIMIT {
+            WaterClass::Shallow
+        } else {
+            WaterClass::Deep
+        }
     }
 
     /// Whether the sample is close to water, which is where beaches are; see [`near_water`].
@@ -713,6 +857,10 @@ const MAX_WATER_DEPTH: f32 = 64.0;
 
 /// Lakes and rivers read as water no deeper than this, in meters, so they stay shallow water.
 const MAX_INLAND_DEPTH: f32 = 4.0;
+
+/// Sea this many meters deep or less is shallow water, which every ship can cross; deeper sea is
+/// deep water. The terrain shader starts shading water as deep at this depth.
+pub const SHALLOW_LIMIT: f32 = 5.0;
 
 /// A texel for the terrain shader: the coast in red, elevation in green, whether water is near
 /// in blue and the height above the water, or the depth of it, in alpha, as described on

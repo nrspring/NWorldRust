@@ -5,10 +5,12 @@
 use macroquad::prelude::*;
 
 use crate::noise::smoothstep;
-use crate::world::{Region, CELL_SIZE, DEEP_OCEAN, SEA_LEVEL};
+use crate::world::{Region, CELL_SIZE, DEEP_OCEAN, SEA_LEVEL, SHALLOW_LIMIT};
 
 /// How deep the shallow water the brush paints is, in meters.
 pub const SHALLOW_DEPTH: f32 = 3.0;
+// Painted shallows must count as shallow water for ships.
+const _: () = assert!(SHALLOW_DEPTH < SHALLOW_LIMIT);
 /// How quickly the brush works: a sample under it goes from deep to shallow (or back) in about
 /// this long, in seconds, with the brush held still.
 const BRUSH_SECONDS: f32 = 0.35;
