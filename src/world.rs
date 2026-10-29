@@ -204,6 +204,79 @@ mod surface_tests {
     }
 
     #[test]
+    fn dug_lakes_are_inland_water_everywhere_it_is_looked_up() {
+        let mut world = World::new(1024.0, 1024.0);
+        let (nx, nz) = world.samples();
+        // An island of 10 m ground with 20 samples of open sea all round it.
+        let mut heights = vec![DEEP_OCEAN; nx * nz];
+        for j in 20..nz - 20 {
+            for i in 20..nx - 20 {
+                heights[j * nx + i] = 10.0;
+            }
+        }
+        let water = vec![SEA_LEVEL; nx * nz];
+        let (heights, water, added) =
+            crate::hills::scatter_lakes(&heights, &water, nx, nz, world.half_extents(), 5, 4, 200.0).expect("room for lakes");
+        assert!(added > 0);
+        world.set_terrain(heights, water);
+        let texels = world.surface_texels();
+        let half = world.half_extents();
+        let mut lake_samples = 0;
+        for j in 28..nz - 28 {
+            for i in 28..nx - 28 {
+                let idx = j * nx + i;
+                if world.heights()[idx] >= world.water()[idx] {
+                    continue;
+                }
+                lake_samples += 1;
+                let (x, z) = (i as f32 * CELL_SIZE - half.x, j as f32 * CELL_SIZE - half.y);
+                assert!(world.water()[idx] > SEA_LEVEL, "a lake whose water is at sea level");
+                assert_eq!(world.water_class(x, z), WaterClass::Inland, "lake sample ({i}, {j})");
+                assert_eq!(crate::regions::kind_of(world.heights()[idx], world.water()[idx]), crate::regions::RegionKind::Land);
+                assert_eq!(texels[idx * 4 + 2], 255, "the shader isn't told it is inland");
+            }
+        }
+        assert!(lake_samples > 50, "only {lake_samples} lake samples");
+    }
+
+    #[test]
+    fn dug_rivers_are_inland_water_up_to_where_they_meet_the_sea() {
+        let mut world = World::new(1024.0, 1024.0);
+        let (nx, nz) = world.samples();
+        // An island sloping from 40 m in the east down to the sea in the west, with 20 samples of
+        // open sea all round it.
+        let mut heights = vec![DEEP_OCEAN; nx * nz];
+        for j in 20..nz - 20 {
+            for i in 20..nx - 20 {
+                heights[j * nx + i] = 1.0 + (i - 20) as f32 * 0.2;
+            }
+        }
+        let water = vec![SEA_LEVEL; nx * nz];
+        let half = world.half_extents();
+        let params = crate::rivers::RiverParams { from: vec2(-300.0, 0.0), to: vec2(300.0, 0.0), width: 24.0, winding: 0.5, seed: 3 };
+        let dug = crate::rivers::dig(&heights, &water, nx, nz, half, &params).expect("a river");
+        world.set_terrain(dug.heights, dug.water);
+        let (mut river, mut at_sea_level) = (0, 0);
+        for j in 28..nz - 28 {
+            for i in 28..nx - 28 {
+                let idx = j * nx + i;
+                if world.heights()[idx] >= world.water()[idx] {
+                    continue;
+                }
+                river += 1;
+                let (x, z) = (i as f32 * CELL_SIZE - half.x, j as f32 * CELL_SIZE - half.y);
+                if world.water()[idx] > SEA_LEVEL {
+                    assert_eq!(world.water_class(x, z), WaterClass::Inland, "river sample ({i}, {j})");
+                } else {
+                    at_sea_level += 1;
+                }
+            }
+        }
+        assert!(river > 50, "only {river} river samples");
+        assert!(at_sea_level * 20 < river, "{at_sea_level} of {river} river samples are at sea level");
+    }
+
+    #[test]
     fn the_surface_marks_inland_water_in_blue() {
         let world = world_for_ships();
         let nx = world.samples().0;
