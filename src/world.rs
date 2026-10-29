@@ -129,13 +129,28 @@ mod surface_tests {
         assert_eq!(at(20.0, 20.0), WaterClass::Deep, "6 m of sea");
         assert_eq!(at(40.0, 20.0), WaterClass::Deep, "the open sea");
         assert_eq!(at(60.0, 20.0), WaterClass::Dry, "the island");
-        assert_eq!(at(54.0, 32.0), WaterClass::Shallow, "a lake is shallow however deep it is dug");
+        assert_eq!(at(54.0, 32.0), WaterClass::Inland, "a lake is inland however deep it is dug");
         // Between a shallow and a deep sample the answer follows the water's depth there.
         assert_eq!(at(15.5, 20.0), WaterClass::Shallow, "4.5 m of sea");
         assert_eq!(at(16.0, 20.0), WaterClass::Deep);
         // Off the map is the nearest edge.
         assert_eq!(world.water_class(-5000.0, 0.0), WaterClass::Shallow);
         assert_eq!(world.water_class(5000.0, 0.0), WaterClass::Dry);
+    }
+
+    #[test]
+    fn a_river_mouth_is_inland_only_as_far_as_its_own_samples() {
+        let mut world = world_for_ships();
+        let nx = world.samples().0;
+        let (mut heights, mut water) = (world.heights().to_vec(), world.water().to_vec());
+        // A river sample at column 41 beside the open sea at column 40, on row 20.
+        heights[20 * nx + 41] = -1.0;
+        water[20 * nx + 41] = 0.5;
+        world.set_terrain(heights, water);
+        let at = |column: f32| world.water_class(-128.0 + 4.0 * column, -128.0 + 4.0 * 20.0);
+        assert_eq!(at(40.0), WaterClass::Deep);
+        assert_eq!(at(40.4), WaterClass::Deep, "nearer the sea's sample");
+        assert_eq!(at(41.0), WaterClass::Inland);
     }
 
     #[test]
@@ -169,6 +184,19 @@ mod surface_tests {
         assert_eq!(world.resource_near(Resource::Forest, middle + 600.0, middle, 100.0), 0.0);
         // A circle hanging off the map edge only counts what is on it.
         assert_eq!(world.resource_near(Resource::Forest, -5000.0, 0.0, 100.0), 0.0);
+    }
+
+    #[test]
+    fn the_surface_marks_inland_water_in_blue() {
+        let world = world_for_ships();
+        let nx = world.samples().0;
+        let texels = world.surface_texels();
+        let blue = |i: usize, j: usize| texels[(j * nx + i) * 4 + 2];
+        assert_eq!(blue(54, 32), 255, "a lake");
+        assert_eq!(blue(5, 20), 0, "shallow sea");
+        assert_eq!(blue(40, 20), 0, "deep sea");
+        assert_eq!(blue(60, 20), 0, "dry ground far from the water");
+        assert_eq!(blue(50, 32), 255, "the lake's shore");
     }
 
     #[test]
@@ -273,10 +301,11 @@ impl Resource {
 pub enum WaterClass {
     /// Ground above the water.
     Dry,
-    /// Lakes, rivers, and sea no deeper than [`SHALLOW_LIMIT`]: ships that can only sail shallow
-    /// water can go here.
+    /// Rivers and lakes: water above sea level, however deep. Only small ships sail it.
+    Inland,
+    /// Sea no deeper than [`SHALLOW_LIMIT`]. Large and small ships sail it.
     Shallow,
-    /// Sea deeper than [`SHALLOW_LIMIT`].
+    /// Sea deeper than [`SHALLOW_LIMIT`]. Only large ships sail it.
     Deep,
 }
 
@@ -435,9 +464,10 @@ impl World {
         total / 255.0 * CELL_SIZE * CELL_SIZE
     }
 
-    /// Whether the point (`x`, `z`) is dry ground, shallow water or deep water. Lakes and rivers
-    /// are shallow however deep they are dug; sea is deep below [`SHALLOW_LIMIT`]. Points off the
-    /// map count as the nearest edge.
+    /// What kind of water, if any, covers the point (`x`, `z`). Water whose level is above sea
+    /// level is inland (a river or lake, however deep it is dug), found from the nearest sample;
+    /// sea is shallow down to [`SHALLOW_LIMIT`] and deep below. Points off the map count as the
+    /// nearest edge.
     #[allow(dead_code)] // For gameplay, which doesn't exist yet.
     pub fn water_class(&self, x: f32, z: f32) -> WaterClass {
         let half = self.half_extents();
@@ -455,7 +485,9 @@ impl World {
         let (ground, level) = (lerp(&self.heights), lerp(&self.water));
         if ground >= level {
             WaterClass::Dry
-        } else if level > SEA_LEVEL || level - ground <= SHALLOW_LIMIT {
+        } else if self.water[(fz.round() as usize) * nx + fx.round() as usize] > SEA_LEVEL {
+            WaterClass::Inland
+        } else if level - ground <= SHALLOW_LIMIT {
             WaterClass::Shallow
         } else {
             WaterClass::Deep
@@ -863,8 +895,8 @@ const MAX_INLAND_DEPTH: f32 = 4.0;
 pub const SHALLOW_LIMIT: f32 = 5.0;
 
 /// A texel for the terrain shader: the coast in red, elevation in green, whether water is near
-/// in blue and the height above the water, or the depth of it, in alpha, as described on
-/// [`World::surface_texels`].
+/// (on dry ground) or the water is inland (under water) in blue, and the height above the water,
+/// or the depth of it, in alpha, as described on [`World::surface_texels`].
 /// `w` is the water level at the sample.
 fn surface_texel(h: f32, w: f32, near_water: bool) -> [u8; 4] {
     let coast = ((0.5 + (h - w) * 0.5).clamp(0.0, 1.0) * 255.0).round();
@@ -878,7 +910,10 @@ fn surface_texel(h: f32, w: f32, near_water: bool) -> [u8; 4] {
     } else {
         ((w - h).min(MAX_INLAND_DEPTH) / MAX_WATER_DEPTH).clamp(0.0, 1.0).sqrt()
     };
-    [coast as u8, elevation as u8, if near_water { 255 } else { 0 }, (above * 255.0).round() as u8]
+    // Blue is 255 on inland water (the shader tells it from sea by this) and 0 on sea; on dry
+    // ground it marks water nearby.
+    let blue = if h < w { w > SEA_LEVEL } else { near_water };
+    [coast as u8, elevation as u8, if blue { 255 } else { 0 }, (above * 255.0).round() as u8]
 }
 
 /// Samples this close to water (in samples) can have beach; beaches are at most about 12 m

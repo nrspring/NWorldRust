@@ -586,6 +586,9 @@ const vec3 WATER = vec3(0.02, 0.10, 0.26);
 const float WATER_DEPTH_RANGE = 64.0;
 const vec3 SHALLOW_EDGE = vec3(0.30, 0.68, 0.66);
 const vec3 SHALLOW = vec3(0.09, 0.42, 0.56);
+// Inland water, the rivers and lakes, is a clearer, brighter blue than the teal of the shallow sea.
+const vec3 INLAND_EDGE = vec3(0.42, 0.70, 0.84);
+const vec3 INLAND = vec3(0.16, 0.42, 0.74);
 const vec3 SAND = vec3(0.86, 0.77, 0.53);
 const vec3 WET_SAND = vec3(0.60, 0.52, 0.34);
 // Beaches reach about this far from the water, in meters (varied along the shore).
@@ -802,7 +805,10 @@ void main() {
     }
     // Stored as a square root of the depth.
     float depth = terrain.a * terrain.a * WATER_DEPTH_RANGE;
-    vec3 water = mix(SHALLOW_EDGE, SHALLOW, smoothstep(0.0, 3.0, depth));
+    // Blue is 255 on inland water; the steep ramp keeps the sea's shore from picking up the
+    // inland tint where the blue of the ground beside it is interpolated in.
+    float inland = smoothstep(0.85, 0.98, terrain.b);
+    vec3 water = mix(mix(SHALLOW_EDGE, INLAND_EDGE, inland), mix(SHALLOW, INLAND, inland), smoothstep(0.0, 3.0, depth));
     water = mix(water, WATER, smoothstep(5.0, 30.0, depth));
     vec3 base = mix(water, ground, land);
 
