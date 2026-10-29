@@ -12,6 +12,7 @@ use crate::hills::{self, HillStroke, Peak};
 use crate::props::DensityStroke;
 use crate::history::History;
 use crate::islands::{self, IslandParams};
+use crate::regions;
 use crate::render;
 use crate::rivers::{self, RiverParams};
 use crate::shallows::{self, ShallowStroke};
@@ -28,6 +29,10 @@ pub struct OpenMap {
     pub surface: Texture2D,
     /// The resource densities, for the terrain shader.
     pub resources: [Texture2D; Resource::TEXTURES],
+    /// The regions, for the terrain shader.
+    pub region_texture: Texture2D,
+    /// Whether the map has been divided into regions.
+    has_regions: bool,
     /// How many times continents have been generated on this map, undone or not.
     generations: u32,
     pub history: History,
@@ -55,6 +60,10 @@ pub enum Outcome {
     Failed(String),
 }
 
+/// Stretches of one kind of ground smaller than this many samples are absorbed by their
+/// surroundings before the map is divided into regions.
+const SPECK_AREA: u32 = 30;
+
 impl OpenMap {
     /// A new map of the given size in meters: deep ocean everywhere, seen from above.
     pub fn new(width: f32, height: f32) -> Self {
@@ -64,12 +73,15 @@ impl OpenMap {
         let backdrop = render::backdrop_mesh(world.half_extents());
         let surface = render::surface_texture(&world);
         let resources = render::resources_texture(&world);
+        let region_texture = render::regions_texture(&world);
         Self {
             world,
             cam,
             backdrop,
             surface,
             resources,
+            region_texture,
+            has_regions: false,
             generations: 0,
             history: History::default(),
             hill_seed: rand::gen_range(1, u32::MAX),
@@ -91,6 +103,7 @@ impl OpenMap {
         }
         map.apply_terrain(saved.heights, saved.water);
         map.apply_resources(saved.resources);
+        map.apply_regions(saved.regions);
         map.generations = saved.generations;
         map.path = Some(path);
         Ok(map)
@@ -105,6 +118,7 @@ impl OpenMap {
             heights: self.world.heights().to_vec(),
             water: self.world.water().to_vec(),
             resources: Resource::ALL.map(|kind| self.world.resource(kind).to_vec()),
+            regions: self.world.regions().to_vec(),
         }
     }
 
@@ -332,10 +346,14 @@ impl OpenMap {
         let mut heights = self.world.heights().to_vec();
         let mut water = self.world.water().to_vec();
         let mut resources = Resource::ALL.map(|kind| self.world.resource(kind).to_vec());
-        if !self.history.undo(&mut heights, &mut water, &mut resources) {
+        let mut regions = self.world.regions().to_vec();
+        if !self.history.undo(&mut heights, &mut water, &mut resources, &mut regions) {
             return false;
         }
         self.apply_terrain(heights, water);
+        if regions != self.world.regions() {
+            self.apply_regions(regions);
+        }
         if Resource::ALL.iter().any(|&kind| resources[kind.index()] != self.world.resource(kind)) {
             self.apply_resources(resources);
         }
@@ -357,6 +375,52 @@ impl OpenMap {
             self.world.set_resource(kind, layer);
         }
         self.resources = render::resources_texture(&self.world);
+    }
+
+    /// Puts new regions on the map and refreshes everything drawn from them.
+    fn apply_regions(&mut self, regions: Vec<u16>) {
+        self.has_regions = regions.iter().any(|&r| r != 0);
+        self.world.set_regions(regions);
+        render::update_regions(&self.region_texture, &self.world);
+    }
+
+    /// Whether the map has been divided into regions.
+    pub fn has_regions(&self) -> bool {
+        self.has_regions
+    }
+
+    /// Divides the map into regions about `size` meters across on average, as one undoable step,
+    /// replacing any made before. If that would be more regions than a map can hold, they come
+    /// out bigger. Returns how many regions there are.
+    pub fn generate_regions(&mut self, size: f32, seed: u32) -> usize {
+        let (nx, nz) = self.world.samples();
+        let mut kinds = regions::classify(self.world.heights(), self.world.water());
+        regions::despeckle(&mut kinds, nx, nz, SPECK_AREA);
+        let seed = self.next_seed(seed);
+        let mut size = size;
+        let ids = loop {
+            if let Some(ids) = regions::divide(&kinds, nx, nz, size, seed) {
+                break ids;
+            }
+            size *= 1.4;
+        };
+        let count = ids.iter().map(|&id| id & 0x3FFF).max().unwrap_or(0) as usize;
+        self.history.record_regions(self.world.regions(), &ids);
+        self.apply_regions(ids);
+        self.dirty = true;
+        count
+    }
+
+    /// Takes the regions off the map, as one undoable step. Returns false if there were none.
+    pub fn clear_regions(&mut self) -> bool {
+        if self.world.regions().iter().all(|&r| r == 0) {
+            return false;
+        }
+        let none = vec![0; self.world.regions().len()];
+        self.history.record_regions(self.world.regions(), &none);
+        self.apply_regions(none);
+        self.dirty = true;
+        true
     }
 
     /// Puts new heights and water levels on the map and refreshes everything drawn from them.

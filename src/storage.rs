@@ -9,12 +9,12 @@
 //! | 4 | format version (little endian) |
 //! | 4, 4 | heightmap cells along x and z |
 //! | 4 | how many times continents have been generated on the map |
-//! | rest | the (cells_x + 1) × (cells_z + 1) heights, then as many water levels, as `f32`, byte-shuffled, then as many density planes for each resource, as `u8`, all deflated |
+//! | rest | the (cells_x + 1) × (cells_z + 1) heights, then as many water levels, as `f32`, byte-shuffled, then as many density planes for each resource, then the region of every sample as two byte planes (low, high), as `u8`, all deflated |
 //!
 //! Shuffling groups the first bytes of every height together, then the second bytes, and so
 //! on, which makes the flat stretches of ocean and land compress far better. Version 1 files
 //! have no water levels: the water is at sea level everywhere. Versions before 3 have no forest,
-//! versions before 4 no stone, versions before 5 no iron, versions before 6 no copper and versions before 7 no sulphur or oil.
+//! versions before 4 no stone, versions before 5 no iron, versions before 6 no copper versions before 7 no sulphur or oil and versions before 8 no regions.
 
 use std::fs;
 use std::path::Path;
@@ -28,7 +28,7 @@ use crate::world::{cells_valid, Resource, DEEP_OCEAN, SEA_LEVEL};
 pub const EXTENSION: &str = "nworld";
 
 const MAGIC: &[u8; 8] = b"NWORLDMP";
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 /// The format version that first saved each resource, in the order of [`Resource::ALL`].
 const RESOURCE_SINCE: [u32; Resource::COUNT] = [3, 4, 5, 6, 7, 7];
 const HEADER_LEN: usize = 8 + 4 + 4 + 4 + 4;
@@ -49,12 +49,14 @@ pub struct SavedMap {
     pub water: Vec<f32>,
     /// The densities of each resource, in the order of [`Resource::ALL`], at each of the same samples, 0 to 255.
     pub resources: [Vec<u8>; Resource::COUNT],
+    /// The region of each of the same samples, as the numbers of region ids, 0 for none.
+    pub regions: Vec<u16>,
 }
 
 /// The file contents for a map.
 pub fn encode(map: &SavedMap) -> Vec<u8> {
     let n = map.heights.len();
-    let mut shuffled = vec![0u8; n * (8 + Resource::COUNT)];
+    let mut shuffled = vec![0u8; n * (8 + Resource::COUNT + 2)];
     for (layer, values) in [&map.heights, &map.water].into_iter().enumerate() {
         for (i, h) in values.iter().enumerate() {
             for (plane, byte) in h.to_le_bytes().into_iter().enumerate() {
@@ -70,6 +72,11 @@ pub fn encode(map: &SavedMap) -> Vec<u8> {
     }
     for (k, layer) in map.resources.iter().enumerate() {
         shuffled[n * (8 + k)..n * (9 + k)].copy_from_slice(layer);
+    }
+    let regions = n * (8 + Resource::COUNT);
+    for (k, &r) in map.regions.iter().enumerate() {
+        shuffled[regions + k] = r as u8;
+        shuffled[regions + n + k] = (r >> 8) as u8;
     }
     out.extend(compress_to_vec(&shuffled, COMPRESSION));
     out
@@ -96,7 +103,7 @@ pub fn decode(bytes: &[u8]) -> Result<SavedMap, String> {
     let n = (cells_x + 1) * (cells_z + 1);
     let layers = if version == 1 { 1 } else { 2 };
     let saved = RESOURCE_SINCE.iter().filter(|&&since| version >= since).count();
-    let expected = n * 4 * layers + n * saved;
+    let expected = n * 4 * layers + n * saved + if version >= 8 { n * 2 } else { 0 };
     let shuffled = decompress_to_vec_with_limit(&bytes[HEADER_LEN..], expected)
         .map_err(|_| "The map data in this file is damaged.".to_owned())?;
     if shuffled.len() != expected {
@@ -123,6 +130,12 @@ pub fn decode(bytes: &[u8]) -> Result<SavedMap, String> {
     }
     // Resources are saved in order, so the first `saved` of them are in the file.
     let resources = std::array::from_fn(|k| if k < saved { shuffled[n * (8 + k)..n * (9 + k)].to_vec() } else { vec![0; n] });
+    let regions = if version >= 8 {
+        let at = n * (8 + saved);
+        (0..n).map(|k| shuffled[at + k] as u16 | (shuffled[at + n + k] as u16) << 8).collect()
+    } else {
+        vec![0; n]
+    };
     Ok(SavedMap {
         cells_x,
         cells_z,
@@ -130,6 +143,7 @@ pub fn decode(bytes: &[u8]) -> Result<SavedMap, String> {
         heights,
         water,
         resources,
+        regions,
     })
 }
 
@@ -179,6 +193,7 @@ mod tests {
         let copper = (0..heights.len()).map(|i| (i % 13 * 19) as u8).collect();
         let sulphur = (0..heights.len()).map(|i| (i % 17 * 15) as u8).collect();
         let oil = (0..heights.len()).map(|i| (i % 19 * 13) as u8).collect();
+        let regions = (0..heights.len()).map(|i| (i % 23 * 997) as u16).collect();
         SavedMap {
             cells_x,
             cells_z,
@@ -186,6 +201,7 @@ mod tests {
             heights,
             water,
             resources: [forest, stone, iron, copper, sulphur, oil],
+            regions,
         }
     }
 
@@ -197,6 +213,7 @@ mod tests {
         assert_eq!(back.heights, map.heights);
         assert_eq!(back.water, map.water);
         assert_eq!(back.resources, map.resources);
+        assert_eq!(back.regions, map.regions);
     }
 
     #[test]
@@ -337,6 +354,7 @@ mod tests {
             heights: vec![DEEP_OCEAN; (cells_x + 1) * (cells_z + 1)],
             water: vec![SEA_LEVEL; (cells_x + 1) * (cells_z + 1)],
             resources: std::array::from_fn(|_| vec![0; (cells_x + 1) * (cells_z + 1)]),
+            regions: vec![0; (cells_x + 1) * (cells_z + 1)],
         };
         let bytes = encode(&map);
         assert!(bytes.len() * 50 < map.heights.len() * 4, "{} bytes", bytes.len());

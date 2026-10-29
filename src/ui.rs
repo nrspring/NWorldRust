@@ -80,6 +80,12 @@ const OIL_BRUSH_MIN: f32 = 20.0;
 const OIL_BRUSH_MAX: f32 = 400.0;
 const OIL_BRUSH_DEFAULT: f32 = 90.0;
 const OIL_DENSITY_DEFAULT: f32 = 70.0;
+/// Average region size in meters across.
+const REGION_SIZE_MIN: f32 = 150.0;
+const REGION_SIZE_MAX: f32 = 3000.0;
+const REGION_SIZE_DEFAULT: f32 = 600.0;
+/// Height of the Regions panel.
+const REGIONS_PANEL_HEIGHT: f32 = 398.0;
 /// Height of the panels of the resource tools.
 const RESOURCE_PANEL_HEIGHT: f32 = 312.0;
 /// Random mountain ranges: length along the range and width across it, in meters.
@@ -105,10 +111,11 @@ enum Tool {
     Copper,
     Sulphur,
     Oil,
+    Regions,
 }
 
 impl Tool {
-    const ALL: [Tool; 13] = [
+    const ALL: [Tool; 14] = [
         Tool::NewMap,
         Tool::Continents,
         Tool::Islands,
@@ -122,6 +129,7 @@ impl Tool {
         Tool::Copper,
         Tool::Sulphur,
         Tool::Oil,
+        Tool::Regions,
     ];
 
     fn label(self) -> &'static str {
@@ -139,6 +147,7 @@ impl Tool {
             Tool::Copper => "Copper",
             Tool::Sulphur => "Sulphur",
             Tool::Oil => "Oil",
+            Tool::Regions => "Regions",
         }
     }
 }
@@ -159,6 +168,10 @@ pub enum UiAction {
     AddRivers { count: u32, width: f32, winding: f32, seed: u32 },
     /// Make the sea this many meters out from every coast shallow.
     AddShallows { width: f32 },
+    /// Divide the map into regions about this many meters across.
+    BreakIntoRegions { size: f32, seed: u32 },
+    /// Take the regions off the map.
+    ClearRegions,
     /// Undo the most recent edit.
     Undo,
     /// Save the map; `save_as` asks for a new file name even if the map already has a file.
@@ -209,6 +222,7 @@ enum SliderId {
     SulphurDensity,
     OilBrush,
     OilDensity,
+    RegionSize,
 }
 
 struct NumberField {
@@ -453,6 +467,33 @@ impl ShallowLayout {
     }
 }
 
+/// Where everything in the Regions panel sits: an average size, a key to the kinds of region,
+/// and two buttons.
+struct RegionsLayout {
+    panel: Rect,
+    size: Rect,
+    legend_top: f32,
+    button: Rect,
+    clear: Rect,
+}
+
+impl RegionsLayout {
+    fn new(origin: Vec2) -> Self {
+        let x = origin.x + PAD;
+        let size = Rect::new(x, origin.y + 92.0, INNER_WIDTH, 22.0);
+        let legend_top = size.bottom() + 86.0;
+        let button = Rect::new(x, legend_top + 100.0, INNER_WIDTH, CONTROL_HEIGHT);
+        let clear = Rect::new(x, button.bottom() + 10.0, INNER_WIDTH, CONTROL_HEIGHT);
+        Self {
+            panel: Rect::new(origin.x, origin.y, PANEL_WIDTH, REGIONS_PANEL_HEIGHT),
+            size,
+            legend_top,
+            button,
+            clear,
+        }
+    }
+}
+
 /// Where everything in the resource panels sits: a brush size and a density slider, and
 /// notes.
 struct ResourceLayout {
@@ -497,6 +538,7 @@ enum Layout {
     Copper(ResourceLayout),
     Sulphur(ResourceLayout),
     Oil(ResourceLayout),
+    Regions(RegionsLayout),
 }
 
 impl Layout {
@@ -509,6 +551,7 @@ impl Layout {
             Layout::Rivers(l) => l.panel,
             Layout::Shallows(l) => l.panel,
             Layout::Forest(l) | Layout::Stone(l) | Layout::Iron(l) | Layout::Copper(l) | Layout::Sulphur(l) | Layout::Oil(l) => l.panel,
+            Layout::Regions(l) => l.panel,
         }
     }
 }
@@ -564,6 +607,8 @@ pub struct EditorUi {
     /// And for oil.
     oil_brush: Slider,
     oil_density: Slider,
+    /// The average size of a region in meters.
+    region_size: Slider,
     focused: Option<FieldId>,
     dragging: Option<SliderId>,
     /// Continents are being generated; the Generate button waits until they're done.
@@ -885,6 +930,14 @@ impl EditorUi {
                 unit: "%",
                 ends: Some(("Sparse", "Dense")),
             },
+            region_size: Slider {
+                label: "Average size",
+                value: REGION_SIZE_DEFAULT,
+                min: REGION_SIZE_MIN,
+                max: REGION_SIZE_MAX,
+                unit: " m",
+                ends: Some(("Small", "Large")),
+            },
             focused: None,
             dragging: None,
             busy: false,
@@ -895,9 +948,11 @@ impl EditorUi {
         let tool = self.open_tool?;
         let index = Tool::ALL.iter().position(|&t| t == tool)?;
         let mut origin = vec2(TOOLBAR_WIDTH + PANEL_GAP, icon_rect(index).y);
-        // The resource panels, low in the toolbar, slide up to stay on the screen.
+        // The resource and Regions panels, low in the toolbar, slide up to stay on the screen.
         if matches!(tool, Tool::Forest | Tool::Stone | Tool::Iron | Tool::Copper | Tool::Sulphur | Tool::Oil) {
             origin.y = origin.y.min(screen_height() - RESOURCE_PANEL_HEIGHT - PANEL_GAP).max(PANEL_GAP);
+        } else if tool == Tool::Regions {
+            origin.y = origin.y.min(screen_height() - REGIONS_PANEL_HEIGHT - PANEL_GAP).max(PANEL_GAP);
         }
         Some(match tool {
             Tool::NewMap => Layout::NewMap(NewMapLayout::new(origin)),
@@ -913,6 +968,7 @@ impl EditorUi {
             Tool::Copper => Layout::Copper(ResourceLayout::new(origin)),
             Tool::Sulphur => Layout::Sulphur(ResourceLayout::new(origin)),
             Tool::Oil => Layout::Oil(ResourceLayout::new(origin)),
+            Tool::Regions => Layout::Regions(RegionsLayout::new(origin)),
         })
     }
 
@@ -968,6 +1024,7 @@ impl EditorUi {
             SliderId::SulphurDensity => &mut self.sulphur_density,
             SliderId::OilBrush => &mut self.oil_brush,
             SliderId::OilDensity => &mut self.oil_density,
+            SliderId::RegionSize => &mut self.region_size,
         }
     }
 
@@ -977,7 +1034,7 @@ impl EditorUi {
             Some(Tool::NewMap) => &[FieldId::Width, FieldId::Height],
             Some(Tool::Continents) => &[FieldId::Seed],
             Some(Tool::Islands) => &[FieldId::IslandSeed],
-            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | Some(Tool::Forest) | Some(Tool::Stone) | Some(Tool::Iron) | Some(Tool::Copper) | Some(Tool::Sulphur) | Some(Tool::Oil) | None => &[],
+            Some(Tool::Mountains) | Some(Tool::Lakes) | Some(Tool::Rivers) | Some(Tool::Shallows) | Some(Tool::Forest) | Some(Tool::Stone) | Some(Tool::Iron) | Some(Tool::Copper) | Some(Tool::Sulphur) | Some(Tool::Oil) | Some(Tool::Regions) | None => &[],
         }
     }
 
@@ -1012,6 +1069,11 @@ impl EditorUi {
             Some(Tool::Oil) => Some((self.oil_brush.value * 0.5, Brush::Resource(Resource::Oil, self.oil_density.value / 100.0))),
             _ => None,
         }
+    }
+
+    /// Whether the Regions panel is open, which shows the regions over the map.
+    pub fn regions_open(&self) -> bool {
+        self.open_tool == Some(Tool::Regions)
     }
 
     /// Whether a tool's panel is open.
@@ -1093,6 +1155,7 @@ impl EditorUi {
 
         let layout = self.layout()?;
         let mut submit = false;
+        let mut clear_regions = false;
         match &layout {
             Layout::Mountains(l) | Layout::Lakes(l) => {
                 let (brush, first, second) = if self.open_tool == Some(Tool::Lakes) {
@@ -1194,6 +1257,18 @@ impl EditorUi {
                     }
                 }
             }
+            Layout::Regions(l) => {
+                if clicked {
+                    if l.size.contains(mouse) {
+                        self.dragging = Some(SliderId::RegionSize);
+                    }
+                    submit = l.button.contains(mouse);
+                    clear_regions = l.clear.contains(mouse);
+                }
+                if self.dragging == Some(SliderId::RegionSize) {
+                    self.region_size.set_from_x(l.size, mouse.x);
+                }
+            }
             Layout::Shallows(l) => {
                 let sliders = [(l.brush, SliderId::ShallowBrush), (l.width, SliderId::ShelfWidth)];
                 if clicked {
@@ -1292,6 +1367,9 @@ impl EditorUi {
             }
         }
 
+        if clear_regions {
+            return has_map.then_some(UiAction::ClearRegions);
+        }
         if !submit {
             return None;
         }
@@ -1310,6 +1388,7 @@ impl EditorUi {
                 seed: random_seed(),
             }),
             Layout::Shallows(_) => has_map.then(|| UiAction::AddShallows { width: self.shelf_width.value }),
+            Layout::Regions(_) => has_map.then(|| UiAction::BreakIntoRegions { size: self.region_size.value, seed: random_seed() }),
             Layout::Forest(_) | Layout::Stone(_) | Layout::Iron(_) | Layout::Copper(_) | Layout::Sulphur(_) | Layout::Oil(_) => None,
             Layout::Rivers(_) => has_map.then(|| UiAction::AddRivers {
                 count: self.river_count.value as u32,
@@ -1443,6 +1522,7 @@ impl EditorUi {
                         button: "Add lakes",
                     },
                 ),
+                Layout::Regions(l) => self.draw_regions_panel(style, l, mouse, has_map),
                 Layout::Rivers(l) => self.draw_river_panel(style, l, mouse, has_map),
                 Layout::Shallows(l) => self.draw_shallow_panel(style, l, mouse, has_map),
                 Layout::Forest(l) => self.draw_resource_panel(
@@ -1663,6 +1743,40 @@ impl EditorUi {
             style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
             y += 18.0;
         }
+    }
+
+    fn draw_regions_panel(&self, style: &Style, l: &RegionsLayout, mouse: Vec2, has_map: bool) {
+        let subtitle = if has_map {
+            "Divide the map into areas."
+        } else {
+            "Create a map first."
+        };
+        self.draw_header(style, l.panel, "Regions", subtitle);
+        draw_slider(style, l.size, &self.region_size, self.dragging == Some(SliderId::RegionSize), mouse);
+
+        let x = l.panel.x + PAD;
+        let mut y = l.size.bottom() + 30.0;
+        for line in [
+            "Each region holds one kind of ground,",
+            "and sizes vary a lot around the average.",
+            "Lakes and rivers count as land.",
+        ] {
+            style.text(line, x, y, 12, Weight::Regular, style::TEXT_MUTED);
+            y += 18.0;
+        }
+        let kinds = [
+            ("Deep water", Color::new(0.10, 0.22, 0.85, 1.0)),
+            ("Shallow water", Color::new(0.10, 0.85, 0.90, 1.0)),
+            ("Mountain", Color::new(0.75, 0.55, 0.45, 1.0)),
+            ("Land", Color::new(0.35, 0.85, 0.25, 1.0)),
+        ];
+        for (k, (label, color)) in kinds.into_iter().enumerate() {
+            let row = l.legend_top + k as f32 * 22.0;
+            style::rounded_rect(Rect::new(x, row, 14.0, 14.0), 3.0, color);
+            style.text(label, x + 24.0, row + 12.0, 13, Weight::Regular, style::TEXT);
+        }
+        draw_primary_button(style, l.button, "Break into regions", has_map, mouse);
+        draw_secondary_button(style, l.clear, "Clear regions", has_map, mouse);
     }
 
     fn draw_shallow_panel(&self, style: &Style, l: &ShallowLayout, mouse: Vec2, has_map: bool) {
@@ -1910,6 +2024,14 @@ fn draw_primary_button(style: &Style, r: Rect, label: &str, enabled: bool, mouse
     style.text_centered(label, r, 14, Weight::Semibold, text);
 }
 
+fn draw_secondary_button(style: &Style, r: Rect, label: &str, enabled: bool, mouse: Vec2) {
+    let text = if enabled { style::TEXT } else { Color::new(1.0, 1.0, 1.0, 0.35) };
+    let fill = if enabled && r.contains(mouse) { Color::new(1.0, 1.0, 1.0, 0.10) } else { style::FIELD };
+    style::rounded_rect(r, CONTROL_RADIUS, fill);
+    style::rounded_rect_lines(r, CONTROL_RADIUS, 1.0, style::BORDER_STRONG);
+    style.text_centered(label, r, 14, Weight::Semibold, text);
+}
+
 fn draw_icon_button(r: Rect, mouse: Vec2) {
     let fill = if r.contains(mouse) { Color::new(1.0, 1.0, 1.0, 0.10) } else { style::FIELD };
     style::rounded_rect(r, CONTROL_RADIUS, fill);
@@ -2123,6 +2245,14 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
                     let wave = |x: f32| c.y + dy + 2.2 * ((x - c.x) * 0.55 + k as f32).sin();
                     draw_line(x0, wave(x0), x1, wave(x1), t, shade);
                 }
+            }
+        }
+        Tool::Regions => {
+            // A map cut into areas: an outline with borders meeting in a point inside it.
+            draw_rectangle_lines(c.x - 11.0, c.y - 9.0, 22.0, 18.0, t, color);
+            let hub = c + vec2(-1.0, 1.0);
+            for end in [c + vec2(-3.0, -9.0), c + vec2(-5.0, 9.0), c + vec2(11.0, -3.0)] {
+                draw_line(hub.x, hub.y, end.x, end.y, 1.4, color);
             }
         }
         Tool::Rivers => {

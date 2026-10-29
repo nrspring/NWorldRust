@@ -6,6 +6,7 @@ use macroquad::miniquad::{BufferId, BufferSource, BufferType, BufferUsage, Rende
 use macroquad::prelude::*;
 
 use crate::gen_common::ExistingLand;
+use crate::regions::RegionId;
 use crate::render::TerrainVertex;
 
 static NEXT_WORLD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -187,6 +188,22 @@ mod surface_tests {
     }
 
     #[test]
+    fn a_point_is_in_the_region_of_its_nearest_sample() {
+        let mut world = World::new(256.0, 256.0);
+        let (nx, nz) = world.samples();
+        assert_eq!(world.region_at(0.0, 0.0), None, "no regions yet");
+        let mut regions = vec![0u16; nx * nz];
+        regions[32 * nx + 32] = 0x4005;
+        world.set_regions(regions);
+        // The middle of the map is sample (32, 32).
+        let id = world.region_at(1.0, -1.0).expect("a region");
+        assert_eq!(id.raw(), 0x4005);
+        assert_eq!(world.region_at(10.0, 0.0), None);
+        // Off the map is the nearest edge.
+        assert_eq!(world.region_at(-9000.0, -9000.0), None);
+    }
+
+    #[test]
     fn the_surface_marks_inland_water_in_blue() {
         let world = world_for_ships();
         let nx = world.samples().0;
@@ -333,6 +350,8 @@ pub struct World {
     near_water: Vec<bool>,
     /// How much of each [`Resource`] there is at each sample, from 0 (none) to 255 (the densest).
     resources: [Vec<u8>; Resource::COUNT],
+    /// The region each sample is in, as a [`RegionId`] number, or 0 where there are none yet.
+    regions: Vec<u16>,
     chunks_x: usize,
     chunks: Vec<Option<Chunk>>,
     /// For each chunk and resource, a number that changes whenever anything its props depend on
@@ -361,6 +380,7 @@ impl World {
             water: vec![SEA_LEVEL; samples],
             near_water: vec![true; samples],
             resources: std::array::from_fn(|_| vec![0; samples]),
+            regions: vec![0; samples],
             chunks_x,
             chunks: (0..chunks_x * chunks_z).map(|_| None).collect(),
             stamps: vec![[0; Resource::COUNT]; chunks_x * chunks_z],
@@ -434,6 +454,34 @@ impl World {
                 *stamp = stamp.wrapping_add(1);
             }
         }
+    }
+
+    /// The region every sample is in, laid out as in `heights`, as the numbers of
+    /// [`RegionId`]s (0 for none). Regions stay as they were made however the terrain changes
+    /// after, until they are made again.
+    pub fn regions(&self) -> &[u16] {
+        &self.regions
+    }
+
+    /// Replaces every sample's region (laid out as in `heights`).
+    pub fn set_regions(&mut self, regions: Vec<u16>) {
+        assert_eq!(regions.len(), self.heights.len(), "region map size mismatch");
+        self.regions = regions;
+    }
+
+    /// The region the point (`x`, `z`) is in, or `None` before the map is divided into regions.
+    /// Points off the map count as the nearest edge.
+    pub fn region_at(&self, x: f32, z: f32) -> Option<RegionId> {
+        let half = self.half_extents();
+        let i = (((x + half.x) / CELL_SIZE).round().max(0.0) as usize).min(self.cells_x);
+        let j = (((z + half.y) / CELL_SIZE).round().max(0.0) as usize).min(self.cells_z);
+        RegionId::from_raw(self.regions[j * (self.cells_x + 1) + i])
+    }
+
+    /// The regions as RGBA texels for the terrain shader, one per sample: the low byte of the
+    /// region's number in red and its high byte (which also holds its kind) in green.
+    pub fn region_texels(&self) -> Vec<u8> {
+        self.regions.iter().flat_map(|&r| [r as u8, (r >> 8) as u8, 0, 255]).collect()
     }
 
     /// Chunks along x and along z.

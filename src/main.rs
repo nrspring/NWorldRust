@@ -12,6 +12,7 @@ mod noise;
 mod oil;
 mod open_map;
 mod props;
+mod regions;
 mod render;
 mod rivers;
 mod shallows;
@@ -138,6 +139,7 @@ async fn main() {
 
     let mut show_help = false;
     let mut show_topo = false;
+    let mut show_regions = false;
     let mut contour_labels = topo::ContourLabels::default();
     let mut time = 0.0f32;
 
@@ -217,6 +219,21 @@ async fn main() {
                     }
                 }
             }
+            Some(UiAction::BreakIntoRegions { size, seed }) => {
+                if let Some(m) = &mut map {
+                    let count = m.generate_regions(size, seed);
+                    toasts.info(format!("Divided the map into {count} {}", if count == 1 { "region" } else { "regions" }));
+                }
+            }
+            Some(UiAction::ClearRegions) => {
+                if let Some(m) = &mut map {
+                    if m.clear_regions() {
+                        toasts.info("Removed the regions");
+                    } else {
+                        toasts.info("The map has no regions.");
+                    }
+                }
+            }
             Some(UiAction::AddShallows { width }) => {
                 if let Some(m) = &mut map {
                     if m.add_shallows(width) {
@@ -253,6 +270,9 @@ async fn main() {
         if is_mouse_button_pressed(MouseButton::Left) && pills.topo.is_some_and(|r| r.contains(mouse_position().into())) {
             show_topo = !show_topo;
         }
+        if is_mouse_button_pressed(MouseButton::Left) && pills.regions.is_some_and(|r| r.contains(mouse_position().into())) {
+            show_regions = !show_regions;
+        }
 
         match &mut map {
             Some(m) => {
@@ -271,7 +291,8 @@ async fn main() {
                 m.world.update(m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
                 let river = place_river(m, &ui, &style, &mut toasts);
-                draw_world(m, &terrain, &mut props, &sky_material, &backdrop_material, time, show_topo, brush, river);
+                let highlight = region_under_mouse(m, &ui, &style, &pills, show_regions);
+                draw_world(m, &terrain, &mut props, &sky_material, &backdrop_material, time, show_topo, ui.regions_open(), highlight, brush, river);
                 if show_topo {
                     contour_labels.refresh(&m.world, get_time());
                     contour_labels.draw(&style, &m.world, &m.cam.camera(&m.world, 40_000.0), TOOLBAR_WIDTH);
@@ -284,7 +305,7 @@ async fn main() {
         }
 
         // The HUD goes under the editor UI so an open panel covers it.
-        draw_hud(&style, &pills, map.as_ref(), show_help, show_topo);
+        draw_hud(&style, &pills, map.as_ref(), show_help, show_topo, show_regions);
         ui.draw(&style, map.is_some(), map.as_ref().map_or(0, |m| m.history.steps()));
         toasts.draw(&style, viewport());
         next_frame().await;
@@ -391,6 +412,21 @@ fn draw_river_preview(world: &world::World, cam: Vec3, river: &RiverPreview) {
     }
 }
 
+/// The number of the region under the mouse, while the switch for highlighting regions is on, the
+/// map has regions and the mouse is over the map rather than a control.
+fn region_under_mouse(map: &OpenMap, ui: &EditorUi, style: &Style, pills: &HudPills, on: bool) -> Option<u16> {
+    if !on || !map.has_regions() {
+        return None;
+    }
+    let mouse: Vec2 = mouse_position().into();
+    if ui.mouse_over() || pills.covers(mouse, style) {
+        return None;
+    }
+    let camera = map.cam.camera(&map.world, 40_000.0);
+    let at = hills::pick_terrain(&camera, &map.world, mouse)?;
+    map.world.region_at(at.x, at.y).map(|id| id.raw())
+}
+
 fn draw_world(
     map: &mut OpenMap,
     terrain: &render::TerrainRenderer,
@@ -399,6 +435,8 @@ fn draw_world(
     backdrop_material: &Material,
     time: f32,
     topo: bool,
+    regions: bool,
+    highlight: Option<u16>,
     brush: Option<(Vec2, f32)>,
     river: Option<RiverPreview>,
 ) {
@@ -415,7 +453,7 @@ fn draw_world(
     gl_use_material(backdrop_material);
     draw_mesh(&map.backdrop);
 
-    terrain.draw(&mut map.world, &map.surface, &map.resources, &camera, pos, view_distance, time, topo);
+    terrain.draw(&mut map.world, &map.surface, &map.resources, &map.region_texture, regions, highlight, &camera, pos, view_distance, time, topo);
     if !topo {
         for kind in props.iter_mut() {
             kind.draw(&map.world, &camera, pos, view_distance, time);
@@ -519,18 +557,21 @@ fn draw_overview_button(style: &Style, cam: &EditorCamera) {
 const PILL_HEIGHT: f32 = 26.0;
 const SWITCH_WIDTH: f32 = 30.0;
 
-/// The pills along the top left of the HUD: the frame rate, the map's name and the switch for
-/// the topographic view.
+/// The pills along the top left of the HUD: the frame rate, the map's name, the switch for
+/// the topographic view and, once the map has regions, the switch for lighting up the region
+/// under the pointer.
 struct HudPills {
     fps: Rect,
     name: Option<Rect>,
     topo: Option<Rect>,
+    regions: Option<Rect>,
 }
 
 impl HudPills {
     /// Whether the pointer is over a HUD control, rather than the map beneath.
     fn covers(&self, mouse: Vec2, style: &Style) -> bool {
         self.topo.is_some_and(|r| r.contains(mouse))
+            || self.regions.is_some_and(|r| r.contains(mouse))
             || (self.name.is_some()
                 && (overview_button_rect(style).contains(mouse) || angled_button_rect(style).contains(mouse)))
     }
@@ -546,20 +587,24 @@ fn hud_pills(style: &Style, map: Option<&OpenMap>) -> HudPills {
     let fps_w = style.measure("888 FPS", 12, Weight::Semibold).width + 20.0;
     let fps = Rect::new(HUD_LEFT, HUD_MARGIN, fps_w, PILL_HEIGHT);
     let Some(map) = map else {
-        return HudPills { fps, name: None, topo: None };
+        return HudPills { fps, name: None, topo: None, regions: None };
     };
     let name_w = style.measure(&map_label(map), 12, Weight::Regular).width + 20.0;
     let name = Rect::new(fps.right() + 6.0, HUD_MARGIN, name_w, PILL_HEIGHT);
     let label_w = style.measure("Topographic", 12, Weight::Regular).width;
     let topo = Rect::new(name.right() + 6.0, HUD_MARGIN, 12.0 + label_w + 10.0 + SWITCH_WIDTH + 10.0, PILL_HEIGHT);
-    HudPills { fps, name: Some(name), topo: Some(topo) }
+    let label_w = style.measure("Highlight regions", 12, Weight::Regular).width;
+    let regions = map
+        .has_regions()
+        .then(|| Rect::new(topo.right() + 6.0, HUD_MARGIN, 12.0 + label_w + 10.0 + SWITCH_WIDTH + 10.0, PILL_HEIGHT));
+    HudPills { fps, name: Some(name), topo: Some(topo), regions }
 }
 
-/// "Topographic" and an on/off switch.
-fn draw_topo_switch(style: &Style, r: Rect, on: bool) {
+/// A label and an on/off switch.
+fn draw_switch(style: &Style, r: Rect, label: &str, on: bool) {
     glass(r, r.contains(mouse_position().into()));
     let mid = r.center().y;
-    style.text_mid("Topographic", r.x + 12.0, mid, 12, Weight::Regular, style::TEXT_MUTED);
+    style.text_mid(label, r.x + 12.0, mid, 12, Weight::Regular, style::TEXT_MUTED);
     let track = Rect::new(r.right() - 10.0 - SWITCH_WIDTH, mid - 8.0, SWITCH_WIDTH, 16.0);
     let fill = if on { style::ACCENT } else { Color::new(1.0, 1.0, 1.0, 0.18) };
     style::rounded_rect(track, 8.0, fill);
@@ -567,7 +612,7 @@ fn draw_topo_switch(style: &Style, r: Rect, on: bool) {
     draw_circle(knob_x, mid, 6.0, WHITE);
 }
 
-fn draw_hud(style: &Style, pills: &HudPills, map: Option<&OpenMap>, show_help: bool, show_topo: bool) {
+fn draw_hud(style: &Style, pills: &HudPills, map: Option<&OpenMap>, show_help: bool, show_topo: bool, show_regions: bool) {
     let fps = format!("{} FPS", get_fps());
     glass(pills.fps, false);
     style.text_centered(&fps, pills.fps, 12, Weight::Semibold, style::TEXT_MUTED);
@@ -575,7 +620,10 @@ fn draw_hud(style: &Style, pills: &HudPills, map: Option<&OpenMap>, show_help: b
     if let (Some(map), Some(name_rect), Some(topo_rect)) = (map, pills.name, pills.topo) {
         glass(name_rect, false);
         style.text_centered(&map_label(map), name_rect, 12, Weight::Regular, style::TEXT_MUTED);
-        draw_topo_switch(style, topo_rect, show_topo);
+        draw_switch(style, topo_rect, "Topographic", show_topo);
+        if let Some(regions_rect) = pills.regions {
+            draw_switch(style, regions_rect, "Highlight regions", show_regions);
+        }
 
         draw_overview_button(style, &map.cam);
         draw_angled_button(style);

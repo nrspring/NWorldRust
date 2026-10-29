@@ -17,6 +17,8 @@ struct Step {
     /// For each resource, (sample index, density before the step) for every sample the step
     /// changed.
     resources: [Vec<(u32, u8)>; Resource::COUNT],
+    /// (sample index, region before the step) for every sample whose region the step changed.
+    regions: Vec<(u32, u16)>,
 }
 
 #[derive(Default)]
@@ -39,7 +41,17 @@ impl History {
         if changes.is_empty() {
             return;
         }
-        self.push(Step { changes, resources: Default::default() });
+        self.push(Step { changes, resources: Default::default(), regions: Vec::new() });
+    }
+
+    /// Records an edit that turned the regions `before` into `after`, with the same rules as
+    /// [`record`](Self::record).
+    pub fn record_regions(&mut self, before: &[u16], after: &[u16]) {
+        debug_assert_eq!(before.len(), after.len());
+        let regions: Vec<(u32, u16)> = (0..before.len()).filter(|&i| before[i] != after[i]).map(|i| (i as u32, before[i])).collect();
+        if !regions.is_empty() {
+            self.push(Step { changes: Vec::new(), resources: Default::default(), regions });
+        }
     }
 
     /// Records an edit that turned the `kind` densities `before` into `after`, with the same
@@ -50,7 +62,7 @@ impl History {
         if !changed.is_empty() {
             let mut resources: [Vec<(u32, u8)>; Resource::COUNT] = Default::default();
             resources[kind.index()] = changed;
-            self.push(Step { changes: Vec::new(), resources });
+            self.push(Step { changes: Vec::new(), resources, regions: Vec::new() });
         }
     }
 
@@ -61,9 +73,9 @@ impl History {
         }
     }
 
-    /// Undoes the most recent step on `heights`, `water` and the resource densities. Returns
-    /// false if there was nothing to undo.
-    pub fn undo(&mut self, heights: &mut [f32], water: &mut [f32], resources: &mut [Vec<u8>; Resource::COUNT]) -> bool {
+    /// Undoes the most recent step on `heights`, `water`, the resource densities and the regions.
+    /// Returns false if there was nothing to undo.
+    pub fn undo(&mut self, heights: &mut [f32], water: &mut [f32], resources: &mut [Vec<u8>; Resource::COUNT], regions: &mut [u16]) -> bool {
         let Some(step) = self.steps.pop_back() else {
             return false;
         };
@@ -75,6 +87,9 @@ impl History {
             for (i, d) in changed {
                 layer[i as usize] = d;
             }
+        }
+        for (i, r) in step.regions {
+            regions[i as usize] = r;
         }
         true
     }
@@ -92,7 +107,7 @@ mod tests {
     /// Undoes a step of terrain edits, with no resources.
     fn undo(history: &mut History, heights: &mut [f32], water: &mut [f32]) -> bool {
         let n = heights.len();
-        history.undo(heights, water, &mut std::array::from_fn(|_| vec![0; n]))
+        history.undo(heights, water, &mut std::array::from_fn(|_| vec![0; n]), &mut vec![0; n])
     }
 
     #[test]
@@ -107,12 +122,27 @@ mod tests {
         history.record_resource(Resource::Stone, &stone, &stone);
         assert_eq!(history.steps(), 1, "an edit that changed nothing isn't a step");
         let mut resources: [Vec<u8>; Resource::COUNT] = std::array::from_fn(|k| if k == 1 { stone.clone() } else { before.clone() });
-        assert!(history.undo(&mut heights, &mut water, &mut resources));
+        assert!(history.undo(&mut heights, &mut water, &mut resources, &mut [0; 6]));
         assert_eq!(resources[1], before);
         for (k, layer) in resources.iter().enumerate().filter(|&(k, _)| k != 1) {
             assert_eq!(layer, &before, "resource {k} was never touched");
         }
-        assert!(!history.undo(&mut heights, &mut water, &mut resources));
+        assert!(!history.undo(&mut heights, &mut water, &mut resources, &mut [0; 6]));
+    }
+
+    #[test]
+    fn region_edits_are_steps_of_their_own() {
+        let mut history = History::default();
+        let (mut heights, mut water) = (vec![0.0f32; 4], vec![0.0f32; 4]);
+        let before = vec![0u16, 0, 0, 0];
+        let after = vec![5u16, 5, 6, 0];
+        history.record_regions(&before, &after);
+        history.record_regions(&after, &after);
+        assert_eq!(history.steps(), 1, "an edit that changed nothing isn't a step");
+        let mut regions = after.clone();
+        let mut resources: [Vec<u8>; Resource::COUNT] = std::array::from_fn(|_| vec![0; 4]);
+        assert!(history.undo(&mut heights, &mut water, &mut resources, &mut regions));
+        assert_eq!(regions, before);
     }
 
     #[test]

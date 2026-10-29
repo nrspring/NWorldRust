@@ -68,6 +68,11 @@ struct TerrainUniforms {
     pixel_cells: f32,
     /// 1 to draw a topographic map instead of the lit terrain, 0 for the regular view.
     topo: f32,
+    /// 1 to draw the regions over the terrain, 0 for the regular view.
+    region_overlay: f32,
+    /// The number of the region to light up, as its low and high bytes from 0 to 1; negative for
+    /// none.
+    region_highlight: Vec2,
 }
 
 fn terrain_uniform_layout() -> UniformBlockLayout {
@@ -87,6 +92,8 @@ fn terrain_uniform_layout() -> UniformBlockLayout {
             U::new("surface_offset", Float2),
             U::new("pixel_cells", Float1),
             U::new("topo", Float1),
+            U::new("region_overlay", Float1),
+            U::new("region_highlight", Float2),
         ],
     }
 }
@@ -110,7 +117,7 @@ impl TerrainRenderer {
                 },
                 ShaderMeta {
                     uniforms: terrain_uniform_layout(),
-                    images: vec!["surface".to_owned(), "noise".to_owned(), "resources".to_owned(), "resources2".to_owned()],
+                    images: vec!["surface".to_owned(), "noise".to_owned(), "resources".to_owned(), "resources2".to_owned(), "regions".to_owned()],
                 },
             )
             .expect("terrain shader failed to compile");
@@ -132,7 +139,7 @@ impl TerrainRenderer {
     /// Draws the terrain of `world`, colored from its `surface` texture, as seen by `camera`
     /// from `cam`, out to `view_distance`. Whatever macroquad has queued is drawn first, so the
     /// terrain lands on top of it.
-    pub fn draw(&self, world: &mut World, surface: &Texture2D, resources: &[Texture2D; Resource::TEXTURES], camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
+    pub fn draw(&self, world: &mut World, surface: &Texture2D, resources: &[Texture2D; Resource::TEXTURES], regions: &Texture2D, region_overlay: bool, region_highlight: Option<u16>, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
         let mut gl = unsafe { get_internal_gl() };
         gl.flush();
         let ctx: &mut dyn RenderingBackend = gl.quad_context;
@@ -158,6 +165,8 @@ impl TerrainRenderer {
             surface_offset: (world.half_extents() / CELL_SIZE + 0.5) / texels,
             pixel_cells: pixel_angle / CELL_SIZE,
             topo: if topo { 1.0 } else { 0.0 },
+            region_overlay: if region_overlay { 1.0 } else { 0.0 },
+            region_highlight: region_highlight.map_or(vec2(-1.0, -1.0), |id| vec2((id & 0xFF) as f32, (id >> 8) as f32) / 255.0),
         };
 
         let (width, height) = miniquad::window::screen_size();
@@ -170,6 +179,7 @@ impl TerrainRenderer {
             self.noise.raw_miniquad_id(),
             resources[0].raw_miniquad_id(),
             resources[1].raw_miniquad_id(),
+            regions.raw_miniquad_id(),
         ];
         for block in blocks {
             ctx.apply_bindings(&miniquad::Bindings {
@@ -225,6 +235,22 @@ pub fn update_resources(textures: &[Texture2D; Resource::TEXTURES], world: &Worl
         height: region.height() as u16,
     };
     textures[k].update_part(&image, region.i0 as i32, region.j0 as i32, image.width as i32, image.height as i32);
+}
+
+/// Uploads the world's regions for the terrain shader, which draws them over the terrain.
+pub fn regions_texture(world: &World) -> Texture2D {
+    let (nx, nz) = world.samples();
+    let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &world.region_texels());
+    // Regions are told apart by their exact numbers, so they must not blend.
+    texture.set_filter(FilterMode::Nearest);
+    texture
+}
+
+/// Re-uploads the whole regions texture after the regions changed.
+pub fn update_regions(texture: &Texture2D, world: &World) {
+    let (nx, nz) = world.samples();
+    let image = Image { bytes: world.region_texels(), width: nx as u16, height: nz as u16 };
+    texture.update_part(&image, 0, 0, nx as i32, nz as i32);
 }
 
 /// A repeating texture of random values for the terrain shader's noise. Reading noise from it
@@ -566,6 +592,9 @@ uniform sampler2D surface;
 uniform sampler2D resources;
 // The sulphur, in red, and the oil, in green.
 uniform sampler2D resources2;
+// The region of each sample, by number: the low byte in red and the high byte, which starts with
+// the kind of ground, in green. Drawn over the terrain while `region_overlay` is 1.
+uniform sampler2D regions;
 // Repeating random values, for noise.
 uniform sampler2D noise;
 const float NOISE_SIZE = 512.0;
@@ -574,6 +603,8 @@ uniform vec2 surface_offset;
 uniform float pixel_cells;
 // 1 draws a topographic map instead of the lit terrain.
 uniform float topo;
+uniform float region_overlay;
+uniform vec2 region_highlight;
 
 "#,
     sky_glsl!(),
@@ -880,6 +911,37 @@ void main() {
         vec3 reflection = sky_gradient(vec3(r.x, max(r.y, 0.0), r.z), sun, fog_color);
         float glitter = pow(max(dot(r, sun), 0.0), 300.0) * 2.0;
         col = mix(col, reflection, fresnel * wet) + sun_color * glitter * (0.3 + fresnel) * wet;
+    }
+
+    // The regions. With `region_overlay` each is tinted by its kind of ground, a little differently
+    // from its neighbours, and outlined where one meets another, in a faint line about as wide on screen
+    // at any distance. The region picked by `region_highlight` is lit up and outlined in gold.
+    bool show_regions = region_overlay > 0.5;
+    bool show_pick = region_highlight.x >= 0.0;
+    if (show_regions || show_pick) {
+        vec2 uv = v_world.xz * surface_scale + surface_offset;
+        vec4 here = texture2D(regions, uv);
+        if (here.r + here.g > 0.0) {
+            float reach = max(1.0, dist * pixel_cells * 4.0 * 0.6);
+            vec2 step = vec2(reach, 0.0) * surface_scale;
+            vec2 step_z = vec2(0.0, reach) * surface_scale;
+            bool edge = texture2D(regions, uv + step).rg != here.rg
+                || texture2D(regions, uv - step).rg != here.rg
+                || texture2D(regions, uv + step_z).rg != here.rg
+                || texture2D(regions, uv - step_z).rg != here.rg;
+            if (show_regions) {
+                float kind = floor(here.g * 255.0 / 64.0 + 0.5);
+                vec3 tint = kind < 0.5 ? vec3(0.10, 0.22, 0.85)
+                    : (kind < 1.5 ? vec3(0.10, 0.85, 0.90)
+                    : (kind < 2.5 ? vec3(0.75, 0.55, 0.45) : vec3(0.35, 0.85, 0.25)));
+                float shade = fract(sin(dot(here.rg, vec2(12.9898, 78.233)) * 255.0) * 43758.5453);
+                col = mix(col, tint * (0.7 + 0.5 * shade), 0.55);
+                col = edge ? mix(col, vec3(1.0), 0.45) : col;
+            }
+            if (show_pick && all(lessThan(abs(here.rg - region_highlight), vec2(0.002)))) {
+                col = edge ? vec3(1.0, 0.80, 0.15) : mix(col, vec3(1.0, 0.90, 0.45), 0.42);
+            }
+        }
     }
 
     float fog = pow(smoothstep(fog_range.x, fog_range.y, dist), 0.6);
