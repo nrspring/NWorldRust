@@ -5,6 +5,8 @@
 
 use std::collections::VecDeque;
 
+use crate::world::Resource;
+
 /// How many steps can be undone.
 pub const MAX_STEPS: usize = 10;
 
@@ -12,8 +14,9 @@ struct Step {
     /// (sample index, height before the step, water level before the step) for every sample the
     /// step changed.
     changes: Vec<(u32, f32, f32)>,
-    /// (sample index, forest density before the step) for every sample the step changed.
-    forest: Vec<(u32, u8)>,
+    /// For each resource, (sample index, density before the step) for every sample the step
+    /// changed.
+    resources: [Vec<(u32, u8)>; 2],
 }
 
 #[derive(Default)]
@@ -36,16 +39,18 @@ impl History {
         if changes.is_empty() {
             return;
         }
-        self.push(Step { changes, forest: Vec::new() });
+        self.push(Step { changes, resources: Default::default() });
     }
 
-    /// Records an edit that turned the forest densities `before` into `after`, with the same
+    /// Records an edit that turned the `kind` densities `before` into `after`, with the same
     /// rules as [`record`](Self::record).
-    pub fn record_forest(&mut self, before: &[u8], after: &[u8]) {
+    pub fn record_resource(&mut self, kind: Resource, before: &[u8], after: &[u8]) {
         debug_assert_eq!(before.len(), after.len());
-        let forest: Vec<(u32, u8)> = (0..before.len()).filter(|&i| before[i] != after[i]).map(|i| (i as u32, before[i])).collect();
-        if !forest.is_empty() {
-            self.push(Step { changes: Vec::new(), forest });
+        let changed: Vec<(u32, u8)> = (0..before.len()).filter(|&i| before[i] != after[i]).map(|i| (i as u32, before[i])).collect();
+        if !changed.is_empty() {
+            let mut resources: [Vec<(u32, u8)>; 2] = Default::default();
+            resources[kind.index()] = changed;
+            self.push(Step { changes: Vec::new(), resources });
         }
     }
 
@@ -56,9 +61,9 @@ impl History {
         }
     }
 
-    /// Undoes the most recent step on `heights`, `water` and `forest`. Returns false if there
-    /// was nothing to undo.
-    pub fn undo(&mut self, heights: &mut [f32], water: &mut [f32], forest: &mut [u8]) -> bool {
+    /// Undoes the most recent step on `heights`, `water` and the resource densities. Returns
+    /// false if there was nothing to undo.
+    pub fn undo(&mut self, heights: &mut [f32], water: &mut [f32], resources: &mut [Vec<u8>; 2]) -> bool {
         let Some(step) = self.steps.pop_back() else {
             return false;
         };
@@ -66,8 +71,10 @@ impl History {
             heights[i as usize] = h;
             water[i as usize] = w;
         }
-        for (i, d) in step.forest {
-            forest[i as usize] = d;
+        for (layer, changed) in resources.iter_mut().zip(step.resources) {
+            for (i, d) in changed {
+                layer[i as usize] = d;
+            }
         }
         true
     }
@@ -82,25 +89,28 @@ impl History {
 mod tests {
     use super::*;
 
-    /// Undoes a step of terrain edits, with no forest.
+    /// Undoes a step of terrain edits, with no resources.
     fn undo(history: &mut History, heights: &mut [f32], water: &mut [f32]) -> bool {
-        history.undo(heights, water, &mut vec![0; heights.len()])
+        let n = heights.len();
+        history.undo(heights, water, &mut [vec![0; n], vec![0; n]])
     }
 
     #[test]
-    fn forest_edits_are_steps_of_their_own() {
+    fn resource_edits_are_steps_of_their_own_and_undo_only_their_resource() {
         let mut history = History::default();
         let (mut heights, mut water) = (vec![0.0f32; 6], vec![0.0f32; 6]);
         let before = vec![0u8, 10, 20, 30, 40, 50];
-        let mut forest = before.clone();
-        forest[1] = 200;
-        forest[4] = 0;
-        history.record_forest(&before, &forest);
-        history.record_forest(&forest, &forest);
+        let mut stone = before.clone();
+        stone[1] = 200;
+        stone[4] = 0;
+        history.record_resource(Resource::Stone, &before, &stone);
+        history.record_resource(Resource::Stone, &stone, &stone);
         assert_eq!(history.steps(), 1, "an edit that changed nothing isn't a step");
-        assert!(history.undo(&mut heights, &mut water, &mut forest));
-        assert_eq!(forest, before);
-        assert!(!history.undo(&mut heights, &mut water, &mut forest));
+        let mut resources = [before.clone(), stone];
+        assert!(history.undo(&mut heights, &mut water, &mut resources));
+        assert_eq!(resources[1], before);
+        assert_eq!(resources[0], before, "the forest was never touched");
+        assert!(!history.undo(&mut heights, &mut water, &mut resources));
     }
 
     #[test]

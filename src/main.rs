@@ -8,9 +8,11 @@ mod history;
 mod islands;
 mod noise;
 mod open_map;
+mod props;
 mod render;
 mod rivers;
 mod shallows;
+mod stone;
 mod storage;
 mod style;
 mod toast;
@@ -106,7 +108,8 @@ fn shift_down() -> bool {
 #[macroquad::main(window_conf)]
 async fn main() {
     let terrain = render::TerrainRenderer::new();
-    let mut trees = forest::TreeRenderer::new();
+    // The props of each resource: trees, then rocks.
+    let mut props = [props::PropRenderer::new(forest::kind()), props::PropRenderer::new(stone::kind())];
     let backdrop_material = render::load_backdrop_material();
     let sky_material = render::load_sky_material();
     let style = Style::load();
@@ -257,7 +260,7 @@ async fn main() {
                 m.world.update(m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
                 let river = place_river(m, &ui, &style, &mut toasts);
-                draw_world(m, &terrain, &mut trees, &sky_material, &backdrop_material, time, show_topo, brush, river);
+                draw_world(m, &terrain, &mut props, &sky_material, &backdrop_material, time, show_topo, brush, river);
                 if show_topo {
                     contour_labels.refresh(&m.world, get_time());
                     contour_labels.draw(&style, &m.world, &m.cam.camera(&m.world, 40_000.0), TOOLBAR_WIDTH);
@@ -312,7 +315,7 @@ fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2,
         match brush {
             Brush::Peak(peak) => map.paint_peaks(center, radius, erase, peak, dt),
             Brush::Shallows => map.paint_shallows(center, radius, erase, dt),
-            Brush::Forest(density) => map.paint_forest(center, radius, erase, density, dt),
+            Brush::Resource(kind, density) => map.paint_resource(kind, center, radius, erase, density, dt),
         }
     }
     center.filter(|_| over_map).map(|c| (c, radius))
@@ -380,7 +383,7 @@ fn draw_river_preview(world: &world::World, cam: Vec3, river: &RiverPreview) {
 fn draw_world(
     map: &mut OpenMap,
     terrain: &render::TerrainRenderer,
-    trees: &mut forest::TreeRenderer,
+    props: &mut [props::PropRenderer],
     sky_material: &Material,
     backdrop_material: &Material,
     time: f32,
@@ -401,9 +404,11 @@ fn draw_world(
     gl_use_material(backdrop_material);
     draw_mesh(&map.backdrop);
 
-    terrain.draw(&mut map.world, &map.surface, &map.forest, &camera, pos, view_distance, time, topo);
+    terrain.draw(&mut map.world, &map.surface, &map.resources, &camera, pos, view_distance, time, topo);
     if !topo {
-        trees.draw(&map.world, &camera, pos, view_distance, time);
+        for kind in props.iter_mut() {
+            kind.draw(&map.world, &camera, pos, view_distance, time);
+        }
     }
 
     gl_use_default_material();
