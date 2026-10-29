@@ -1,0 +1,11 @@
+[package]
+name = "nworld"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nworld-map = { path = "../nworld-map" }
+macroquad = "0.4"
+# Native file dialogs. Newer versions need dlltool to link on Rust's self-contained windows-gnu
+# toolchain, which this project builds with.
+rfd = "0.15"

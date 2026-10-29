@@ -1,0 +1,10 @@
+[package]
+name = "nworld-map"
+version = "0.1.0"
+edition = "2024"
+description = "The NWorld map: terrain, water, resources and regions, their generators, saving and queries. No graphics."
+
+[dependencies]
+# The same math types the editor's graphics library uses, so the two can pass them back and forth.
+glam = "0.27"
+miniz_oxide = "0.8"

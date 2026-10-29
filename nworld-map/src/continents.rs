@@ -12,7 +12,7 @@
 
 use std::f32::consts::PI;
 
-use macroquad::prelude::{vec2, Vec2};
+use glam::{vec2, Vec2};
 
 use crate::gen_common::{add_relief, ExistingLand, Relief, Rng, EXISTING_MIN_GAP, LAND_HEIGHT};
 use crate::noise::{smoothstep, Simplex};

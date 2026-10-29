@@ -1,13 +1,13 @@
-//! The editable world: a finite heightmap rendered as a grid of level-of-detail chunks.
+//! The world: a finite heightmap with the water standing on it, the resources painted on it and the
+//! regions it is divided into, and what can be asked of them. It knows nothing about how any of it
+//! is drawn; a display builds its own meshes and textures from what is here, using the revision and
+//! stamps to know what has changed.
 
-use std::time::{Duration, Instant};
-
-use macroquad::miniquad::{BufferId, BufferSource, BufferType, BufferUsage, RenderingBackend};
-use macroquad::prelude::*;
+use glam::*;
 
 use crate::gen_common::ExistingLand;
 use crate::regions::RegionId;
-use crate::render::TerrainVertex;
+use crate::storage::SavedMap;
 
 static NEXT_WORLD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -18,81 +18,8 @@ pub const CELL_SIZE: f32 = 4.0;
 pub const DEEP_OCEAN: f32 = -200.0;
 
 #[cfg(test)]
-mod surface_tests {
+mod tests {
     use super::*;
-
-    #[test]
-    fn surface_encodes_lowland_and_hill_elevation_without_changing_coast() {
-        let mut world = World::new(256.0, 256.0);
-        let mut heights = world.heights().to_vec();
-        heights[..6].copy_from_slice(&[-1.0, 0.0, 1.0, 7.0, 50.0, 200.0]);
-        world.set_heights(heights);
-        let texels = world.surface_texels();
-        let pixels: Vec<_> = texels.chunks_exact(4).take(6).collect();
-        assert_eq!(pixels.iter().map(|p| p[0]).collect::<Vec<_>>(), [0, 128, 255, 255, 255, 255]);
-        assert_eq!(pixels[0][1], 0);
-        assert_eq!(pixels[1][1], 0);
-        assert!(pixels[2][1] < pixels[3][1]);
-        assert!(pixels[3][1] < pixels[4][1]);
-        assert_eq!(pixels[4][1], 255);
-        assert_eq!(pixels[5][1], 255);
-    }
-
-    /// A 256 m world of flat 20 m ground with a pit of 14 m at its middle, filled by a lake whose
-    /// surface stands at 20 m.
-    fn world_with_lake() -> World {
-        let mut world = World::new(256.0, 256.0);
-        let (nx, nz) = world.samples();
-        let mut heights = vec![20.0; nx * nz];
-        let mut water = vec![SEA_LEVEL; nx * nz];
-        for j in 29..=35 {
-            for i in 29..=35 {
-                water[j * nx + i] = 20.0;
-            }
-        }
-        heights[32 * nx + 32] = 14.0;
-        world.set_terrain(heights, water);
-        world
-    }
-
-    #[test]
-    fn a_lake_is_drawn_at_its_own_level() {
-        let world = world_with_lake();
-        let nx = world.samples().0;
-        assert_eq!(world.surface_height(0.0, 0.0), 20.0, "the surface is the lake's, not the pit's");
-
-        let texels = world.surface_texels();
-        let texel = |i: usize, j: usize| &texels[(j * nx + i) * 4..(j * nx + i) * 4 + 4];
-        assert_eq!(texel(32, 32)[0], 0, "the pit is water");
-        assert!(texel(32, 32)[3] > 0, "the pit's water has some depth");
-        // Ground at the lake's level is its shore, and ground beyond its water is dry.
-        assert_eq!(texel(31, 32)[0], 128);
-        assert_eq!(texel(10, 10)[0], 255);
-        assert_eq!(texel(10, 10)[3], 255, "20 m above the sea is far above the beach");
-        assert_eq!(texel(31, 32)[3], 0, "the lake's shore is level with its water");
-        // Beaches are found beside the lake, not far from it.
-        assert!(world.near_water[32 * nx + 36]);
-        assert!(!world.near_water[10 * nx + 10]);
-    }
-
-    #[test]
-    fn the_surface_tells_shallow_water_from_deep() {
-        let mut world = World::new(256.0, 256.0);
-        let (nx, nz) = world.samples();
-        let mut heights = vec![DEEP_OCEAN; nx * nz];
-        let mut water = vec![SEA_LEVEL; nx * nz];
-        heights[0] = -3.0;
-        // A lake dug 60 m below its surface.
-        heights[1] = -40.0;
-        water[1] = 20.0;
-        world.set_terrain(heights, water);
-        let texels = world.surface_texels();
-        let depth = |k: usize| texels[k * 4 + 3];
-        assert_eq!(depth(2), 255, "the open sea is as deep as it gets");
-        assert!(depth(0) > 0 && depth(0) < 80, "shallow sea reads as {}", depth(0));
-        assert!(depth(1) <= 70, "a lake is shallow however deep it is dug, not {}", depth(1));
-        assert!(depth(0) < depth(1), "3 m is shallower than 4 m");
-    }
 
     /// A sea world with a 3 m shelf in its west quarter and a 6 m one beside it, an island in its
     /// east, and a 60 m deep lake inland of the island.
@@ -155,12 +82,6 @@ mod surface_tests {
     }
 
     #[test]
-    fn the_shader_starts_deep_water_where_ships_do() {
-        let from_the_limit = format!("smoothstep({:.1}, 30.0, depth)", SHALLOW_LIMIT);
-        assert!(crate::render::TERRAIN_FRAGMENT.contains(&from_the_limit), "update the shader's water colours");
-    }
-
-    #[test]
     fn resources_near_a_point_add_up_by_area() {
         let mut world = World::new(512.0, 512.0);
         let (nx, nz) = world.samples();
@@ -219,7 +140,6 @@ mod surface_tests {
             crate::hills::scatter_lakes(&heights, &water, nx, nz, world.half_extents(), 5, 4, 200.0).expect("room for lakes");
         assert!(added > 0);
         world.set_terrain(heights, water);
-        let texels = world.surface_texels();
         let half = world.half_extents();
         let mut lake_samples = 0;
         for j in 28..nz - 28 {
@@ -233,7 +153,6 @@ mod surface_tests {
                 assert!(world.water()[idx] > SEA_LEVEL, "a lake whose water is at sea level");
                 assert_eq!(world.water_class(x, z), WaterClass::Inland, "lake sample ({i}, {j})");
                 assert_eq!(crate::regions::kind_of(world.heights()[idx], world.water()[idx]), crate::regions::RegionKind::Land);
-                assert_eq!(texels[idx * 4 + 2], 255, "the shader isn't told it is inland");
             }
         }
         assert!(lake_samples > 50, "only {lake_samples} lake samples");
@@ -277,19 +196,6 @@ mod surface_tests {
     }
 
     #[test]
-    fn the_surface_marks_inland_water_in_blue() {
-        let world = world_for_ships();
-        let nx = world.samples().0;
-        let texels = world.surface_texels();
-        let blue = |i: usize, j: usize| texels[(j * nx + i) * 4 + 2];
-        assert_eq!(blue(54, 32), 255, "a lake");
-        assert_eq!(blue(5, 20), 0, "shallow sea");
-        assert_eq!(blue(40, 20), 0, "deep sea");
-        assert_eq!(blue(60, 20), 0, "dry ground far from the water");
-        assert_eq!(blue(50, 32), 255, "the lake's shore");
-    }
-
-    #[test]
     fn painting_a_lake_moves_the_beaches_with_it() {
         let mut world = World::new(256.0, 256.0);
         let (nx, nz) = world.samples();
@@ -299,25 +205,19 @@ mod surface_tests {
         world.heights_mut()[32 * nx + 32] = 14.0;
         world.water_mut()[32 * nx + 32] = 20.0;
         let region = Region { i0: 32, j0: 32, i1: 32, j1: 32 };
-        let texels = world.refresh_region(region, Vec3::ZERO);
+        let texels = world.refresh_region(region);
         assert!(world.near_water[32 * nx + 34], "the new lake has a beach");
         assert!(texels.i0 <= 28 && texels.i1 >= 36 && texels.j0 <= 28 && texels.j1 >= 36, "{texels:?}");
     }
 }
 
-/// Heightmap cells along a chunk side at the finest LOD; each coarser LOD halves the vertex count.
-const CHUNK_CELLS: usize = 16;
+/// Heightmap cells along a chunk side. The map is a whole number of chunks across, which are the
+/// units a display can track changes by.
+pub const CHUNK_CELLS: usize = 16;
 /// Map sides are whole numbers of chunks.
 pub const CHUNK_SIZE: f32 = CELL_SIZE * CHUNK_CELLS as f32;
 pub const MIN_MAP_SIZE: f32 = 256.0;
 pub const MAX_MAP_SIZE: f32 = 12288.0;
-/// Chunks along a side of a block, the group of chunks that is kept on the GPU and drawn together.
-/// Bigger blocks mean fewer draw calls; smaller ones less to re-upload when a chunk changes. An
-/// 8 x 8 block has at most 64 x 357 vertices, well inside 16-bit indices.
-const BLOCK_CHUNKS: usize = 8;
-/// Distance thresholds (world units) for LOD 0, 1 and 2; anything farther is LOD 3.
-/// Generous enough that coastlines stay crisp in the top-down view of a 4 km map.
-const LOD_DISTANCES: [f32; 3] = [500.0, 1300.0, 4000.0];
 
 /// Whether a map side of this many heightmap cells is a size the world can be built at.
 pub fn cells_valid(cells: usize) -> bool {
@@ -330,48 +230,9 @@ pub fn snap_map_size(meters: f32) -> f32 {
     ((meters / CHUNK_SIZE).round() * CHUNK_SIZE).clamp(MIN_MAP_SIZE, MAX_MAP_SIZE)
 }
 
-struct Chunk {
-    lod: u8,
-    vertices: Vec<TerrainVertex>,
-    indices: Vec<u16>,
-    /// Lowest and highest point of the mesh, skirts included.
-    y_min: f32,
-    y_max: f32,
-}
-
-/// A block of chunks as uploaded to the GPU.
-struct Block {
-    /// A chunk in the block changed since it was last uploaded.
-    dirty: bool,
-    mesh: Option<GpuMesh>,
-    center: Vec3,
-    radius: f32,
-}
-
-/// Vertex and index buffers on the GPU.
-struct GpuMesh {
-    vertices: BufferId,
-    indices: BufferId,
-    count: i32,
-}
-
-impl GpuMesh {
-    fn delete(self, ctx: &mut dyn RenderingBackend) {
-        ctx.delete_buffer(self.vertices);
-        ctx.delete_buffer(self.indices);
-    }
-}
-
-/// A block of terrain to draw: its buffers and how many indices to draw from them.
-pub struct BlockDraw {
-    pub vertices: BufferId,
-    pub indices: BufferId,
-    pub count: i32,
-}
-
-/// Something painted onto the map as a layer of density, from 0 to 255 at each sample, which
-/// shows as props on the ground: trees, rocks, ore, crystals or tar. The terrain shader reads them
-/// from textures that hold four resources each, one per channel.
+/// Something painted onto the map as a layer of density, from 0 to 255 at each sample: forest,
+/// stone, iron, copper, sulphur or oil. A display shows them as it likes; the editor draws trees,
+/// rocks, ore, crystals and tar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Resource {
     Forest,
@@ -387,8 +248,6 @@ impl Resource {
         [Resource::Forest, Resource::Stone, Resource::Iron, Resource::Copper, Resource::Sulphur, Resource::Oil];
     /// How many resources there are.
     pub const COUNT: usize = Self::ALL.len();
-    /// How many textures hold the resources for the terrain shader, four to a texture.
-    pub const TEXTURES: usize = Self::COUNT.div_ceil(4);
 
     /// The resource's place in lists with one entry per resource.
     pub fn index(self) -> usize {
@@ -397,7 +256,7 @@ impl Resource {
 }
 
 /// What a point of the map is, as far as ships are concerned.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum WaterClass {
     /// Ground above the water.
     Dry,
@@ -418,20 +277,21 @@ pub struct World {
     /// The level of the water at each sample, which holds wherever the ground is lower: sea level
     /// everywhere except around a lake, where it is the lake's own level.
     water: Vec<f32>,
-    /// For each sample, whether water is close enough for the terrain shader to look for a
-    /// beach there; see [`near_water`].
+    /// For each sample, whether water is close enough that there might be a beach there; see
+    /// [`near_water`].
     near_water: Vec<bool>,
     /// How much of each [`Resource`] there is at each sample, from 0 (none) to 255 (the densest).
     resources: [Vec<u8>; Resource::COUNT],
     /// The region each sample is in, as a [`RegionId`] number, or 0 where there are none yet.
     regions: Vec<u16>,
     chunks_x: usize,
-    chunks: Vec<Option<Chunk>>,
     /// For each chunk and resource, a number that changes whenever anything its props depend on
     /// does.
     stamps: Vec<[u32; Resource::COUNT]>,
-    blocks_x: usize,
-    blocks: Vec<Block>,
+    /// For each chunk, a number that changes whenever the ground or water in or around it does.
+    terrain_stamps: Vec<u32>,
+    /// How many building steps have been run on this world; see [`World::next_seed`].
+    generations: u32,
     /// Which world this is, and how many times its terrain has changed; see [`World::revision`].
     id: u64,
     version: u64,
@@ -445,7 +305,6 @@ impl World {
         let (cells_x, cells_z) = (cells(width), cells(height));
         let (chunks_x, chunks_z) = (cells_x / CHUNK_CELLS, cells_z / CHUNK_CELLS);
         let samples = (cells_x + 1) * (cells_z + 1);
-        let (blocks_x, blocks_z) = (chunks_x.div_ceil(BLOCK_CHUNKS), chunks_z.div_ceil(BLOCK_CHUNKS));
         Self {
             cells_x,
             cells_z,
@@ -455,15 +314,54 @@ impl World {
             resources: std::array::from_fn(|_| vec![0; samples]),
             regions: vec![0; samples],
             chunks_x,
-            chunks: (0..chunks_x * chunks_z).map(|_| None).collect(),
             stamps: vec![[0; Resource::COUNT]; chunks_x * chunks_z],
+            terrain_stamps: vec![0; chunks_x * chunks_z],
+            generations: 0,
             id: NEXT_WORLD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             version: 0,
-            blocks_x,
-            blocks: (0..blocks_x * blocks_z)
-                .map(|_| Block { dirty: true, mesh: None, center: Vec3::ZERO, radius: 0.0 })
-                .collect(),
         }
+    }
+
+    /// A world from a saved map, or why the map doesn't fit.
+    pub fn from_saved(saved: SavedMap) -> Result<Self, String> {
+        let mut world = Self::new(saved.cells_x as f32 * CELL_SIZE, saved.cells_z as f32 * CELL_SIZE);
+        if world.cells() != (saved.cells_x, saved.cells_z) {
+            return Err("The map size in this file isn't supported.".to_owned());
+        }
+        world.set_terrain(saved.heights, saved.water);
+        for (kind, layer) in Resource::ALL.into_iter().zip(saved.resources) {
+            world.set_resource(kind, layer);
+        }
+        world.set_regions(saved.regions);
+        world.generations = saved.generations;
+        Ok(world)
+    }
+
+    /// The world as a saved map.
+    pub fn to_saved(&self) -> SavedMap {
+        SavedMap {
+            cells_x: self.cells_x,
+            cells_z: self.cells_z,
+            generations: self.generations,
+            heights: self.heights.clone(),
+            water: self.water.clone(),
+            resources: Resource::ALL.map(|kind| self.resource(kind).to_vec()),
+            regions: self.regions.clone(),
+        }
+    }
+
+    /// The seed for the next building step: the one asked for, mixed with how many steps there
+    /// have been on this world, so running the same step again adds something different, even after
+    /// an undo. The same world, step, seed and number of earlier steps give the same result.
+    pub(crate) fn next_seed(&mut self, seed: u32) -> u32 {
+        let salted = seed.wrapping_add(self.generations.wrapping_mul(0x9E37_79B9));
+        self.generations += 1;
+        salted
+    }
+
+    /// How many building steps have been run on this world.
+    pub fn generations(&self) -> u32 {
+        self.generations
     }
 
     /// Identifies this world and the state of its terrain: it differs whenever the heights
@@ -551,12 +449,6 @@ impl World {
         RegionId::from_raw(self.regions[j * (self.cells_x + 1) + i])
     }
 
-    /// The regions as RGBA texels for the terrain shader, one per sample: the low byte of the
-    /// region's number in red and its high byte (which also holds its kind) in green.
-    pub fn region_texels(&self) -> Vec<u8> {
-        self.regions.iter().flat_map(|&r| [r as u8, (r >> 8) as u8, 0, 255]).collect()
-    }
-
     /// Chunks along x and along z.
     pub fn chunk_counts(&self) -> (usize, usize) {
         (self.chunks_x, self.stamps.len() / self.chunks_x)
@@ -568,11 +460,16 @@ impl World {
         self.stamps[cz * self.chunks_x + cx][kind.index()]
     }
 
+    /// A number that is different whenever the ground or the water in or around chunk (`cx`, `cz`)
+    /// has changed since it was last read, for a display to know which of its meshes to rebuild.
+    pub fn terrain_stamp(&self, cx: usize, cz: usize) -> u32 {
+        self.terrain_stamps[cz * self.chunks_x + cx]
+    }
+
     /// How much of `kind` lies within `radius` meters of (`x`, `z`), as the area in square meters
     /// that fully dense cover would take up: painted at half density, a patch counts for half its
     /// area. Divide by the circle's area, `PI * radius * radius`, for how much of it is covered.
     /// Parts of the circle off the map count for nothing.
-    #[allow(dead_code)] // For gameplay, which doesn't exist yet.
     pub fn resource_near(&self, kind: Resource, x: f32, z: f32, radius: f32) -> f32 {
         let half = self.half_extents();
         let (nx, nz) = self.samples();
@@ -599,7 +496,6 @@ impl World {
     /// level is inland (a river or lake, however deep it is dug), found from the nearest sample;
     /// sea is shallow down to [`SHALLOW_LIMIT`] and deep below. Points off the map count as the
     /// nearest edge.
-    #[allow(dead_code)] // For gameplay, which doesn't exist yet.
     pub fn water_class(&self, x: f32, z: f32) -> WaterClass {
         let half = self.half_extents();
         let fx = ((x + half.x) / CELL_SIZE).clamp(0.0, self.cells_x as f32);
@@ -630,30 +526,19 @@ impl World {
         self.near_water[idx]
     }
 
-    /// The resource densities of the samples in `region` as RGBA texels for texture `texture` of
-    /// the terrain shader, row by row. Texture 0 holds forest in red, stone in green, iron in blue
-    /// and copper in alpha; texture 1 sulphur in red and oil in green; see [`Resource::TEXTURES`].
-    pub fn resource_texels_in(&self, region: Region, texture: usize) -> Vec<u8> {
-        let nx = self.cells_x + 1;
-        let channels: [Option<&Vec<u8>>; 4] = std::array::from_fn(|c| self.resources.get(texture * 4 + c));
-        let mut texels = Vec::with_capacity(region.width() * region.height() * 4);
-        for j in region.j0..=region.j1 {
-            for k in j * nx + region.i0..=j * nx + region.i1 {
-                texels.extend(channels.map(|layer| layer.map_or(0, |layer| layer[k])));
-            }
-        }
-        texels
+    /// For each sample, whether water is close enough that there might be a beach there, laid out
+    /// as in `heights`.
+    pub fn near_water(&self) -> &[bool] {
+        &self.near_water
     }
 
-    /// Replaces every elevation sample (laid out as in `heights`), keeping the water levels, and
-    /// drops the built chunks so they are rebuilt from the new terrain.
+    /// Replaces every elevation sample (laid out as in `heights`), keeping the water levels.
     pub fn set_heights(&mut self, heights: Vec<f32>) {
         let water = std::mem::take(&mut self.water);
         self.set_terrain(heights, water);
     }
 
-    /// Replaces every elevation sample and water level, and drops the built chunks so they are
-    /// rebuilt from the new terrain.
+    /// Replaces every elevation sample and water level.
     pub fn set_terrain(&mut self, heights: Vec<f32>, water: Vec<f32>) {
         assert_eq!(heights.len(), self.heights.len(), "heightmap size mismatch");
         assert_eq!(water.len(), self.heights.len(), "water map size mismatch");
@@ -662,8 +547,7 @@ impl World {
         self.water = water;
         self.version += 1;
         self.stamps.iter_mut().flatten().for_each(|s| *s = s.wrapping_add(1));
-        self.chunks.iter_mut().for_each(|c| *c = None);
-        self.blocks.iter_mut().for_each(|b| b.dirty = true);
+        self.terrain_stamps.iter_mut().for_each(|s| *s = s.wrapping_add(1));
     }
 
     /// Height of the visible surface (land or water) at a world position.
@@ -678,8 +562,9 @@ impl World {
         top + (bottom - top) * tz
     }
 
-    /// Height of the visible surface, land or water, at a heightmap sample.
-    fn surface_sample(&self, gi: i32, gj: i32) -> f32 {
+    /// Height of the visible surface, land or water, at a heightmap sample; a sample off the map
+    /// counts as the nearest one on it.
+    pub fn surface_sample(&self, gi: i32, gj: i32) -> f32 {
         let i = gi.clamp(0, self.cells_x as i32) as usize;
         let j = gj.clamp(0, self.cells_z as i32) as usize;
         let idx = j * (self.cells_x + 1) + i;
@@ -689,38 +574,6 @@ impl World {
     /// Heightmap samples along x and z: one more than the cells.
     pub fn samples(&self) -> (usize, usize) {
         (self.cells_x + 1, self.cells_z + 1)
-    }
-
-    /// The heightmap as RGBA texels for the terrain shader, one per sample in the same order.
-    /// Red is height around the water level, from 0 (1 m or more under water) through 128 (at the
-    /// water) to 255 (1 m or more above); the shader traces the coast where it crosses the
-    /// middle, which follows a smooth curve between samples. Green encodes
-    /// elevation from 0 to 50 m, which the shader colors: 25 shades of green up to 25 m, grey
-    /// rock from 26 m and snow from 44 m. Alpha is how far the ground stands above the water, up
-    /// to 8 m, which is as far up as a beach goes, and where the ground is under water, how deep
-    /// the water is, up to 64 m (stored as a square root), which tells shallow water from deep. Lakes and rivers, whose
-    /// water is above sea level, are shallow however deep they are dug.
-    pub fn surface_texels(&self) -> Vec<u8> {
-        self.surface_texels_in(Region { i0: 0, j0: 0, i1: self.cells_x, j1: self.cells_z })
-    }
-
-    /// The part of [`surface_texels`](Self::surface_texels) inside `region`, row by row.
-    pub fn surface_texels_in(&self, region: Region) -> Vec<u8> {
-        let nx = self.cells_x + 1;
-        let mut texels = Vec::with_capacity(region.width() * region.height() * 4);
-        for j in region.j0..=region.j1 {
-            let row = j * nx + region.i0..=j * nx + region.i1;
-            let near = &self.near_water[row.clone()];
-            let water = &self.water[row.clone()];
-            texels.extend(
-                self.heights[row]
-                    .iter()
-                    .zip(water)
-                    .zip(near)
-                    .flat_map(|((&h, &w), &near)| surface_texel(h, w, near)),
-            );
-        }
-        texels
     }
 
     /// Mutable elevation samples, laid out as in [`heights`](Self::heights). After changing
@@ -737,13 +590,13 @@ impl World {
         &mut self.water
     }
 
-    /// Rebuilds the chunks affected by a change to the samples in `region` right away, at the
-    /// level of detail they would get with the camera at `cam`. Returns the samples whose
-    /// [`surface_texels`](Self::surface_texels) may have changed, which reach a little beyond
-    /// `region` where the beaches move.
-    pub fn refresh_region(&mut self, region: Region, cam: Vec3) -> Region {
+    /// Notes that the samples in `region` changed after [`heights_mut`](Self::heights_mut) or
+    /// [`water_mut`](Self::water_mut): works out again where the beaches are and bumps the stamps
+    /// of the chunks affected. Returns the samples whose surroundings may have changed, which
+    /// reach a little beyond `region` where the beaches move.
+    pub fn refresh_region(&mut self, region: Region) -> Region {
         self.version += 1;
-        let texels = self.refresh_near_water(region);
+        let touched = self.refresh_near_water(region);
         // A chunk's normals look as far as one stride (up to 8 cells) past its own samples.
         const REACH: usize = 8;
         let cx0 = region.i0.saturating_sub(REACH) / CHUNK_CELLS;
@@ -754,11 +607,10 @@ impl World {
             for cx in cx0..=cx1 {
                 let idx = cz * self.chunks_x + cx;
                 self.stamps[idx].iter_mut().for_each(|s| *s = s.wrapping_add(1));
-                let lod = lod_for(self.chunk_center(idx).distance(cam));
-                self.set_chunk(idx, self.build_chunk(cx, cz, lod));
+                self.terrain_stamps[idx] = self.terrain_stamps[idx].wrapping_add(1);
             }
         }
-        texels
+        touched
     }
 
     /// Works out again which samples near `region` have water close by, after its heights or
@@ -795,259 +647,15 @@ impl World {
         span
     }
 
-    /// Puts a freshly built chunk in place and marks its block for upload.
-    fn set_chunk(&mut self, idx: usize, chunk: Chunk) {
-        self.chunks[idx] = Some(chunk);
-        let (cx, cz) = (idx % self.chunks_x, idx / self.chunks_x);
-        self.blocks[(cz / BLOCK_CHUNKS) * self.blocks_x + cx / BLOCK_CHUNKS].dirty = true;
-    }
-
     /// Highest point of the visible surface anywhere in the world.
     pub fn max_surface_height(&self) -> f32 {
         self.heights.iter().copied().fold(SEA_LEVEL, f32::max)
     }
-
-    fn build_chunk(&self, cx: usize, cz: usize, lod: u8) -> Chunk {
-        let stride = 1i32 << lod;
-        let n = CHUNK_CELLS >> lod;
-        let step = CELL_SIZE * stride as f32;
-        let gi0 = (cx * CHUNK_CELLS) as i32;
-        let gj0 = (cz * CHUNK_CELLS) as i32;
-        let half = self.half_extents();
-        let x0 = gi0 as f32 * CELL_SIZE - half.x;
-        let z0 = gj0 as f32 * CELL_SIZE - half.y;
-        let surf = |gi: i32, gj: i32| self.surface_sample(gi, gj);
-
-        let row = n + 1;
-        let mut vertices = Vec::with_capacity(row * row + 4 * row);
-        let mut indices: Vec<u16> = Vec::with_capacity(n * n * 6 + 4 * n * 6);
-        let (mut y_min, mut y_max) = (f32::MAX, f32::MIN);
-
-        for j in 0..=n {
-            for i in 0..=n {
-                let gi = gi0 + i as i32 * stride;
-                let gj = gj0 + j as i32 * stride;
-                let x = x0 + i as f32 * step;
-                let z = z0 + j as f32 * step;
-                let y = self.surface_sample(gi, gj);
-
-                // Only shape and lighting come from the mesh; whether a pixel is land or water,
-                // and its color, come from the surface texture so coastlines stay sharp at
-                // every level of detail.
-                let normal = vec3(
-                    surf(gi - stride, gj) - surf(gi + stride, gj),
-                    2.0 * step,
-                    surf(gi, gj - stride) - surf(gi, gj + stride),
-                )
-                .normalize();
-
-                y_min = y_min.min(y);
-                y_max = y_max.max(y);
-                vertices.push(TerrainVertex {
-                    position: [x, y, z],
-                    normal: normal.to_array(),
-                });
-            }
-        }
-
-        for j in 0..n {
-            for i in 0..n {
-                let a = (j * row + i) as u16;
-                let b = a + 1;
-                let c = a + row as u16;
-                let d = c + 1;
-                indices.extend_from_slice(&[a, c, b, b, c, d]);
-            }
-        }
-
-        // Skirts: a curtain hanging down from every edge hides cracks between chunks of different LOD.
-        let skirt = step * 1.5 + 6.0;
-        let edges: [Vec<usize>; 4] = [
-            (0..=n).collect(),
-            (0..=n).map(|i| n * row + i).collect(),
-            (0..=n).map(|j| j * row).collect(),
-            (0..=n).map(|j| j * row + n).collect(),
-        ];
-        for edge in &edges {
-            let base = vertices.len();
-            for &k in edge {
-                let mut v = vertices[k];
-                v.position[1] -= skirt;
-                vertices.push(v);
-            }
-            for t in 0..n {
-                let a = edge[t] as u16;
-                let b = edge[t + 1] as u16;
-                let sa = (base + t) as u16;
-                let sb = sa + 1;
-                indices.extend_from_slice(&[a, sa, b, b, sa, sb]);
-            }
-        }
-
-        Chunk {
-            lod,
-            vertices,
-            indices,
-            y_min: y_min - skirt,
-            y_max,
-        }
-    }
-
-    /// Builds missing chunks and swaps LODs as the camera moves, spending at most `budget`.
-    /// Missing chunks closest to the camera are built first; LOD swaps come after.
-    pub fn update(&mut self, cam: Vec3, budget: Duration) {
-        let start = Instant::now();
-
-        let mut work: Vec<(f32, usize, u8)> = Vec::new();
-        for (idx, chunk) in self.chunks.iter().enumerate() {
-            let d = self.chunk_center(idx).distance(cam);
-            let lod = lod_for(d);
-            match chunk {
-                Some(c) if c.lod == lod => {}
-                Some(_) => work.push((d + 1e6, idx, lod)),
-                None => work.push((d, idx, lod)),
-            }
-        }
-        work.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-        for (_, idx, lod) in work {
-            if start.elapsed() > budget {
-                break;
-            }
-            let (cx, cz) = (idx % self.chunks_x, idx / self.chunks_x);
-            self.set_chunk(idx, self.build_chunk(cx, cz, lod));
-        }
-    }
-
-    /// Center of a chunk at sea level, used to pick its LOD.
-    fn chunk_center(&self, idx: usize) -> Vec3 {
-        let (cx, cz) = (idx % self.chunks_x, idx / self.chunks_x);
-        let half = self.half_extents();
-        vec3(
-            (cx as f32 + 0.5) * CHUNK_SIZE - half.x,
-            SEA_LEVEL,
-            (cz as f32 + 0.5) * CHUNK_SIZE - half.y,
-        )
-    }
-
-    /// Uploads the blocks whose chunks changed since the last call, then returns the blocks
-    /// within `max_distance` that intersect the view frustum, nearest first so the depth test
-    /// can skip shading what they hide.
-    pub fn visible_blocks(&mut self, ctx: &mut dyn RenderingBackend, frustum: &Frustum, cam: Vec3, max_distance: f32) -> Vec<BlockDraw> {
-        for b in 0..self.blocks.len() {
-            if self.blocks[b].dirty {
-                self.upload_block(ctx, b);
-            }
-        }
-        let mut visible: Vec<(f32, BlockDraw)> = self
-            .blocks
-            .iter()
-            .filter_map(|block| {
-                let mesh = block.mesh.as_ref()?;
-                let distance = block.center.distance(cam) - block.radius;
-                (distance < max_distance && frustum.sphere_visible(block.center, block.radius)).then(|| {
-                    (distance, BlockDraw { vertices: mesh.vertices, indices: mesh.indices, count: mesh.count })
-                })
-            })
-            .collect();
-        visible.sort_by(|a, b| a.0.total_cmp(&b.0));
-        visible.into_iter().map(|(_, draw)| draw).collect()
-    }
-
-    /// Joins the built chunks of block `b` into one mesh and uploads it in place of the old one.
-    fn upload_block(&mut self, ctx: &mut dyn RenderingBackend, b: usize) {
-        let (bx, bz) = (b % self.blocks_x, b / self.blocks_x);
-        let chunks_z = self.chunks.len() / self.chunks_x;
-        let (cx0, cz0) = (bx * BLOCK_CHUNKS, bz * BLOCK_CHUNKS);
-        let (cx1, cz1) = ((cx0 + BLOCK_CHUNKS).min(self.chunks_x), (cz0 + BLOCK_CHUNKS).min(chunks_z));
-
-        let mut vertices: Vec<TerrainVertex> = Vec::new();
-        let mut indices: Vec<u16> = Vec::new();
-        let (mut y_min, mut y_max) = (f32::MAX, f32::MIN);
-        for cz in cz0..cz1 {
-            for cx in cx0..cx1 {
-                let Some(chunk) = &self.chunks[cz * self.chunks_x + cx] else { continue };
-                let base = vertices.len() as u16;
-                vertices.extend_from_slice(&chunk.vertices);
-                indices.extend(chunk.indices.iter().map(|&i| i + base));
-                y_min = y_min.min(chunk.y_min);
-                y_max = y_max.max(chunk.y_max);
-            }
-        }
-
-        let half = self.half_extents();
-        let block = &mut self.blocks[b];
-        block.dirty = false;
-        if let Some(old) = block.mesh.take() {
-            old.delete(ctx);
-        }
-        block.mesh = (!indices.is_empty()).then(|| GpuMesh {
-            vertices: ctx.new_buffer(BufferType::VertexBuffer, BufferUsage::Immutable, BufferSource::slice(&vertices)),
-            indices: ctx.new_buffer(BufferType::IndexBuffer, BufferUsage::Immutable, BufferSource::slice(&indices)),
-            count: indices.len() as i32,
-        });
-        let min = vec3(cx0 as f32 * CHUNK_SIZE - half.x, y_min, cz0 as f32 * CHUNK_SIZE - half.y);
-        let max = vec3(cx1 as f32 * CHUNK_SIZE - half.x, y_max, cz1 as f32 * CHUNK_SIZE - half.y);
-        block.center = (min + max) * 0.5;
-        block.radius = (max - min).length() * 0.5;
-    }
 }
-
-impl Drop for World {
-    /// Frees the blocks' GPU buffers. A world that was never drawn has none, and never touches
-    /// the GPU.
-    fn drop(&mut self) {
-        if self.blocks.iter().all(|b| b.mesh.is_none()) {
-            return;
-        }
-        let ctx = unsafe { get_internal_gl() }.quad_context;
-        for block in &mut self.blocks {
-            if let Some(mesh) = block.mesh.take() {
-                mesh.delete(ctx);
-            }
-        }
-    }
-}
-
-/// Elevations up to this many meters are told apart in the surface texture; higher ground
-/// reads as this.
-pub const MAX_SURFACE_ELEVATION: f32 = 50.0;
-
-/// How far above the water the shader tells ground apart, in the alpha channel.
-const MAX_ABOVE_WATER: f32 = 8.0;
-
-/// How deep the water is told apart, in the alpha channel; deeper water reads as this. Must
-/// match `WATER_DEPTH_RANGE` in the terrain shader.
-const MAX_WATER_DEPTH: f32 = 64.0;
-
-/// Lakes and rivers read as water no deeper than this, in meters, so they stay shallow water.
-const MAX_INLAND_DEPTH: f32 = 4.0;
 
 /// Sea this many meters deep or less is shallow water, which every ship can cross; deeper sea is
-/// deep water. The terrain shader starts shading water as deep at this depth.
+/// deep water. A display should start showing the sea as deep at this depth.
 pub const SHALLOW_LIMIT: f32 = 5.0;
-
-/// A texel for the terrain shader: the coast in red, elevation in green, whether water is near
-/// (on dry ground) or the water is inland (under water) in blue, and the height above the water,
-/// or the depth of it, in alpha, as described on [`World::surface_texels`].
-/// `w` is the water level at the sample.
-fn surface_texel(h: f32, w: f32, near_water: bool) -> [u8; 4] {
-    let coast = ((0.5 + (h - w) * 0.5).clamp(0.0, 1.0) * 255.0).round();
-    let elevation = (((h - SEA_LEVEL).max(0.0) / MAX_SURFACE_ELEVATION).min(1.0) * 255.0).round();
-    // Depth is stored as a square root, which tells shallow depths apart finely and deep ones
-    // coarsely.
-    let above = if h >= w {
-        ((h - w) / MAX_ABOVE_WATER).clamp(0.0, 1.0)
-    } else if w <= SEA_LEVEL {
-        ((w - h) / MAX_WATER_DEPTH).clamp(0.0, 1.0).sqrt()
-    } else {
-        ((w - h).min(MAX_INLAND_DEPTH) / MAX_WATER_DEPTH).clamp(0.0, 1.0).sqrt()
-    };
-    // Blue is 255 on inland water (the shader tells it from sea by this) and 0 on sea; on dry
-    // ground it marks water nearby.
-    let blue = if h < w { w > SEA_LEVEL } else { near_water };
-    [coast as u8, elevation as u8, if blue { 255 } else { 0 }, (above * 255.0).round() as u8]
-}
 
 /// Samples this close to water (in samples) can have beach; beaches are at most about 12 m
 /// wide, three samples, so this leaves a sample to spare.
@@ -1090,33 +698,6 @@ impl Region {
             i1: self.i1.max(other.i1),
             j1: self.j1.max(other.j1),
         }
-    }
-}
-
-fn lod_for(distance: f32) -> u8 {
-    LOD_DISTANCES
-        .iter()
-        .position(|&d| distance < d)
-        .unwrap_or(LOD_DISTANCES.len()) as u8
-}
-
-/// View frustum side and near planes, extracted from a view-projection matrix.
-pub struct Frustum {
-    planes: [Vec4; 5],
-}
-
-impl Frustum {
-    pub fn from_matrix(m: Mat4) -> Self {
-        let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
-        let planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2]
-            .map(|p| p / p.truncate().length());
-        Self { planes }
-    }
-
-    pub fn sphere_visible(&self, center: Vec3, radius: f32) -> bool {
-        self.planes
-            .iter()
-            .all(|p| p.truncate().dot(center) + p.w >= -radius)
     }
 }
 

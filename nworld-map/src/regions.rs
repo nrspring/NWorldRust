@@ -16,7 +16,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
-use crate::props::value_noise;
+use crate::density::value_noise;
 use crate::world::{CELL_SIZE, SEA_LEVEL, SHALLOW_LIMIT};
 
 /// Ground this high above the sea, in meters, is mountain: where the terrain turns to bare rock.
@@ -38,7 +38,6 @@ pub enum RegionKind {
 impl RegionKind {
     pub const ALL: [RegionKind; 4] = [RegionKind::Deep, RegionKind::Shallow, RegionKind::Mountain, RegionKind::Land];
 
-    #[allow(dead_code)] // For gameplay, which doesn't exist yet.
     fn from_bits(bits: u16) -> Self {
         Self::ALL[(bits & 3) as usize]
     }
@@ -66,7 +65,6 @@ impl RegionId {
         self.0
     }
 
-    #[allow(dead_code)] // For gameplay, which doesn't exist yet.
     pub fn kind(self) -> RegionKind {
         RegionKind::from_bits(self.0 >> 14)
     }

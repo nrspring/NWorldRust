@@ -2,7 +2,7 @@
 //! water lies a few meters down, and deep water goes down to the ocean floor. The brush paints
 //! one onto the other, and the shelf makes shallows of the sea along every coast.
 
-use macroquad::prelude::*;
+use glam::*;
 
 use crate::noise::smoothstep;
 use crate::world::{Region, CELL_SIZE, DEEP_OCEAN, SEA_LEVEL, SHALLOW_LIMIT};

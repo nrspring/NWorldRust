@@ -864,8 +864,16 @@ name = "nworld"
 version = "0.1.0"
 dependencies = [
  "macroquad",
- "miniz_oxide 0.8.9",
+ "nworld-map",
  "rfd",
+]
+
+[[package]]
+name = "nworld-map"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]

@@ -1,30 +1,25 @@
 mod camera;
-mod continents;
 mod copper;
 mod dialogs;
 mod forest;
-mod gen_common;
-mod hills;
 mod history;
 mod iron;
-mod islands;
-mod noise;
 mod oil;
 mod open_map;
-mod passes;
 mod props;
-mod regions;
 mod render;
-mod rivers;
-mod shallows;
+mod render_data;
 mod stone;
-mod storage;
-mod sulphur;
 mod style;
+mod sulphur;
+mod terrain_mesh;
 mod toast;
 mod topo;
 mod ui;
-mod world;
+
+// The map itself, and everything that makes it, lives in `nworld-map`, which knows nothing of
+// drawing. The editor reaches it by the same names it always had.
+use nworld_map::{continents, hills, islands, noise, passes, shallows, storage, world};
 
 use std::time::Duration;
 
@@ -289,7 +284,7 @@ async fn main() {
 
                 let pan = !ui.tool_open() && !pills.covers(mouse_position().into(), &style);
                 m.cam.update(dt, &m.world, shortcuts, !ui.mouse_over(), ui.brush().is_none(), pan);
-                m.world.update(m.cam.position(), Duration::from_millis(6));
+                m.mesh.update(&m.world, m.cam.position(), Duration::from_millis(6));
                 let brush = paint_hills(m, &ui, &style);
                 let river = place_river(m, &ui, &style, &mut toasts);
                 let pass = place_pass(m, &ui, &style, &mut toasts);
@@ -342,7 +337,7 @@ fn paint_hills(map: &mut OpenMap, ui: &EditorUi, style: &Style) -> Option<(Vec2,
 
     let camera = map.cam.camera(&map.world, 40_000.0);
     let center = (over_map || painting)
-        .then(|| hills::pick_terrain(&camera, &map.world, mouse))
+        .then(|| camera::pick_terrain(&camera, &map.world, mouse))
         .flatten();
     if let (Some(erase), true, Some(center)) = (erase, painting, center) {
         let dt = get_frame_time().min(0.1);
@@ -373,7 +368,7 @@ fn place_river(map: &mut OpenMap, ui: &EditorUi, style: &Style, toasts: &mut Toa
     let mouse: Vec2 = mouse_position().into();
     let over_map = !ui.mouse_over() && !hud_pills(style, Some(&*map)).covers(mouse, style);
     let camera = map.cam.camera(&map.world, 40_000.0);
-    let cursor = over_map.then(|| hills::pick_terrain(&camera, &map.world, mouse)).flatten();
+    let cursor = over_map.then(|| camera::pick_terrain(&camera, &map.world, mouse)).flatten();
     if let (true, Some(point)) = (is_mouse_button_pressed(MouseButton::Left), cursor) {
         match map.river_start.take() {
             None => map.river_start = Some(point),
@@ -409,7 +404,7 @@ fn place_pass(map: &mut OpenMap, ui: &EditorUi, style: &Style, toasts: &mut Toas
     let mouse: Vec2 = mouse_position().into();
     let over_map = !ui.mouse_over() && !hud_pills(style, Some(&*map)).covers(mouse, style);
     let camera = map.cam.camera(&map.world, 40_000.0);
-    let cursor = over_map.then(|| hills::pick_terrain(&camera, &map.world, mouse)).flatten();
+    let cursor = over_map.then(|| camera::pick_terrain(&camera, &map.world, mouse)).flatten();
 
     let mut finish = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter);
     if is_key_pressed(KeyCode::Backspace) {
@@ -497,7 +492,7 @@ fn region_under_mouse(map: &OpenMap, ui: &EditorUi, style: &Style, pills: &HudPi
         return None;
     }
     let camera = map.cam.camera(&map.world, 40_000.0);
-    let at = hills::pick_terrain(&camera, &map.world, mouse)?;
+    let at = camera::pick_terrain(&camera, &map.world, mouse)?;
     map.world.region_at(at.x, at.y).map(|id| id.raw())
 }
 
@@ -528,7 +523,7 @@ fn draw_world(
     gl_use_material(backdrop_material);
     draw_mesh(&map.backdrop);
 
-    terrain.draw(&mut map.world, &map.surface, &map.resources, &map.region_texture, regions, highlight, &camera, pos, view_distance, time, topo);
+    terrain.draw(&mut map.mesh, &map.world, &map.surface, &map.resources, &map.region_texture, regions, highlight, &camera, pos, view_distance, time, topo);
     if !topo {
         for kind in props.iter_mut() {
             kind.draw(&map.world, &camera, pos, view_distance, time);

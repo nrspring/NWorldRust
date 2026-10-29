@@ -6,36 +6,35 @@ use std::time::Duration;
 use macroquad::prelude::*;
 
 use crate::camera::EditorCamera;
-use crate::continents::{self, ContinentParams};
+use crate::continents::ContinentParams;
 use crate::dialogs::{self, Unsaved};
-use crate::hills::{self, HillStroke, Peak};
+use crate::hills::{HillStroke, Peak};
 use crate::props::DensityStroke;
 use crate::history::History;
-use crate::islands::{self, IslandParams};
-use crate::passes::{self, PassParams};
-use crate::regions;
+use crate::islands::IslandParams;
 use crate::render;
-use crate::rivers::{self, RiverParams};
-use crate::shallows::{self, ShallowStroke};
+use crate::render_data::RESOURCE_TEXTURES;
+use crate::terrain_mesh::TerrainMesh;
+use crate::shallows::ShallowStroke;
 use crate::storage::{self, SavedMap};
 use crate::toast::Toasts;
 use crate::ui::TOOLBAR_WIDTH;
-use crate::world::{Region, Resource, World, CELL_SIZE};
+use crate::world::{Region, Resource, World};
 
 /// A map being edited, with its camera, the backdrop sized to it, and its surface texture.
 pub struct OpenMap {
     pub world: World,
+    /// The terrain of the world as meshes.
+    pub mesh: TerrainMesh,
     pub cam: EditorCamera,
     pub backdrop: Mesh,
     pub surface: Texture2D,
     /// The resource densities, for the terrain shader.
-    pub resources: [Texture2D; Resource::TEXTURES],
+    pub resources: [Texture2D; RESOURCE_TEXTURES],
     /// The regions, for the terrain shader.
     pub region_texture: Texture2D,
     /// Whether the map has been divided into regions.
     has_regions: bool,
-    /// How many times continents have been generated on this map, undone or not.
-    generations: u32,
     pub history: History,
     /// Seeds the shape of every hill painted on this map.
     hill_seed: u32,
@@ -63,29 +62,31 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// Stretches of one kind of ground smaller than this many samples are absorbed by their
-/// surroundings before the map is divided into regions.
-const SPECK_AREA: u32 = 30;
-
 impl OpenMap {
     /// A new map of the given size in meters: deep ocean everywhere, seen from above.
     pub fn new(width: f32, height: f32) -> Self {
-        let mut world = World::new(width, height);
+        Self::with_world(World::new(width, height))
+    }
+
+    /// A map around `world`.
+    fn with_world(world: World) -> Self {
         let cam = EditorCamera::new(&world, TOOLBAR_WIDTH);
-        world.update(cam.position(), Duration::from_secs(10));
+        let mut mesh = TerrainMesh::new(&world);
+        mesh.update(&world, cam.position(), Duration::from_secs(10));
         let backdrop = render::backdrop_mesh(world.half_extents());
         let surface = render::surface_texture(&world);
         let resources = render::resources_texture(&world);
         let region_texture = render::regions_texture(&world);
+        let has_regions = world.regions().iter().any(|&r| r != 0);
         Self {
             world,
+            mesh,
             cam,
             backdrop,
             surface,
             resources,
             region_texture,
-            has_regions: false,
-            generations: 0,
+            has_regions,
             history: History::default(),
             hill_seed: rand::gen_range(1, u32::MAX),
             stroke: None,
@@ -101,29 +102,13 @@ impl OpenMap {
     /// A map read from the file at `path`; the error is a message fit to show the user.
     pub fn open(path: PathBuf) -> Result<Self, String> {
         let saved = storage::load(&path)?;
-        let mut map = Self::new(saved.cells_x as f32 * CELL_SIZE, saved.cells_z as f32 * CELL_SIZE);
-        if map.world.cells() != (saved.cells_x, saved.cells_z) {
-            return Err("The map size in this file isn't supported.".to_owned());
-        }
-        map.apply_terrain(saved.heights, saved.water);
-        map.apply_resources(saved.resources);
-        map.apply_regions(saved.regions);
-        map.generations = saved.generations;
+        let mut map = Self::with_world(World::from_saved(saved)?);
         map.path = Some(path);
         Ok(map)
     }
 
     fn to_saved(&self) -> SavedMap {
-        let (cells_x, cells_z) = self.world.cells();
-        SavedMap {
-            cells_x,
-            cells_z,
-            generations: self.generations,
-            heights: self.world.heights().to_vec(),
-            water: self.world.water().to_vec(),
-            resources: Resource::ALL.map(|kind| self.world.resource(kind).to_vec()),
-            regions: self.world.regions().to_vec(),
-        }
+        self.world.to_saved()
     }
 
     /// The file name shown to the user.
@@ -139,115 +124,76 @@ impl OpenMap {
         self.dirty
     }
 
+    /// Runs one building step on the world as a single undoable change, and redraws whatever the
+    /// step changed.
+    fn build<T>(&mut self, step: impl FnOnce(&mut World) -> T) -> T {
+        let (heights, water, regions) = (self.world.heights().to_vec(), self.world.water().to_vec(), self.world.regions().to_vec());
+        let version = self.world.revision().1;
+        let out = step(&mut self.world);
+        self.history.record(&heights, &water, self.world.heights(), self.world.water());
+        self.history.record_regions(&regions, self.world.regions());
+        if self.world.revision().1 != version {
+            self.redraw();
+            self.dirty = true;
+        }
+        if regions != self.world.regions() {
+            self.regions_changed();
+            self.dirty = true;
+        }
+        out
+    }
+
     /// Adds continents to the land already on the map, as one undoable step.
     pub fn generate_continents(&mut self, params: &ContinentParams) {
-        let (cells_x, cells_z) = self.world.cells();
-        let params = ContinentParams {
-            seed: self.next_seed(params.seed),
-            ..*params
-        };
-        let heights = continents::generate(&params, cells_x, cells_z, self.world.heights());
-        self.history.record(self.world.heights(), self.world.water(), &heights, self.world.water());
-        self.apply_heights(heights);
-        self.dirty = true;
+        self.build(|world| world.generate_continents(params));
     }
 
     /// Sprinkles islands into the open water, as one undoable step, and returns how many were
-    /// added, which can be fewer than asked for if there is no room. Seeded like
-    /// [`generate_continents`](Self::generate_continents).
+    /// added, which can be fewer than asked for if there is no room.
     pub fn add_islands(&mut self, params: &IslandParams) -> usize {
-        let (cells_x, cells_z) = self.world.cells();
-        let params = IslandParams {
-            seed: self.next_seed(params.seed),
-            ..*params
-        };
-        let (heights, added) = islands::generate(&params, cells_x, cells_z, self.world.heights());
-        if heights != self.world.heights() {
-            self.history.record(self.world.heights(), self.world.water(), &heights, self.world.water());
-            self.apply_heights(heights);
-            self.dirty = true;
-        }
-        added
+        self.build(|world| world.add_islands(params))
     }
 
     /// Raises a randomly placed mountain range, as one undoable step. Returns false if there is
-    /// no land with room for one. Seeded like [`generate_continents`](Self::generate_continents).
+    /// no land with room for one.
     pub fn add_mountain_range(&mut self, length: f32, width: f32, seed: u32) -> bool {
-        let (nx, nz) = self.world.samples();
-        let seed = self.next_seed(seed);
-        let Some(heights) = hills::mountain_range(self.world.heights(), nx, nz, self.world.half_extents(), seed, length, width)
-        else {
-            return false;
-        };
-        self.history.record(self.world.heights(), self.world.water(), &heights, self.world.water());
-        self.apply_heights(heights);
-        self.dirty = true;
-        true
+        self.build(|world| world.add_mountain_range(length, width, seed))
     }
 
     /// Digs randomly placed lakes, about `size` meters across, as one undoable step, and returns
-    /// how many fit, which can be fewer than asked for or none. Seeded like
-    /// [`generate_continents`](Self::generate_continents).
+    /// how many fit, which can be fewer than asked for or none.
     pub fn add_lakes(&mut self, count: u32, size: f32, seed: u32) -> usize {
-        let (nx, nz) = self.world.samples();
-        let seed = self.next_seed(seed);
-        let Some((heights, water, added)) =
-            hills::scatter_lakes(self.world.heights(), self.world.water(), nx, nz, self.world.half_extents(), seed, count, size)
-        else {
-            return 0;
-        };
-        self.history.record(self.world.heights(), self.world.water(), &heights, &water);
-        self.apply_terrain(heights, water);
-        self.dirty = true;
-        added
+        self.build(|world| world.add_lakes(count, size, seed))
     }
 
-    /// Cuts a pass through the points (world x and z, at least two) as one undoable step: a level
-    /// road bed `width` meters wide, with walls of the given `steepness` (rise over run) where it
-    /// cuts through high ground and embankments where it crosses low, along a smooth line
-    /// winding by `winding` from 0 to 1 between the points. The error is a message fit to show
-    /// the user.
+    /// Cuts a pass through the points (world x and z, at least two) as one undoable step; see
+    /// [`World::add_pass`].
     pub fn add_pass(&mut self, points: &[Vec2], width: f32, steepness: f32, winding: f32, seed: u32) -> Result<(), &'static str> {
-        let (nx, nz) = self.world.samples();
-        let seed = self.next_seed(seed);
-        let params = PassParams { points: points.to_vec(), width, steepness, winding, seed };
-        let heights = passes::cut(self.world.heights(), self.world.water(), nx, nz, self.world.half_extents(), &params)?;
-        let water = self.world.water().to_vec();
-        self.history.record(self.world.heights(), &water, &heights, &water);
-        self.apply_terrain(heights, water);
-        self.dirty = true;
-        Ok(())
+        self.build(|world| world.add_pass(points, width, steepness, winding, seed))
     }
 
-    /// Digs a river between two points (world x and z) as one undoable step: `width` meters wide
-    /// in the middle, winding by `winding` from 0 to 1. It flows from the higher point to the
-    /// lower. Seeded like [`generate_continents`](Self::generate_continents). The error is a
-    /// message fit to show the user.
+    /// Digs a river between two points (world x and z) as one undoable step; see
+    /// [`World::add_river`].
     pub fn add_river(&mut self, from: Vec2, to: Vec2, width: f32, winding: f32, seed: u32) -> Result<(), &'static str> {
-        let (nx, nz) = self.world.samples();
-        let seed = self.next_seed(seed);
-        let params = RiverParams { from, to, width, winding, seed };
-        let dug = rivers::dig(self.world.heights(), self.world.water(), nx, nz, self.world.half_extents(), &params)?;
-        self.history.record(self.world.heights(), self.world.water(), &dug.heights, &dug.water);
-        self.apply_terrain(dug.heights, dug.water);
-        self.dirty = true;
-        Ok(())
+        self.build(|world| world.add_river(from, to, width, winding, seed))
     }
 
     /// Digs up to `count` rivers from random inland points down to the sea, as one undoable step,
-    /// and returns how many fit. Seeded like [`generate_continents`](Self::generate_continents).
+    /// and returns how many fit.
     pub fn add_rivers(&mut self, count: u32, width: f32, winding: f32, seed: u32) -> usize {
-        let (nx, nz) = self.world.samples();
-        let seed = self.next_seed(seed);
-        let Some((dug, added)) =
-            rivers::scatter(self.world.heights(), self.world.water(), nx, nz, self.world.half_extents(), seed, count, width, winding)
-        else {
-            return 0;
-        };
-        self.history.record(self.world.heights(), self.world.water(), &dug.heights, &dug.water);
-        self.apply_terrain(dug.heights, dug.water);
-        self.dirty = true;
-        added
+        self.build(|world| world.add_rivers(count, width, winding, seed))
+    }
+
+    /// Makes the sea within `width` meters of land shallow, as one undoable step. Returns false if
+    /// there was nowhere to: no land, or the sea there is already shallow.
+    pub fn add_shallows(&mut self, width: f32) -> bool {
+        self.build(|world| world.add_shallows(width))
+    }
+
+    /// Divides the map into regions about `size` meters across on average, as one undoable step,
+    /// replacing any made before. Returns how many regions there are.
+    pub fn generate_regions(&mut self, size: f32, seed: u32) -> usize {
+        self.build(|world| world.divide_into_regions(size, seed))
     }
 
     /// Paints `kind` of `density` (0 to 1) onto dry land with a brush of `radius` meters at `center`
@@ -265,19 +211,6 @@ impl OpenMap {
             self.world.resource_changed(*kind, region);
             render::update_resources(&self.resources, &self.world, *kind, region);
         }
-    }
-
-    /// Makes the sea within `width` meters of land shallow, as one undoable step. Returns false if
-    /// there was nowhere to: no land, or the sea there is already shallow.
-    pub fn add_shallows(&mut self, width: f32) -> bool {
-        let (nx, nz) = self.world.samples();
-        let Some(heights) = shallows::shelf(self.world.heights(), self.world.water(), nx, nz, width) else {
-            return false;
-        };
-        self.history.record(self.world.heights(), self.world.water(), &heights, self.world.water());
-        self.apply_heights(heights);
-        self.dirty = true;
-        true
     }
 
     /// Paints shallow water onto deep sea with a brush of `radius` meters at `center` (world x
@@ -349,17 +282,10 @@ impl OpenMap {
 
     /// Redraws the part of the map that changed, without touching the rest.
     fn refresh(&mut self, region: Region) {
-        let texels = self.world.refresh_region(region, self.cam.position());
+        let texels = self.world.refresh_region(region);
         render::update_surface(&self.surface, &self.world, texels);
-    }
-
-    /// The seed for the next generation run: the one the user chose, mixed with how many runs
-    /// there have been on this map, so pressing the button again adds something different, even
-    /// after an undo. The same map, settings, seed and number of earlier runs give the same result.
-    fn next_seed(&mut self, seed: u32) -> u32 {
-        let salted = seed.wrapping_add(self.generations.wrapping_mul(0x9E37_79B9));
-        self.generations += 1;
-        salted
+        // The chunks the change touches are rebuilt now, not over the next frames.
+        self.mesh.update(&self.world, self.cam.position(), Duration::from_millis(30));
     }
 
     /// Undoes the most recent edit. Returns false if there was nothing to undo.
@@ -382,13 +308,6 @@ impl OpenMap {
         true
     }
 
-    /// Puts new heights on the map, leaving the water levels as they are, and refreshes
-    /// everything drawn from them.
-    fn apply_heights(&mut self, heights: Vec<f32>) {
-        self.world.set_heights(heights);
-        self.redraw();
-    }
-
     /// Puts new resource densities (in the order of [`Resource::ALL`]) on the map and refreshes everything drawn
     /// from them.
     fn apply_resources(&mut self, resources: [Vec<u8>; Resource::COUNT]) {
@@ -400,36 +319,19 @@ impl OpenMap {
 
     /// Puts new regions on the map and refreshes everything drawn from them.
     fn apply_regions(&mut self, regions: Vec<u16>) {
-        self.has_regions = regions.iter().any(|&r| r != 0);
         self.world.set_regions(regions);
+        self.regions_changed();
+    }
+
+    /// Refreshes everything drawn from the map's regions after they changed.
+    fn regions_changed(&mut self) {
+        self.has_regions = self.world.regions().iter().any(|&r| r != 0);
         render::update_regions(&self.region_texture, &self.world);
     }
 
     /// Whether the map has been divided into regions.
     pub fn has_regions(&self) -> bool {
         self.has_regions
-    }
-
-    /// Divides the map into regions about `size` meters across on average, as one undoable step,
-    /// replacing any made before. If that would be more regions than a map can hold, they come
-    /// out bigger. Returns how many regions there are.
-    pub fn generate_regions(&mut self, size: f32, seed: u32) -> usize {
-        let (nx, nz) = self.world.samples();
-        let mut kinds = regions::classify(self.world.heights(), self.world.water());
-        regions::despeckle(&mut kinds, nx, nz, SPECK_AREA);
-        let seed = self.next_seed(seed);
-        let mut size = size;
-        let ids = loop {
-            if let Some(ids) = regions::divide(&kinds, nx, nz, size, seed) {
-                break ids;
-            }
-            size *= 1.4;
-        };
-        let count = ids.iter().map(|&id| id & 0x3FFF).max().unwrap_or(0) as usize;
-        self.history.record_regions(self.world.regions(), &ids);
-        self.apply_regions(ids);
-        self.dirty = true;
-        count
     }
 
     /// Takes the regions off the map, as one undoable step. Returns false if there were none.
@@ -454,7 +356,7 @@ impl OpenMap {
     fn redraw(&mut self) {
         self.surface = render::surface_texture(&self.world);
         // Rebuild every chunk now rather than streaming them in over the next frames.
-        self.world.update(self.cam.position(), Duration::from_secs(10));
+        self.mesh.update(&self.world, self.cam.position(), Duration::from_secs(10));
     }
 
     /// Saves the map to its file, asking where first if it has none yet or `save_as` is set.

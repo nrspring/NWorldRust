@@ -8,7 +8,9 @@ use macroquad::models::{Mesh, Vertex};
 use macroquad::prelude::*;
 
 use crate::camera::FOV_DEGREES;
-use crate::world::{Frustum, Region, Resource, World, CELL_SIZE, SEA_LEVEL};
+use crate::render_data::{self, RESOURCE_TEXTURES};
+use crate::terrain_mesh::{Frustum, TerrainMesh};
+use crate::world::{Region, Resource, World, CELL_SIZE, SEA_LEVEL};
 
 /// The pale haze of the sky at the horizon. Distant terrain and sea fog to it, so they fade
 /// into the sky.
@@ -139,13 +141,13 @@ impl TerrainRenderer {
     /// Draws the terrain of `world`, colored from its `surface` texture, as seen by `camera`
     /// from `cam`, out to `view_distance`. Whatever macroquad has queued is drawn first, so the
     /// terrain lands on top of it.
-    pub fn draw(&self, world: &mut World, surface: &Texture2D, resources: &[Texture2D; Resource::TEXTURES], regions: &Texture2D, region_overlay: bool, region_highlight: Option<u16>, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
+    pub fn draw(&self, mesh: &mut TerrainMesh, world: &World, surface: &Texture2D, resources: &[Texture2D; RESOURCE_TEXTURES], regions: &Texture2D, region_overlay: bool, region_highlight: Option<u16>, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
         let mut gl = unsafe { get_internal_gl() };
         gl.flush();
         let ctx: &mut dyn RenderingBackend = gl.quad_context;
 
         let view_projection = camera.matrix();
-        let blocks = world.visible_blocks(ctx, &Frustum::from_matrix(view_projection), cam, view_distance);
+        let blocks = mesh.visible_blocks(ctx, &Frustum::from_matrix(view_projection), cam, view_distance);
 
         // Map world x/z to texel centers of the surface texture (one texel per heightmap sample).
         let (nx, nz) = world.samples();
@@ -197,7 +199,7 @@ impl TerrainRenderer {
 /// Uploads the world's coast and elevation for the terrain shader.
 pub fn surface_texture(world: &World) -> Texture2D {
     let (nx, nz) = world.samples();
-    let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &world.surface_texels());
+    let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &render_data::surface_texels(world));
     texture.set_filter(FilterMode::Linear);
     texture
 }
@@ -205,7 +207,7 @@ pub fn surface_texture(world: &World) -> Texture2D {
 /// Re-uploads the part of the surface texture inside `region` after its heights changed.
 pub fn update_surface(texture: &Texture2D, world: &World, region: Region) {
     let image = Image {
-        bytes: world.surface_texels_in(region),
+        bytes: render_data::surface_texels_in(world, region),
         width: region.width() as u16,
         height: region.height() as u16,
     };
@@ -213,13 +215,13 @@ pub fn update_surface(texture: &Texture2D, world: &World, region: Region) {
 }
 
 /// Uploads the world's resource densities for the terrain shader.
-pub fn resources_texture(world: &World) -> [Texture2D; Resource::TEXTURES] {
+pub fn resources_texture(world: &World) -> [Texture2D; RESOURCE_TEXTURES] {
     let (nx, nz) = world.samples();
     std::array::from_fn(|k| {
         let texture = Texture2D::from_rgba8(
             nx as u16,
             nz as u16,
-            &world.resource_texels_in(Region { i0: 0, j0: 0, i1: nx - 1, j1: nz - 1 }, k),
+            &render_data::resource_texels_in(world, Region { i0: 0, j0: 0, i1: nx - 1, j1: nz - 1 }, k),
         );
         texture.set_filter(FilterMode::Linear);
         texture
@@ -227,10 +229,10 @@ pub fn resources_texture(world: &World) -> [Texture2D; Resource::TEXTURES] {
 }
 
 /// Re-uploads the part of the texture holding `kind` inside `region` after its density changed.
-pub fn update_resources(textures: &[Texture2D; Resource::TEXTURES], world: &World, kind: Resource, region: Region) {
+pub fn update_resources(textures: &[Texture2D; RESOURCE_TEXTURES], world: &World, kind: Resource, region: Region) {
     let k = kind.index() / 4;
     let image = Image {
-        bytes: world.resource_texels_in(region, k),
+        bytes: render_data::resource_texels_in(world, region, k),
         width: region.width() as u16,
         height: region.height() as u16,
     };
@@ -240,7 +242,7 @@ pub fn update_resources(textures: &[Texture2D; Resource::TEXTURES], world: &Worl
 /// Uploads the world's regions for the terrain shader, which draws them over the terrain.
 pub fn regions_texture(world: &World) -> Texture2D {
     let (nx, nz) = world.samples();
-    let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &world.region_texels());
+    let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &render_data::region_texels(world));
     // Regions are told apart by their exact numbers, so they must not blend.
     texture.set_filter(FilterMode::Nearest);
     texture
@@ -249,7 +251,7 @@ pub fn regions_texture(world: &World) -> Texture2D {
 /// Re-uploads the whole regions texture after the regions changed.
 pub fn update_regions(texture: &Texture2D, world: &World) {
     let (nx, nz) = world.samples();
-    let image = Image { bytes: world.region_texels(), width: nx as u16, height: nz as u16 };
+    let image = Image { bytes: render_data::region_texels(world), width: nx as u16, height: nz as u16 };
     texture.update_part(&image, 0, 0, nx as i32, nz as i32);
 }
 
@@ -624,7 +626,7 @@ const vec3 WATER = vec3(0.02, 0.10, 0.26);
 // Deep water is dark blue. Shallow water, which is all of the lakes and rivers and the sea where
 // its floor is within a few meters, is a lighter blue-green, palest at the shore, giving way to
 // the dark blue as the floor drops away. How deep the water is, in meters, is in the surface
-// texture's alpha; must match `MAX_WATER_DEPTH` in world.rs.
+// texture's alpha; must match `MAX_WATER_DEPTH` in render_data.rs.
 const float WATER_DEPTH_RANGE = 64.0;
 const vec3 SHALLOW_EDGE = vec3(0.30, 0.68, 0.66);
 const vec3 SHALLOW = vec3(0.09, 0.42, 0.56);

@@ -9,7 +9,7 @@
 
 use std::f32::consts::TAU;
 
-use macroquad::prelude::*;
+use glam::*;
 
 use crate::gen_common::Rng;
 use crate::noise::{smoothstep, Simplex};

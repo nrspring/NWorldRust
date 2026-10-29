@@ -1,6 +1,6 @@
 //! Pieces shared by the continent and island generators.
 
-use macroquad::prelude::Vec2;
+use glam::Vec2;
 use crate::noise::{smoothstep, Simplex};
 use crate::world::CELL_SIZE;
 
