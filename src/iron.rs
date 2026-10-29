@@ -2,7 +2,8 @@
 //!
 //! A spot on a fixed grid across the world gets an outcrop with a chance equal to the iron
 //! density there, thinned out to thin winding veins by noise, so the ore runs in seams through the
-//! painted ground. Most outcrops are small with a few big ones, and they lie anywhere on dry ground.
+//! painted ground. Most outcrops are small rounded lumps with a few big ones, and they lie anywhere
+//! on dry ground.
 
 use macroquad::prelude::*;
 
@@ -18,11 +19,11 @@ const VEIN_SPACING: f32 = 22.0;
 /// its range; bigger means fatter veins.
 const VEIN_WIDTH: f32 = 0.2;
 
-/// How outcrops are drawn: lumps, clusters and tall slabs of ore, out to a few hundred meters.
+/// How outcrops are drawn: lumps, clusters and big boulders of ore, out to a few hundred meters.
 pub fn kind() -> PropKind {
     PropKind {
         resource: Resource::Iron,
-        shapes: vec![lump_mesh(), cluster_mesh(), slab_mesh()],
+        shapes: vec![lump_mesh(), cluster_mesh(), big_lump_mesh()],
         generate: outcrops_in_chunk,
         fade: (130.0, 380.0),
         draw_chunks: 7,
@@ -63,7 +64,7 @@ fn outcrops_in_chunk(world: &World, cx: usize, cz: usize) -> Vec<Prop> {
 
             // Mostly small outcrops, with a few big ones.
             let [big, squat, tint, rank] = randoms(gb ^ 0x2F, ga);
-            let scale = 0.4 + 1.8 * big * big * big;
+            let scale = 0.35 + 1.5 * big * big * big;
             let shape = match (scale > 1.1, variety < 0.5, variety < 0.75) {
                 (true, true, _) => 2,
                 (true, false, _) => 1,
@@ -88,27 +89,27 @@ fn outcrops_in_chunk(world: &World, cx: usize, cz: usize) -> Vec<Prop> {
 const DARK: Vec3 = Vec3::new(0.24, 0.13, 0.10);
 const LIGHT: Vec3 = Vec3::new(0.58, 0.29, 0.14);
 
-/// A single angular lump of ore.
+/// A single rounded lump of ore.
 fn lump_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    m.blob(vec3(0.0, 0.7, 0.0), vec3(1.3, 0.9, 1.1), DARK, LIGHT, 0.45, 11);
+    m.blob(vec3(0.0, 0.75, 0.0), vec3(1.4, 0.95, 1.2), DARK, LIGHT, 0.3, 11);
     m.vertices
 }
 
 /// Three lumps heaped together.
 fn cluster_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    m.blob(vec3(0.0, 0.65, 0.0), vec3(1.1, 0.85, 1.0), DARK, LIGHT, 0.45, 12);
-    m.blob(vec3(1.2, 0.4, 0.45), vec3(0.8, 0.6, 0.7), DARK, LIGHT, 0.45, 13);
-    m.blob(vec3(-0.8, 0.35, -0.8), vec3(0.7, 0.55, 0.65), DARK, LIGHT, 0.45, 14);
+    m.blob(vec3(0.0, 0.65, 0.0), vec3(1.15, 0.85, 1.05), DARK, LIGHT, 0.3, 12);
+    m.blob(vec3(1.2, 0.4, 0.45), vec3(0.8, 0.6, 0.7), DARK, LIGHT, 0.3, 13);
+    m.blob(vec3(-0.8, 0.35, -0.8), vec3(0.7, 0.55, 0.65), DARK, LIGHT, 0.3, 14);
     m.vertices
 }
 
-/// A tall slab of ore standing out of the ground, with a lump at its foot.
-fn slab_mesh() -> Vec<PropVertex> {
+/// A big, broad boulder of ore with a lump at its foot.
+fn big_lump_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    m.blob(vec3(0.0, 1.4, 0.0), vec3(0.65, 1.6, 0.5), DARK, LIGHT, 0.4, 15);
-    m.blob(vec3(0.8, 0.4, 0.3), vec3(0.65, 0.5, 0.6), DARK, LIGHT, 0.45, 16);
+    m.blob(vec3(0.0, 0.95, 0.0), vec3(1.6, 1.15, 1.4), DARK, LIGHT, 0.25, 15);
+    m.blob(vec3(1.4, 0.4, 0.5), vec3(0.75, 0.55, 0.65), DARK, LIGHT, 0.3, 16);
     m.vertices
 }
 
@@ -187,7 +188,7 @@ mod tests {
 
     #[test]
     fn outcrop_meshes_are_small_and_sit_on_the_ground() {
-        for mesh in [lump_mesh(), cluster_mesh(), slab_mesh()] {
+        for mesh in [lump_mesh(), cluster_mesh(), big_lump_mesh()] {
             assert!(mesh.len() % 3 == 0 && mesh.len() < 400);
             let lowest = mesh.iter().map(|v| v.position[1]).fold(f32::MAX, f32::min);
             let highest = mesh.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);

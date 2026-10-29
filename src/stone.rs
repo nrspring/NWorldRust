@@ -2,7 +2,8 @@
 //!
 //! A spot on a fixed grid across the world gets a rock with a chance equal to the stone density
 //! there, thinned out and gathered into clumps by noise so the stone lies in patches, with many
-//! small rocks and a few big ones. Rocks lie anywhere on dry ground, however steep or high.
+//! small rocks and a few big ones, all rounded boulders. Rocks lie anywhere on dry ground, however
+//! steep or high.
 
 use macroquad::prelude::*;
 
@@ -14,11 +15,11 @@ const ROCK_SPACING: f32 = 4.0;
 /// Rocks gather in clumps about this many meters across.
 const CLUMP_SIZE: f32 = 26.0;
 
-/// How rocks are drawn: boulders, piles and tall rocks, out to a few hundred meters.
+/// How rocks are drawn: boulders, piles and big boulders, out to a few hundred meters.
 pub fn kind() -> PropKind {
     PropKind {
         resource: Resource::Stone,
-        shapes: vec![boulder_mesh(), pile_mesh(), tall_rock_mesh()],
+        shapes: vec![boulder_mesh(), pile_mesh(), big_boulder_mesh()],
         generate: rocks_in_chunk,
         fade: (150.0, 420.0),
         draw_chunks: 8,
@@ -57,8 +58,8 @@ fn rocks_in_chunk(world: &World, cx: usize, cz: usize) -> Vec<Prop> {
 
             // Mostly small rocks, with a few big ones.
             let [big, squat, tint, rank] = randoms(gb ^ 0x1D, ga);
-            let scale = 0.45 + 2.0 * big * big * big;
-            let shape = match (scale > 1.2, variety < 0.5, variety < 0.7) {
+            let scale = 0.35 + 1.6 * big * big * big;
+            let shape = match (scale > 1.0, variety < 0.5, variety < 0.7) {
                 (true, true, _) => 2,
                 (true, false, _) => 1,
                 (false, _, true) => 0,
@@ -97,11 +98,11 @@ fn pile_mesh() -> Vec<PropVertex> {
     m.vertices
 }
 
-/// A tall outcrop with a small rock at its foot.
-fn tall_rock_mesh() -> Vec<PropVertex> {
+/// A big, broad boulder with a small rock at its foot.
+fn big_boulder_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    m.blob(vec3(0.0, 1.5, 0.0), vec3(0.9, 1.8, 0.8), DARK, LIGHT, 0.35, 5);
-    m.blob(vec3(0.9, 0.45, 0.35), vec3(0.75, 0.55, 0.65), DARK, LIGHT, 0.3, 6);
+    m.blob(vec3(0.0, 0.95, 0.0), vec3(1.7, 1.15, 1.5), DARK, LIGHT, 0.25, 5);
+    m.blob(vec3(1.5, 0.4, 0.6), vec3(0.8, 0.55, 0.7), DARK, LIGHT, 0.3, 6);
     m.vertices
 }
 
@@ -181,7 +182,7 @@ mod tests {
 
     #[test]
     fn rock_meshes_are_small_and_sit_on_the_ground() {
-        for mesh in [boulder_mesh(), pile_mesh(), tall_rock_mesh()] {
+        for mesh in [boulder_mesh(), pile_mesh(), big_boulder_mesh()] {
             assert!(mesh.len() % 3 == 0 && mesh.len() < 400);
             let lowest = mesh.iter().map(|v| v.position[1]).fold(f32::MAX, f32::min);
             let highest = mesh.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);

@@ -2,8 +2,8 @@
 //!
 //! A spot on a fixed grid across the world gets a nugget with a chance equal to the copper
 //! density there, thinned out to separate pockets by noise, so the ore lies in round patches with
-//! bare ground between them. Most nuggets are small with a few big ones, and they lie anywhere on
-//! dry ground.
+//! bare ground between them. Most nuggets are small rounded lumps with a few big ones, and they lie
+//! anywhere on dry ground.
 
 use macroquad::prelude::*;
 
@@ -16,11 +16,11 @@ const NUGGET_SPACING: f32 = 4.0;
 /// Pockets of ore are about this many meters across, and as far apart again.
 const POCKET_SIZE: f32 = 13.0;
 
-/// How nuggets are drawn: rough lumps, heaps and spires of ore, out to a few hundred meters.
+/// How nuggets are drawn: rough lumps, heaps and big boulders of ore, out to a few hundred meters.
 pub fn kind() -> PropKind {
     PropKind {
         resource: Resource::Copper,
-        shapes: vec![nugget_mesh(), heap_mesh(), spire_mesh()],
+        shapes: vec![nugget_mesh(), heap_mesh(), big_nugget_mesh()],
         generate: nuggets_in_chunk,
         fade: (130.0, 380.0),
         draw_chunks: 7,
@@ -59,7 +59,7 @@ fn nuggets_in_chunk(world: &World, cx: usize, cz: usize) -> Vec<Prop> {
 
             // Mostly small nuggets, with a few big ones.
             let [big, squat, tint, rank] = randoms(gb ^ 0x3B, ga);
-            let scale = 0.35 + 1.7 * big * big * big;
+            let scale = 0.3 + 1.4 * big * big * big;
             let shape = match (scale > 1.0, variety < 0.5, variety < 0.7) {
                 (true, true, _) => 2,
                 (true, false, _) => 1,
@@ -87,25 +87,25 @@ const LIGHT: Vec3 = Vec3::new(0.26, 0.64, 0.50);
 /// A single rough nugget.
 fn nugget_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    m.blob(vec3(0.0, 0.6, 0.0), vec3(1.1, 0.8, 1.0), DARK, LIGHT, 0.5, 31);
+    m.blob(vec3(0.0, 0.65, 0.0), vec3(1.2, 0.85, 1.1), DARK, LIGHT, 0.3, 31);
     m.vertices
 }
 
 /// Four nuggets heaped together.
 fn heap_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    m.blob(vec3(0.0, 0.55, 0.0), vec3(0.9, 0.75, 0.85), DARK, LIGHT, 0.5, 32);
-    m.blob(vec3(1.0, 0.35, 0.4), vec3(0.65, 0.5, 0.6), DARK, LIGHT, 0.5, 33);
-    m.blob(vec3(-0.7, 0.3, -0.7), vec3(0.6, 0.45, 0.55), DARK, LIGHT, 0.5, 34);
-    m.blob(vec3(0.2, 0.3, -1.0), vec3(0.5, 0.4, 0.5), DARK, LIGHT, 0.5, 35);
+    m.blob(vec3(0.0, 0.55, 0.0), vec3(0.95, 0.75, 0.9), DARK, LIGHT, 0.3, 32);
+    m.blob(vec3(1.0, 0.35, 0.4), vec3(0.65, 0.5, 0.6), DARK, LIGHT, 0.3, 33);
+    m.blob(vec3(-0.7, 0.3, -0.7), vec3(0.6, 0.45, 0.55), DARK, LIGHT, 0.3, 34);
+    m.blob(vec3(0.2, 0.3, -1.0), vec3(0.5, 0.4, 0.5), DARK, LIGHT, 0.3, 35);
     m.vertices
 }
 
-/// A spire of ore with a nugget at its foot.
-fn spire_mesh() -> Vec<PropVertex> {
+/// A big, broad boulder of ore with a nugget at its foot.
+fn big_nugget_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    m.blob(vec3(0.0, 1.1, 0.0), vec3(0.5, 1.3, 0.45), DARK, LIGHT, 0.45, 36);
-    m.blob(vec3(0.7, 0.35, 0.25), vec3(0.55, 0.45, 0.5), DARK, LIGHT, 0.5, 37);
+    m.blob(vec3(0.0, 0.9, 0.0), vec3(1.5, 1.1, 1.3), DARK, LIGHT, 0.25, 36);
+    m.blob(vec3(1.3, 0.35, 0.45), vec3(0.7, 0.5, 0.6), DARK, LIGHT, 0.3, 37);
     m.vertices
 }
 
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn nugget_meshes_are_small_and_sit_on_the_ground() {
-        for mesh in [nugget_mesh(), heap_mesh(), spire_mesh()] {
+        for mesh in [nugget_mesh(), heap_mesh(), big_nugget_mesh()] {
             assert!(mesh.len() % 3 == 0 && mesh.len() < 500);
             let lowest = mesh.iter().map(|v| v.position[1]).fold(f32::MAX, f32::min);
             let highest = mesh.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);

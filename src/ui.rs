@@ -1534,7 +1534,7 @@ impl EditorUi {
                         lines: [
                             "Hold left to paint sulphur.",
                             "Hold right to clear it.",
-                            "Yellow crystals gather around vents,",
+                            "Yellow lumps gather around vents,",
                             "wherever the ground is dry.",
                             "[ and ] resize the brush.",
                         ],
@@ -2094,10 +2094,10 @@ fn draw_tool_icon(tool: Tool, r: Rect, color: Color) {
             draw_line(c.x - 3.5, c.y, c.x + 3.5, c.y, 1.4, color);
         }
         Tool::Sulphur => {
-            // A cluster of crystals: a tall one between two shorter ones.
-            draw_outline(&[c + vec2(-4.0, 9.0), c + vec2(-0.5, -11.0), c + vec2(4.5, 9.0)], color);
-            draw_outline(&[c + vec2(-12.0, 9.0), c + vec2(-9.0, -2.0), c + vec2(-4.0, 9.0)], color);
-            draw_outline(&[c + vec2(4.5, 9.0), c + vec2(8.5, -1.0), c + vec2(12.0, 9.0)], color);
+            // A heap of lumps: two round ones side by side and a third on top.
+            draw_circle_lines(c.x - 6.0, c.y + 4.0, 6.5, t, color);
+            draw_circle_lines(c.x + 6.0, c.y + 5.0, 6.0, t, color);
+            draw_circle_lines(c.x, c.y - 4.5, 7.0, t, color);
         }
         Tool::Oil => {
             // A drop: two sides meeting at a point above a round belly.

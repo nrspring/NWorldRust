@@ -240,23 +240,6 @@ impl MeshBuilder {
         }
     }
 
-    /// A pyramid of `sides` sides from a ring of `radius` around `base`, perpendicular to the way
-    /// it points, to a point at `tip`: a crystal or a thorn.
-    pub fn spike(&mut self, base: Vec3, tip: Vec3, radius: f32, sides: usize, dark: Vec3, light: Vec3) {
-        let axis = (tip - base).normalize_or_zero();
-        let across = axis.cross(if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize_or_zero();
-        let along = axis.cross(across);
-        let inside = (base + tip) * 0.5;
-        let apex = (tip, light);
-        let ring = |k: usize| {
-            let a = std::f32::consts::TAU * k as f32 / sides as f32;
-            (base + (across * a.cos() + along * a.sin()) * radius, dark)
-        };
-        for k in 0..sides {
-            self.tri(inside, apex, ring(k), ring(k + 1));
-        }
-    }
-
     /// A tapering trunk of `sides` sides from `y0` to `y1`.
     pub fn trunk(&mut self, y0: f32, y1: f32, radius: f32, sides: usize) {
         let inside = vec3(0.0, (y0 + y1) * 0.5, 0.0);

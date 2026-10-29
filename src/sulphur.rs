@@ -1,7 +1,7 @@
-//! Sulphur: the yellow crystal clusters drawn where the sulphur resource is painted.
+//! Sulphur: the yellow lumps and crusts drawn where the sulphur resource is painted.
 //!
 //! A spot on a fixed grid across the world gets a cluster with a chance equal to the sulphur
-//! density there, thinned out to round vents by noise, so the crystals gather around a few spots
+//! density there, thinned out to round vents by noise, so the sulphur gathers around a few spots
 //! with bare ground between them. Most clusters are small with a few big ones, and they lie
 //! anywhere on dry ground.
 
@@ -13,14 +13,14 @@ use crate::world::{Resource, World, CELL_SIZE, CHUNK_SIZE};
 
 /// Meters between the spots a cluster can lie on.
 const CLUSTER_SPACING: f32 = 4.0;
-/// Vents of crystals are about this many meters across, and as far apart again.
+/// Vents of sulphur are about this many meters across, and as far apart again.
 const VENT_SIZE: f32 = 11.0;
 
-/// How clusters are drawn: crystal spikes, crusts and big clusters, out to a few hundred meters.
+/// How clusters are drawn: lumps, crusts and big heaps, out to a few hundred meters.
 pub fn kind() -> PropKind {
     PropKind {
         resource: Resource::Sulphur,
-        shapes: vec![spikes_mesh(), crust_mesh(), cluster_mesh()],
+        shapes: vec![lump_mesh(), crust_mesh(), cluster_mesh()],
         generate: clusters_in_chunk,
         fade: (130.0, 380.0),
         draw_chunks: 7,
@@ -45,7 +45,7 @@ fn clusters_in_chunk(world: &World, cx: usize, cz: usize) -> Vec<Prop> {
             if density <= 0.0 {
                 continue;
             }
-            // Vents: the crystals are thick inside round patches, with a trace between them.
+            // Vents: the sulphur is thick inside round patches, with a trace between them.
             let vent = smoothstep(0.55, 0.75, value_noise(x / VENT_SIZE, z / VENT_SIZE, 31));
             if accept >= density * (0.08 + 0.92 * vent) {
                 continue;
@@ -59,7 +59,7 @@ fn clusters_in_chunk(world: &World, cx: usize, cz: usize) -> Vec<Prop> {
 
             // Mostly small clusters, with a few big ones.
             let [big, squat, tint, rank] = randoms(gb ^ 0x4D, ga);
-            let scale = 0.4 + 1.4 * big * big * big;
+            let scale = 0.35 + 1.2 * big * big * big;
             let shape = match (scale > 0.9, variety < 0.5, variety < 0.7) {
                 (true, true, _) => 2,
                 (true, false, _) => 1,
@@ -80,41 +80,38 @@ fn clusters_in_chunk(world: &World, cx: usize, cz: usize) -> Vec<Prop> {
     clusters
 }
 
-/// Deep yellow at the foot of a crystal, pale sulphur-yellow at its tip.
-const DARK: Vec3 = Vec3::new(0.60, 0.48, 0.06);
-const LIGHT: Vec3 = Vec3::new(0.98, 0.93, 0.32);
+/// Deep yellow in the hollows, pale sulphur-yellow on top.
+const DARK: Vec3 = Vec3::new(0.62, 0.50, 0.07);
+const LIGHT: Vec3 = Vec3::new(0.98, 0.92, 0.30);
 
-fn crystal(m: &mut MeshBuilder, base: Vec3, tip: Vec3, radius: f32) {
-    m.spike(base, tip, radius, 4, DARK, LIGHT);
+fn lump(m: &mut MeshBuilder, center: Vec3, radii: Vec3, seed: i32) {
+    m.blob(center, radii, DARK, LIGHT, 0.3, seed);
 }
 
-/// A few crystals leaning out of the ground.
-fn spikes_mesh() -> Vec<PropVertex> {
+/// A single rounded lump of sulphur with a small one beside it.
+fn lump_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    crystal(&mut m, vec3(0.0, 0.0, 0.0), vec3(0.15, 1.5, 0.1), 0.34);
-    crystal(&mut m, vec3(0.45, 0.0, 0.2), vec3(0.95, 1.0, 0.45), 0.26);
-    crystal(&mut m, vec3(-0.4, 0.0, 0.25), vec3(-0.85, 0.9, 0.5), 0.24);
+    lump(&mut m, vec3(0.0, 0.5, 0.0), vec3(1.0, 0.75, 0.9), 41);
+    lump(&mut m, vec3(0.9, 0.3, 0.4), vec3(0.5, 0.35, 0.45), 42);
     m.vertices
 }
 
-/// A low yellow crust with short crystals standing on it.
+/// A low crust with a couple of lumps swelling out of it.
 fn crust_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    m.blob(vec3(0.0, 0.2, 0.0), vec3(1.7, 0.35, 1.4), DARK, LIGHT, 0.3, 41);
-    crystal(&mut m, vec3(0.3, 0.2, 0.1), vec3(0.4, 1.15, 0.2), 0.28);
-    crystal(&mut m, vec3(-0.6, 0.2, -0.3), vec3(-0.8, 0.8, -0.4), 0.22);
-    crystal(&mut m, vec3(0.7, 0.15, -0.6), vec3(0.9, 0.7, -0.8), 0.2);
+    lump(&mut m, vec3(0.0, 0.25, 0.0), vec3(1.8, 0.4, 1.5), 43);
+    lump(&mut m, vec3(0.4, 0.6, 0.1), vec3(0.75, 0.55, 0.65), 44);
+    lump(&mut m, vec3(-0.7, 0.4, -0.4), vec3(0.5, 0.4, 0.45), 45);
     m.vertices
 }
 
-/// A big cluster: one tall crystal among shorter ones.
+/// A big heap of lumps.
 fn cluster_mesh() -> Vec<PropVertex> {
     let mut m = MeshBuilder::default();
-    crystal(&mut m, vec3(0.0, 0.0, 0.0), vec3(0.2, 2.1, 0.1), 0.42);
-    crystal(&mut m, vec3(0.55, 0.0, 0.2), vec3(1.2, 1.4, 0.6), 0.3);
-    crystal(&mut m, vec3(-0.5, 0.0, 0.3), vec3(-1.1, 1.5, 0.7), 0.3);
-    crystal(&mut m, vec3(0.1, 0.0, -0.55), vec3(0.0, 1.2, -1.2), 0.28);
-    crystal(&mut m, vec3(-0.3, 0.0, -0.3), vec3(-0.6, 0.8, -0.7), 0.2);
+    lump(&mut m, vec3(0.0, 0.65, 0.0), vec3(1.3, 1.0, 1.2), 46);
+    lump(&mut m, vec3(1.2, 0.45, 0.5), vec3(0.75, 0.55, 0.7), 47);
+    lump(&mut m, vec3(-0.9, 0.4, -0.8), vec3(0.7, 0.5, 0.65), 48);
+    lump(&mut m, vec3(0.3, 0.35, -1.1), vec3(0.5, 0.4, 0.5), 49);
     m.vertices
 }
 
@@ -193,12 +190,12 @@ mod tests {
 
     #[test]
     fn cluster_meshes_are_small_and_sit_on_the_ground() {
-        for mesh in [spikes_mesh(), crust_mesh(), cluster_mesh()] {
+        for mesh in [lump_mesh(), crust_mesh(), cluster_mesh()] {
             assert!(mesh.len() % 3 == 0 && mesh.len() < 400);
             let lowest = mesh.iter().map(|v| v.position[1]).fold(f32::MAX, f32::min);
             let highest = mesh.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);
             assert!(lowest > -0.5 && lowest < 0.3, "the cluster starts at {lowest}");
-            assert!((0.9..4.0).contains(&highest), "a cluster {highest} m tall");
+            assert!((0.8..4.0).contains(&highest), "a cluster {highest} m tall");
         }
     }
 }
