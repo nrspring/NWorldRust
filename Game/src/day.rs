@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::calendar::Date;
 use crate::city::{self, City, INITIAL_POPULATION};
 use crate::country::{self, Country, RegionOwner};
-use crate::ids::{CityId, CountryId, PersonId, TitleTypeId};
+use crate::ids::{CityId, CountryId, Guid, PersonId, TitleTypeId};
 use crate::newsreel::{Event, News};
 use crate::person::{self, Person};
 use crate::rgb::Rgb;
@@ -136,6 +136,25 @@ impl DaySave {
         Ok(())
     }
 
+    /// Removes the country with this id, which can only be done if it has no cities. Its people and the regions
+    /// it owns go with it (the regions become unowned), and so does the news of any of them. If it was the
+    /// country the player plays, the first country left is. An error says why it can't be done.
+    pub fn delete_country(&mut self, id: CountryId) -> Result<(), String> {
+        let country = self.country(id).ok_or("There is no such country.")?;
+        if self.cities.iter().any(|c| c.country == id) {
+            return Err(format!("{} has cities, so it can't be deleted.", country.name));
+        }
+        let gone: Vec<Guid> = std::iter::once(id.into()).chain(self.people.iter().filter(|p| p.country == id).map(|p| Guid::from(p.id))).collect();
+        self.countries.retain(|c| c.id != id);
+        self.people.retain(|p| p.country != id);
+        self.region_owners.retain(|o| o.country != id);
+        self.newsreel.retain(|n| !gone.contains(&n.subject));
+        if self.player == Some(id) {
+            self.player = self.countries.first().map(|c| c.id);
+        }
+        Ok(())
+    }
+
     /// `typed` as a country name, if it is a good one and no country other than `except` has it.
     fn free_country_name(&self, typed: &str, except: Option<CountryId>) -> Result<String, String> {
         let name = country::clean_name(typed)?;
@@ -175,6 +194,25 @@ impl DaySave {
     /// who owns what.
     pub fn region_colors(&self) -> Vec<(u16, Rgb)> {
         self.region_owners.iter().filter_map(|o| Some((o.region, self.country(o.country)?.color))).collect()
+    }
+
+    /// Makes the city with this id belong to `country`, and its region too. An error says why it can't be
+    /// done: a region can only belong to one country, so a city can't change if another city of its old
+    /// country stands in the same region.
+    pub fn set_city_country(&mut self, city: CityId, country: CountryId) -> Result<(), String> {
+        self.country(country).ok_or("There is no such country.")?;
+        let region = self.city(city).ok_or("There is no such city.")?.region;
+        if let Some(other) = self.cities.iter().find(|c| c.id != city && region.is_some() && c.region == region && c.country != country) {
+            return Err(format!("{} also stands in that region, so it has to stay in {}.", other.name, self.country_name(other.country)));
+        }
+        if let Some(c) = self.cities.iter_mut().find(|c| c.id == city) {
+            c.country = country;
+        }
+        if let Some(region) = region {
+            self.region_owners.retain(|o| o.region != region);
+            self.region_owners.push(RegionOwner { region, country });
+        }
+        Ok(())
     }
 
     /// Why a city of `country` can't stand in `region` (`None` for a map with no regions): a region that
@@ -543,6 +581,56 @@ mod tests {
     }
 
     #[test]
+    fn a_city_can_change_country_and_takes_its_region_with_it() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
+        day.found_city("Highmark", 500.0, 0.0, Some(0x4006)).unwrap();
+        let id = day.cities[0].id;
+
+        day.set_city_country(id, brevon).unwrap();
+        assert_eq!(day.city(id).unwrap().country, brevon);
+        assert_eq!(day.region_owner(0x4005), Some(brevon));
+        assert_eq!(day.region_owners.len(), 2, "no region owned twice");
+        assert_eq!(day.region_owner(0x4006), Some(aldoria), "other cities and regions stay as they were");
+        // The same again changes nothing.
+        let before = day.clone();
+        day.set_city_country(id, brevon).unwrap();
+        assert_eq!(day, before);
+    }
+
+    #[test]
+    fn a_city_cannot_change_country_from_another_city_in_its_region() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let brevon = day.countries[1].id;
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
+        day.found_city("Highmark", 10.0, 0.0, Some(0x4005)).unwrap();
+        let before = day.clone();
+        let err = day.set_city_country(day.cities[0].id, brevon).unwrap_err();
+        assert!(err.contains("Highmark") && err.contains("Aldoria"), "{err}");
+        assert_eq!(day, before);
+        assert!(day.set_city_country(CityId::new(), brevon).is_err());
+        assert!(day.set_city_country(day.cities[0].id, CountryId::new()).is_err());
+    }
+
+    #[test]
+    fn a_city_on_a_map_without_regions_can_change_country() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.found_city("Highmark", 10.0, 0.0, None).unwrap();
+        let brevon = day.countries[1].id;
+        day.set_city_country(day.cities[0].id, brevon).unwrap();
+        assert_eq!(day.cities[0].country, brevon);
+        assert!(day.region_owners.is_empty());
+    }
+
+    #[test]
     fn who_owns_what_is_saved_and_carries_forward() {
         let mut today = day();
         today.found_country("Aldoria").unwrap();
@@ -552,6 +640,56 @@ mod tests {
         assert_eq!(json["region_owners"][0]["country"], json["countries"][0]["id"]);
         assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), today);
         assert_eq!(today.following(Date { year: 1, month: 1, day: 2 }).region_owners, today.region_owners);
+    }
+
+    #[test]
+    fn a_country_with_no_cities_can_be_deleted_with_what_is_its_own() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        day.select_country(brevon).unwrap();
+        day.found_person("Tomas Rue", "King", "Monarch").unwrap();
+        day.set_region_owner(0x4005, Some(brevon)).unwrap();
+        day.set_region_owner(0x4006, Some(aldoria)).unwrap();
+        let tomas = day.people[1].id;
+
+        day.delete_country(brevon).unwrap();
+        assert_eq!(day.countries.len(), 1);
+        assert!(day.country(brevon).is_none());
+        assert_eq!(day.people.len(), 1, "its people go with it");
+        assert_eq!(day.people[0].name, "Mara Voss");
+        assert_eq!(day.region_owner(0x4005), None, "its regions are unowned");
+        assert_eq!(day.region_owner(0x4006), Some(aldoria), "other countries' regions are not touched");
+        // Its news goes: the founding and Tomas joining, and nothing of Aldoria's.
+        assert!(day.newsreel.iter().all(|n| n.subject != Guid::from(brevon) && n.subject != Guid::from(tomas)));
+        assert_eq!(day.newsreel.len(), 2, "Aldoria founded, Mara joined");
+        // It was the country that was played, so the one left is.
+        assert_eq!(day.player_country().unwrap().id, aldoria);
+        assert_eq!(day.player, Some(aldoria));
+    }
+
+    #[test]
+    fn a_country_with_cities_cannot_be_deleted() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        let before = day.clone();
+        let err = day.delete_country(day.countries[0].id).unwrap_err();
+        assert!(err.contains("Aldoria") && err.contains("cities"), "{err}");
+        assert!(day.delete_country(CountryId::new()).is_err());
+        assert_eq!(day, before);
+    }
+
+    #[test]
+    fn the_last_country_can_be_deleted_and_a_new_one_founded() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.delete_country(day.countries[0].id).unwrap();
+        assert!(day.countries.is_empty() && day.player.is_none() && day.player_country().is_none());
+        day.found_country("Brevon").unwrap();
+        assert_eq!(day.player_country().unwrap().name, "Brevon");
     }
 
     #[test]

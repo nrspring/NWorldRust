@@ -28,9 +28,20 @@ Clicking the country in the header opens a popup listing every country, with a f
 - **Choose** a country by clicking its row (or the arrow keys and Enter). It becomes the player's: new people and cities belong to it, and the header shows it.
 - **Edit** (the button on a row) asks for a new name. Everything that belongs to the country, and the newsreel, follows the rename, because they hold its id. Two countries can't share a name (capitals don't count).
 - **The color square** beside a name is the country's color. Every country gets a random one when it is founded (picked to be unlike the others' colors), and clicking the square opens a color picker: a square for how rich and bright, a bar for the hue, and ten ready-made colors. Save color (or Enter) keeps it. The player's color also shows in the header. Colors are saved with the country as a hex code like `"#4f8cff"`.
+- **Delete** (the cross on a row) removes a country that has **no cities**, after asking you to confirm. Its people go with it, the regions it owned become unowned, and the newsreel items about it and its people are dropped; if it was the country you play, the first country left is. A country with cities has no cross (give its cities to another country in the city popup first). Deleting the last country brings back the popup that asks you to found one.
 - **Add a new country** asks for a name and adds it to the list, and to the newsreel. It doesn't become the player's until it is chosen.
 
 Esc backs out of a rename or add to the list, and then closes the menu; so does a click outside it. Each change is saved as it is made. The country being played is kept in the day's file (`player`) and carries forward; a file without one plays the first country.
+
+## Alerts
+
+Under the newsreel, at the top right, is the alerts panel. It starts **collapsed**, as a bell icon; when there is something to see the bell turns amber and shows how many alerts there are. Click it to open a list, and click the header to collapse it again. **Click an alert** to open the [countries menu](#countries-menu) with the country it is about picked, ready to choose, edit or recolor.
+
+Alerts are worked out from the game as it is, every frame, so they come and go as things change. They are not saved: there is nothing in the day's file for them, and they are never in the newsreel. The alerts so far:
+
+- **A country has no cities**, one for each such country (so the first country has one until its first city is founded).
+
+New alerts go in `Game/src/alerts.rs`: a variant of `Alert`, found in `Alert::current`, with its text.
 
 ## Region ownership
 
@@ -59,6 +70,10 @@ The gear button at the right end of the footer opens the options panel above it.
 A city has a name, belongs to a country, stands on the map, and has a population from 100 up to 100,000. Once the game has a country and a person but no city, it asks you to place the first one: move the mouse over the map, where a ring and a preview of the starting buildings show where it would go (green if it can, red if not, with the reason in the prompt), and click on dry land that is not up in the mountains. A drag still moves the map, so only a click places it. A popup then asks for the city's name (Esc gives up and goes back to placing it). The city starts with 100 people, belongs to the player's country, is reported in the newsreel, and the camera flies to it. Two cities can't have the same name.
 
 **Hover over a city** to see a small panel with its name, its country and its population (with commas, like 12,345). A city counts as under the mouse when the mouse is over its buildings or just beside them, with a little extra room so a far-off city is not hard to point at.
+
+**Click a city** to open its popup, which shows its name, its country (with the country's color) and its population. A click is a press and release that hardly moves, so dragging the map over a city doesn't open it. Esc, Enter, the Close button, or a click outside the popup closes it.
+
+**Changing a city's country:** click the country row of the popup to open a list of the countries (the current one is marked), and click another to give the city to it. The city's region goes with it, so it is owned by the new country (see [Region ownership](#region-ownership)). If another city of the old country stands in the same region, the change is refused with a message saying which, since a region can only belong to one country. The change is saved as soon as it is made. Esc closes the list first, and then the popup.
 
 A city is drawn in 3D, like the trees, and its size follows its population: size goes by how many times the population has doubled, so each tenfold, 100 to 1,000 to 10,000, is the same step up. **A city stops growing in size at 50,000 people.** The population can go on up to 100,000, but the city looks the same from 50,000 up. A city grows outward from where it was placed, so the buildings it already has stay where they are. Buildings stay off the water and the mountains.
 

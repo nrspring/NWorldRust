@@ -2,12 +2,14 @@
 //! on it. Roads and units will be laid over the map from here too; none of that belongs to
 //! `nworld-map`.
 
+mod alerts;
 mod autosave;
 mod calendar;
 mod camera;
 mod city;
 mod city_layout;
 mod city_mesh;
+mod city_popup;
 mod city_pick;
 mod city_view;
 mod color_picker;
@@ -38,8 +40,10 @@ use nworld_map::world::World;
 use nworld_view::style::{Style, Weight};
 use nworld_view::{mouse_ray, pick_terrain, MapView};
 
+use alerts::AlertsUi;
 use autosave::Autosave;
 use camera::GameCamera;
+use city_popup::CityPopup;
 use city_view::CityRenderer;
 use day::DaySave;
 use country_menu::CountryMenu;
@@ -162,7 +166,10 @@ async fn main() {
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
+    let mut alerts_ui = AlertsUi::default();
     let mut country_menu = CountryMenu::default();
+    // The popup for the city that was clicked.
+    let mut city_popup = CityPopup::default();
     // The owned regions the map is showing, as (region, color), to know when they change.
     let mut shown_owners: Vec<(u16, Rgb)> = Vec::new();
     let mut autosave = Autosave::new(&day, get_time());
@@ -176,7 +183,9 @@ async fn main() {
         if is_key_pressed(KeyCode::Escape) {
             // Esc first backs out of the countries menu, or closes the options, or gives up on naming a
             // city, and only then quits.
-            if country_menu.is_open() {
+            if city_popup.is_open() {
+                city_popup.escape();
+            } else if country_menu.is_open() {
                 country_menu.escape();
             } else if options_ui.is_open() || overlays_ui.is_open() {
                 options_ui.close();
@@ -200,11 +209,11 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || country_menu.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || country_menu.is_open() || city_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse);
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse);
         if modal {
             camera.skip_frame();
         } else {
@@ -236,15 +245,23 @@ async fn main() {
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
-        if clicks.update(placing && !over_interface) {
-            if let (Some(at), None) = (site, &problem) {
-                // The city is founded once it has a name.
-                naming_city = Some((at, Popup::city()));
-            }
-        }
-
         // The city under the mouse, if there is one, which the tooltip tells about.
         let hovered = if modal || naming_city.is_some() || over_interface { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
+
+        // A click on the map (a drag is for the camera) places the first city, and after that opens the
+        // popup of the city clicked.
+        if clicks.update(!modal && !over_interface) {
+            if placing {
+                if let (Some(at), None) = (site, &problem) {
+                    // The city is founded once it has a name.
+                    naming_city = Some((at, Popup::city()));
+                }
+            } else if let Some(id) = hovered {
+                options_ui.close();
+                overlays_ui.close();
+                city_popup.open(id);
+            }
+        }
 
         set_default_camera();
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
@@ -260,7 +277,13 @@ async fn main() {
             hud::save_failed(&style, message);
         }
         if !modal {
-            hud::newsreel(&style, &day);
+            let newsreel = hud::newsreel(&style, &day);
+            // An alert opens the countries menu at the country it is about.
+            if let Some(country) = alerts_ui.show(&style, &day, newsreel) {
+                options_ui.close();
+                overlays_ui.close();
+                country_menu.open_at(&day, Some(country));
+            }
             if placing {
                 hud::placing_prompt(&style, problem.as_deref());
             }
@@ -305,6 +328,15 @@ async fn main() {
                     country_menu.done(&choice, &day);
                 }
                 Err(message) => country_menu.fail(message),
+            }
+        }
+
+        if let Some((city, country)) = city_popup.show(&style, &day) {
+            // Only keep the change if it is saved too.
+            let mut updated = day.clone();
+            match updated.set_city_country(city, country).and_then(|()| autosave.save_now(&saves, &updated)) {
+                Ok(()) => day = updated,
+                Err(message) => city_popup.fail(message),
             }
         }
 

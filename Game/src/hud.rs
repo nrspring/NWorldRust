@@ -1,5 +1,5 @@
 //! What the game draws over the map: the header (the country and the day), the footer (the frame rate
-//! and the key help) and the day's newsreel.
+//! and the key help) and the day's newsreel. The alerts panel under the newsreel is in `alerts`.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -102,7 +102,7 @@ pub fn save_failed(style: &Style, message: &str) {
 }
 
 /// A whole number with a comma between each three digits: 12,345.
-fn thousands(n: u32) -> String {
+pub fn thousands(n: u32) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -175,8 +175,8 @@ fn help(style: &Style, footer: Rect, left: f32, right: f32) {
     }
 }
 
-/// The day's newsreel, at the top right.
-pub fn newsreel(style: &Style, day: &DaySave) {
+/// The day's newsreel, at the top right. Returns where it is.
+pub fn newsreel(style: &Style, day: &DaySave) -> Rect {
     const TEXT_SIZE: u16 = 12;
     const LINE: f32 = 16.0;
     const ITEM_GAP: f32 = 7.0;
@@ -203,7 +203,7 @@ pub fn newsreel(style: &Style, day: &DaySave) {
     let mut y = header_y + 11.0 + 10.0;
     if items.is_empty() {
         style.text_mid("Nothing to report yet.", panel.x + 12.0, y + LINE * 0.5, TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
-        return;
+        return panel;
     }
     for lines in &items {
         draw_circle(panel.x + 16.0, y + LINE * 0.5, 2.5, style::ACCENT);
@@ -212,10 +212,11 @@ pub fn newsreel(style: &Style, day: &DaySave) {
         }
         y += lines.len() as f32 * LINE + ITEM_GAP;
     }
+    panel
 }
 
 /// Breaks `s` into lines no wider than `width`, at the spaces.
-fn wrap(style: &Style, s: &str, size: u16, width: f32) -> Vec<String> {
+pub fn wrap(style: &Style, s: &str, size: u16, width: f32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in s.split_whitespace() {
         match lines.last_mut() {

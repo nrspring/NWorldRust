@@ -1,6 +1,6 @@
 //! The countries menu, opened by clicking the country in the header: choose the country to play,
-//! edit a country's name, change its color, or add a new country. Each of those asks in a popup of
-//! its own, and comes back to the list when it is done.
+//! edit a country's name, change its color, delete one that has no cities, or add a new country. Each of
+//! those asks in a popup of its own, and comes back to the list when it is done.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -34,6 +34,8 @@ pub enum Choice {
     Rename(CountryId, String),
     /// Give this country this color.
     Recolor(CountryId, Rgb),
+    /// Delete this country, which has no cities.
+    Delete(CountryId),
 }
 
 impl Choice {
@@ -44,6 +46,7 @@ impl Choice {
             Self::Add(name) => day.found_country(name),
             Self::Rename(id, name) => day.rename_country(*id, name),
             Self::Recolor(id, color) => day.recolor_country(*id, *color),
+            Self::Delete(id) => day.delete_country(*id),
         }
     }
 }
@@ -56,6 +59,8 @@ enum Screen {
     Adding(Popup),
     Renaming(CountryId, Popup),
     Coloring(ColorPicker),
+    /// Asking whether to really delete this country.
+    Deleting(CountryId),
 }
 
 #[derive(Default)]
@@ -78,8 +83,14 @@ impl CountryMenu {
 
     /// Opens the list of the countries of `day`, with the player's country picked.
     pub fn open(&mut self, day: &DaySave) {
-        let current = day.player_country().and_then(|p| day.countries.iter().position(|c| c.id == p.id)).unwrap_or(0);
-        self.show_list(current);
+        let current = day.player_country().map(|c| c.id);
+        self.open_at(day, current);
+    }
+
+    /// Opens the list of the countries of `day`, with `country` picked, which is in view.
+    pub fn open_at(&mut self, day: &DaySave, country: Option<CountryId>) {
+        let at = country.and_then(|id| day.countries.iter().position(|c| c.id == id)).unwrap_or(0);
+        self.show_list(at);
         self.opened_at = get_time();
     }
 
@@ -94,7 +105,7 @@ impl CountryMenu {
     /// What Esc does: back from a popup to the list, and from the list to the game.
     pub fn escape(&mut self) {
         match self.screen {
-            Screen::Adding(_) | Screen::Renaming(..) | Screen::Coloring(_) => self.show_list(self.highlight),
+            Screen::Adding(_) | Screen::Renaming(..) | Screen::Coloring(_) | Screen::Deleting(_) => self.show_list(self.highlight),
             Screen::List | Screen::Closed => self.screen = Screen::Closed,
         }
     }
@@ -103,7 +114,7 @@ impl CountryMenu {
     pub fn fail(&mut self, message: String) {
         match &mut self.screen {
             Screen::Adding(popup) | Screen::Renaming(_, popup) => popup.fail(message),
-            Screen::Coloring(_) => {
+            Screen::Coloring(_) | Screen::Deleting(_) => {
                 self.show_list(self.highlight);
                 self.error = Some(message);
             }
@@ -116,6 +127,9 @@ impl CountryMenu {
     pub fn done(&mut self, choice: &Choice, day: &DaySave) {
         match choice {
             Choice::Select(_) => self.screen = Screen::Closed,
+            // With none left there is nothing to list, and the game asks for a new country.
+            Choice::Delete(_) if day.countries.is_empty() => self.screen = Screen::Closed,
+            Choice::Delete(_) => self.show_list(self.highlight.min(day.countries.len() - 1)),
             Choice::Add(_) => self.show_list(day.countries.len().saturating_sub(1)),
             Choice::Rename(id, _) | Choice::Recolor(id, _) => self.show_list(day.countries.iter().position(|c| c.id == *id).unwrap_or(0)),
         }
@@ -139,8 +153,71 @@ impl CountryMenu {
                 }
                 None => None,
             },
+            Screen::Deleting(id) => {
+                let id = *id;
+                self.confirm_delete(style, day, id)
+            }
             Screen::List => self.list(style, day),
         }
+    }
+
+    /// Asks whether to really delete the country `id`, and what goes with it.
+    fn confirm_delete(&mut self, style: &Style, day: &DaySave, id: CountryId) -> Option<Choice> {
+        let Some(country) = day.country(id) else {
+            self.show_list(self.highlight);
+            return None;
+        };
+        let mouse = Vec2::from(mouse_position());
+        let clicked = is_mouse_button_pressed(MouseButton::Left) && !std::mem::take(&mut self.fresh);
+
+        let t = (((get_time() - self.opened_at) / FADE_IN).clamp(0.0, 1.0)) as f32;
+        let ease = 1.0 - (1.0 - t) * (1.0 - t);
+        let (screen_w, screen_h) = (screen_width(), screen_height());
+        draw_rectangle(0.0, 0.0, screen_w, screen_h, Color::new(0.02, 0.03, 0.05, 0.6 * ease));
+
+        let height = 84.0 + 44.0 + BUTTON_HEIGHT + PADDING;
+        let card = Rect::new((screen_w - 400.0) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, 400.0, height);
+        style::card(card, 18.0, style::PANEL);
+        let inner_x = card.x + PADDING;
+        let inner_w = card.w - PADDING * 2.0;
+
+        let badge = Rect::new(card.x + PADDING, card.y + PADDING, 40.0, 40.0);
+        style::rounded_rect(badge, 10.0, Color::new(ERROR_SOFT.0, ERROR_SOFT.1, ERROR_SOFT.2, 0.18));
+        popup::draw_icon(Icon::Flag, badge);
+        let text_x = badge.right() + 14.0;
+        let name = fit(style, &country.name, 20, Weight::Semibold, card.right() - PADDING - text_x - 60.0);
+        style.text(&format!("Delete {name}?"), text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
+        // What goes with it.
+        let people = day.people.iter().filter(|p| p.country == id).count();
+        let regions = day.region_owners.iter().filter(|o| o.country == id).count();
+        let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let goes = match (people, regions) {
+            (0, 0) => "Nothing else belongs to it.".to_owned(),
+            (p, 0) => format!("Its {} will be removed with it.", plural(p, "person", "people")),
+            (0, r) => format!("Its {} will be unowned.", plural(r, "region", "regions")),
+            (p, r) => format!("Its {} will be removed, and its {} unowned.", plural(p, "person", "people"), plural(r, "region", "regions")),
+        };
+        style.text(&goes, text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text("This can't be undone.", inner_x, card.y + 84.0 + 14.0, 13, Weight::Regular, style::TEXT);
+
+        // Cancel and Delete, side by side.
+        let top = card.bottom() - PADDING - BUTTON_HEIGHT;
+        let cancel = Rect::new(inner_x, top, (inner_w - 12.0) * 0.5, BUTTON_HEIGHT);
+        let delete = Rect::new(cancel.right() + 12.0, top, cancel.w, BUTTON_HEIGHT);
+        let (over_cancel, over_delete) = (cancel.contains(mouse), delete.contains(mouse));
+        style::rounded_rect(cancel, 8.0, if over_cancel { style::BORDER_STRONG } else { style::HOVER });
+        style.text_centered("Cancel", cancel, 14, Weight::Semibold, style::TEXT);
+        style::rounded_rect(delete, 8.0, if over_delete { style::ERROR } else { Color::new(ERROR_SOFT.0, ERROR_SOFT.1, ERROR_SOFT.2, 0.85) });
+        style.text_centered("Delete", delete, 14, Weight::Semibold, WHITE);
+
+        if clicked && over_delete {
+            return Some(Choice::Delete(id));
+        }
+        // Cancel, or a click on the dimmed window outside the card, goes back to the list.
+        if clicked && (over_cancel || !card.contains(mouse)) {
+            self.show_list(self.highlight);
+        }
+        None
     }
 
     fn list(&mut self, style: &Style, day: &DaySave) -> Option<Choice> {
@@ -193,11 +270,14 @@ impl CountryMenu {
         let mut chosen = None;
         let mut renaming = None;
         let mut coloring = None;
+        let mut deleting = None;
         for row in 0..rows {
             let place = self.scroll + row;
             let country = &day.countries[place];
             let rect = Rect::new(list.x + LIST_PADDING, list.y + LIST_PADDING + row as f32 * ROW_HEIGHT, list.w - LIST_PADDING * 2.0, ROW_HEIGHT);
             let edit = Rect::new(rect.right() - 8.0 - 46.0, rect.center().y - 12.0, 46.0, 24.0);
+            let delete = Rect::new(edit.x - 4.0 - 24.0, edit.y, 24.0, 24.0);
+            let has_cities = day.cities.iter().any(|c| c.country == country.id);
             let over_row = rect.contains(mouse);
             if over_row && mouse_delta_position() != Vec2::ZERO {
                 self.highlight = place;
@@ -220,12 +300,29 @@ impl CountryMenu {
             style::rounded_rect(swatch, 4.0, country.color.color());
             style::rounded_rect_lines(swatch, 4.0, if over_swatch { 2.0 } else { 1.0 }, if over_swatch { WHITE } else { style::BORDER_STRONG });
             let weight = if current == Some(country.id) { Weight::Semibold } else { Weight::Regular };
-            style.text_mid(&country.name, rect.x + 62.0, rect.center().y, 15, weight, style::TEXT);
+            // The name has room up to the buttons, and a country with cities has no Delete.
+            let name_end = if has_cities { edit.x } else { delete.x };
+            let name = fit(style, &country.name, 15, weight, name_end - 8.0 - (rect.x + 62.0));
+            style.text_mid(&name, rect.x + 62.0, rect.center().y, 15, weight, style::TEXT);
 
             let over_edit = edit.contains(mouse);
             style::rounded_rect(edit, 6.0, if over_edit { style::BORDER_STRONG } else { style::HOVER });
             style.text_centered("Edit", edit, 12, Weight::Semibold, if over_edit { style::TEXT } else { style::TEXT_MUTED });
-            if clicked && over_edit {
+            // Delete, a cross, only for a country with no cities.
+            let over_delete = !has_cities && delete.contains(mouse);
+            if !has_cities {
+                if over_delete {
+                    style::rounded_rect(delete, 6.0, Color::new(ERROR_SOFT.0, ERROR_SOFT.1, ERROR_SOFT.2, 0.25));
+                }
+                let cross = if over_delete { style::ERROR } else { style::TEXT_MUTED };
+                let c = delete.center();
+                draw_line(c.x - 4.0, c.y - 4.0, c.x + 4.0, c.y + 4.0, 1.6, cross);
+                draw_line(c.x - 4.0, c.y + 4.0, c.x + 4.0, c.y - 4.0, 1.6, cross);
+            }
+
+            if clicked && over_delete {
+                deleting = Some((country.id, place));
+            } else if clicked && over_edit {
                 renaming = Some((country.id, country.name.clone(), place));
             } else if clicked && over_swatch {
                 coloring = Some((country.id, country.name.clone(), country.color, place));
@@ -258,6 +355,12 @@ impl CountryMenu {
             self.screen = Screen::Adding(Popup::country());
             return None;
         }
+        if let Some((id, place)) = deleting {
+            self.highlight = place;
+            self.fresh = true;
+            self.screen = Screen::Deleting(id);
+            return None;
+        }
         if let Some((id, name, place)) = renaming {
             self.highlight = place;
             self.screen = Screen::Renaming(id, Popup::rename_country(&name));
@@ -284,6 +387,21 @@ impl CountryMenu {
     }
 }
 
+/// A red for the Delete button and its icon, a little softer than the one for errors.
+const ERROR_SOFT: (f32, f32, f32) = (0.80, 0.27, 0.27);
+
+/// `text` cut short, with "..." at the end, so that it is no wider than `width`.
+fn fit(style: &Style, text: &str, size: u16, weight: Weight, width: f32) -> String {
+    if style.measure(text, size, weight).width <= width {
+        return text.to_owned();
+    }
+    let mut shown: String = text.to_owned();
+    while !shown.is_empty() && style.measure(&format!("{shown}..."), size, weight).width > width {
+        shown.pop();
+    }
+    format!("{}...", shown.trim_end())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +426,16 @@ mod tests {
         Choice::Add("Cardell".to_owned()).apply(&mut day).unwrap();
         assert_eq!(day.countries.len(), 3);
         assert_eq!(day.player, Some(brevon), "adding a country doesn't change the one that is played");
+    }
+
+    #[test]
+    fn deleting_a_country_is_a_choice() {
+        let mut day = day();
+        let brevon = day.countries[1].id;
+        Choice::Delete(brevon).apply(&mut day).unwrap();
+        assert_eq!(day.countries.len(), 1);
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        assert!(Choice::Delete(day.countries[0].id).apply(&mut day).unwrap_err().contains("has cities"));
     }
 
     #[test]
