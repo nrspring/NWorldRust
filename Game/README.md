@@ -21,7 +21,23 @@ Everything the game adds to the map, such as roads, cities and units, belongs to
 
 The gear button beside the day opens the options panel. Click it again, or press Esc, to close it. While the mouse is over the button or the panel, it doesn't move the camera.
 
-- **Show regions**: tints the ground by the region it is in and draws the edges between regions. It is greyed out, with a note, for a map that has no regions. The setting lasts until the game closes; it isn't saved.
+- **Show regions**: draws thin lines between the map's regions, and leaves the ground as it is. It is greyed out, with a note, for a map that has no regions. The setting lasts until the game closes; it isn't saved.
+
+## Cities
+
+A city belongs to a country, stands on the map, and has a population from 100 up to 100,000. Once the game has a country and a person but no city, it asks you to place the first one: move the mouse over the map, where a ring and a preview of the starting buildings show where it would go (green if it can, red if not, with the reason in the prompt), and click on dry land that is not up in the mountains. A drag still moves the map, so only a click places it. The city starts with 100 people, belongs to the first country, is reported in the newsreel, and the camera flies to it.
+
+A city is drawn in 3D, like the trees, and its size follows its population: size goes by how many times the population has doubled, so each tenfold, 100 to 1,000 to 10,000, is the same step up. **A city stops growing in size at 50,000 people.** The population can go on up to 100,000, but the city looks the same from 50,000 up. A city grows outward from where it was placed, so the buildings it already has stay where they are. Buildings stay off the water and the mountains.
+
+**A city never grows outside the region it was founded in.** Every building, wall to wall, has to stand in the same region as the city's middle. The regions come from the map, so how big a city can look depends on how big the map's regions are: a city of 50,000 or more is up to about 450 small buildings packed over roughly 130 m, and in a region only 150 m across it fills the region and no more. If a map has no regions, the ground is the only limit. Make the regions bigger in the editor's Regions tool for room to grow.
+
+**The look goes from medieval to a European city of the 1800s as it grows.** A village of 100 is a few timber-framed houses with steep thatched or tiled roofs. A town has a church with a tower and spire among the houses, which keep clear of its walls, and townhouses. A city of tens of thousands has tall brick and stone blocks of four to six storeys with hipped slate roofs and chimneys in the middle, townhouses around them, and timber houses at the edge, with up to three churches. The buildings are small and close together: houses are 3 to 4 m wide and blocks 5 to 6 m, on a grid 5.5 m apart, so a city is packed close however small: even a village of 100 is a tight cluster of houses, not a scatter. Nothing is taller than a church spire. The newest, grandest buildings are in the middle.
+
+This is all in the game (`city*.rs`); the map and the generic map view know nothing about cities. A city is saved in the day's file, and carries forward:
+
+```json
+"cities": [ { "id": 1, "country": "Aldoria", "x": -120.0, "z": 441.4, "population": 100 } ]
+```
 
 ## Calendar and saved game
 

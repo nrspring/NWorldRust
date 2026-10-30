@@ -1,15 +1,21 @@
-//! NWorld, the game. For now it loads the map and lets you fly over it. Roads, cities and units
-//! will be laid over the map from here; none of that belongs to `nworld-map`.
+//! NWorld, the game. It loads the map and lets you fly over it, and puts countries, people and cities
+//! on it. Roads and units will be laid over the map from here too; none of that belongs to
+//! `nworld-map`.
 
 mod autosave;
 mod calendar;
 mod camera;
+mod city;
+mod city_layout;
+mod city_mesh;
+mod city_view;
 mod country;
 mod day;
 mod hud;
 mod newsreel;
 mod options;
 mod person;
+mod placement;
 mod popup;
 mod saves;
 #[cfg(test)]
@@ -22,14 +28,19 @@ use macroquad::prelude::*;
 use nworld_map::storage;
 use nworld_map::world::World;
 use nworld_view::style::{Style, Weight};
-use nworld_view::MapView;
+use nworld_view::{pick_terrain, MapView};
 
 use autosave::Autosave;
 use camera::GameCamera;
+use city_view::CityRenderer;
 use day::DaySave;
 use options::{Options, OptionsUi};
+use placement::ClickTracker;
 use popup::Popup;
 use saves::Saves;
+
+/// How far from a new city the camera flies to look at it, in meters.
+const NEW_CITY_VIEW_DISTANCE: f32 = 190.0;
 
 /// Where the game keeps its files, outside the repository: the maps under `Assets` and the saved
 /// game under `Saves`.
@@ -133,6 +144,10 @@ async fn main() {
     let mut time = 0.0f32;
     // The popup for what the game is asking for, while it is.
     let mut asking: Option<(Asking, Popup)> = None;
+    let mut cities = CityRenderer::new();
+    let mut clicks = ClickTracker::default();
+    // Why the first city couldn't be placed, if the click was fine but saving it wasn't.
+    let mut placing_error: Option<String> = None;
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut autosave = Autosave::new(&day, get_time());
@@ -169,6 +184,31 @@ async fn main() {
         view.set_show_regions(options.show_regions);
         view.draw(&world, &eye, time);
 
+        // Once there is a country and a person, the first city has to be placed.
+        let placing = asking.is_none() && day.cities.is_empty();
+        let mouse = Vec2::from(mouse_position());
+        let over_interface = options_ui.has_mouse(mouse);
+        let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
+        let problem = site.and_then(|at| city::site_problem(&world, at.x, at.y));
+        cities.draw(&world, &day.cities, &eye);
+        if let Some(at) = site {
+            cities.draw_site(&world, at, problem.is_none(), &eye);
+        }
+        if clicks.update(placing && !over_interface) {
+            if let (Some(at), None) = (site, problem) {
+                // Only keep the city if it is saved too.
+                let mut updated = day.clone();
+                match updated.found_city(at.x, at.y).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        placing_error = None;
+                        camera.fly_to(at, NEW_CITY_VIEW_DISTANCE);
+                    }
+                    Err(message) => placing_error = Some(message),
+                }
+            }
+        }
+
         set_default_camera();
         let bar = hud::top_bar(&style, day.date);
         autosave.update(&saves, &day, get_time());
@@ -178,6 +218,9 @@ async fn main() {
         if asking.is_none() {
             hud::newsreel(&style, day.date, &day.newsreel);
             hud::help(&style);
+            if asking.is_none() && day.cities.is_empty() {
+                hud::placing_prompt(&style, problem.or(placing_error.as_deref()));
+            }
             options_ui.show(&style, bar, &mut options, view.has_regions());
         }
 

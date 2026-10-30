@@ -7,7 +7,7 @@ use macroquad::prelude::*;
 use nworld_map::world::World;
 
 use crate::props::{PropKind, PropRenderer};
-use crate::render::{self, TerrainRenderer};
+use crate::render::{self, RegionOverlay, TerrainRenderer};
 use crate::render_data::RESOURCE_TEXTURES;
 use crate::terrain_mesh::TerrainMesh;
 use crate::{copper, forest, iron, oil, stone, sulphur};
@@ -70,8 +70,8 @@ impl MapView {
         self.has_regions
     }
 
-    /// Shows the regions on the ground, each tinted by the kind of ground it is and edged, or hides
-    /// them again. A map with no regions shows nothing either way.
+    /// Shows the regions on the ground as thin lines between them, leaving the ground itself as it
+    /// looks otherwise, or hides them again. A map with no regions shows nothing either way.
     pub fn set_show_regions(&mut self, show: bool) {
         self.show_regions = show;
     }
@@ -107,7 +107,7 @@ impl MapView {
         gl_use_material(&self.backdrop_material);
         draw_mesh(&self.backdrop);
 
-        self.terrain.draw(&mut self.mesh, world, &self.surface, &self.resources, &self.regions, self.show_regions, None, camera, pos, view_distance, time, false);
+        self.terrain.draw(&mut self.mesh, world, &self.surface, &self.resources, &self.regions, if self.show_regions { RegionOverlay::Borders } else { RegionOverlay::Off }, None, camera, pos, view_distance, time, false);
         for kind in &mut self.props {
             kind.draw(world, camera, pos, view_distance, time);
         }

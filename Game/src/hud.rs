@@ -27,7 +27,8 @@ pub fn top_bar(style: &Style, date: Date) -> Rect {
 
     let gap = 14.0;
     let day_width = style.measure(&day, 17, Weight::Semibold).width;
-    let fps_width = style.measure(&fps, 13, Weight::Regular).width;
+    // Room for four digits however many there are, so the bar and what sits beside it never move.
+    let fps_width = style.measure("8888 fps", 13, Weight::Regular).width;
     let bar = Rect::new(MARGIN, MARGIN, day_width + fps_width + gap + 32.0, 40.0);
     style::card(bar, 12.0, style::GLASS);
     let y = bar.center().y;
@@ -46,6 +47,25 @@ pub fn save_failed(style: &Style, message: &str) {
     style::rounded_rect_lines(panel, 12.0, 1.5, style::ERROR);
     style.text_mid(title, panel.x + 16.0, panel.y + 18.0, 14, Weight::Semibold, style::ERROR);
     style.text_mid(message, panel.x + 16.0, panel.y + 38.0, 12, Weight::Regular, style::TEXT_MUTED);
+}
+
+/// The prompt for placing the first city, above the key help. `problem` says why the city can't go
+/// where the mouse is, if it can't.
+pub fn placing_prompt(style: &Style, problem: Option<&str>) {
+    let panel = Rect::new((screen_width() - 460.0) * 0.5, screen_height() - MARGIN - 36.0 - 8.0 - 72.0, 460.0, 72.0);
+    style::card(panel, 12.0, style::GLASS);
+    style.text_mid("Found your first city", panel.x + 20.0, panel.y + 24.0, 16, Weight::Semibold, style::TEXT);
+    match problem {
+        Some(problem) => style.text_mid(problem, panel.x + 20.0, panel.y + 48.0, 14, Weight::Regular, style::ERROR),
+        None => style.text_mid(
+            &format!("Click on dry land to place it. It starts with {} people.", crate::city::INITIAL_POPULATION),
+            panel.x + 20.0,
+            panel.y + 48.0,
+            14,
+            Weight::Regular,
+            style::TEXT_MUTED,
+        ),
+    }
 }
 
 /// The keys, along the bottom.

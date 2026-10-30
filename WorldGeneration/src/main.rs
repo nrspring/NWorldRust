@@ -512,7 +512,7 @@ fn draw_world(
     gl_use_material(backdrop_material);
     draw_mesh(&map.backdrop);
 
-    terrain.draw(&mut map.mesh, &map.world, &map.surface, &map.resources, &map.region_texture, regions, highlight, &camera, pos, view_distance, time, topo);
+    terrain.draw(&mut map.mesh, &map.world, &map.surface, &map.resources, &map.region_texture, if regions { render::RegionOverlay::Tinted } else { render::RegionOverlay::Off }, highlight, &camera, pos, view_distance, time, topo);
     if !topo {
         for kind in props.iter_mut() {
             kind.draw(&map.world, &camera, pos, view_distance, time);

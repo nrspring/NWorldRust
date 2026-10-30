@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub enum News {
     CountryFounded { country: String },
     PersonJoined { person: String, title: String, country: String },
+    CityFounded { country: String, population: u32 },
 }
 
 impl News {
@@ -17,6 +18,7 @@ impl News {
         match self {
             News::CountryFounded { country } => format!("The nation of {country} is founded"),
             News::PersonJoined { person, title, country } => format!("{title} {person} joins {country}"),
+            News::CityFounded { country, population } => format!("{country} founds a city of {population} people"),
         }
     }
 }
@@ -35,6 +37,12 @@ mod tests {
     fn a_person_joining_makes_a_headline() {
         let news = News::PersonJoined { person: "Mara Voss".to_owned(), title: "President".to_owned(), country: "Aldoria".to_owned() };
         assert_eq!(news.headline(), "President Mara Voss joins Aldoria");
+    }
+
+    #[test]
+    fn a_founded_city_makes_a_headline() {
+        let news = News::CityFounded { country: "Aldoria".to_owned(), population: 100 };
+        assert_eq!(news.headline(), "Aldoria founds a city of 100 people");
     }
 
     #[test]

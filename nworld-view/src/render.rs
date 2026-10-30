@@ -70,7 +70,8 @@ struct TerrainUniforms {
     pixel_cells: f32,
     /// 1 to draw a topographic map instead of the lit terrain, 0 for the regular view.
     topo: f32,
-    /// 1 to draw the regions over the terrain, 0 for the regular view.
+    /// 1 to draw the regions tinted over the terrain, 2 to draw only the lines between them, 0 for
+    /// the regular view.
     region_overlay: f32,
     /// The number of the region to light up, as its low and high bytes from 0 to 1; negative for
     /// none.
@@ -103,6 +104,18 @@ fn terrain_uniform_layout() -> UniformBlockLayout {
 /// Draws the world's terrain. The terrain lives on the GPU in blocks the world uploads only when
 /// they change, so a frame costs one draw call per visible block instead of copying every
 /// vertex in view, as drawing it through macroquad's batches would.
+/// How the regions are drawn over the terrain.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RegionOverlay {
+    /// Not at all.
+    Off,
+    /// Each region tinted by its kind of ground, a little differently from its neighbours, with lines
+    /// between them. For seeing the regions clearly, as the editor does.
+    Tinted,
+    /// Only the thin lines between regions, so the ground looks as it always does.
+    Borders,
+}
+
 pub struct TerrainRenderer {
     pipeline: Pipeline,
     noise: Texture2D,
@@ -141,7 +154,7 @@ impl TerrainRenderer {
     /// Draws the terrain of `world`, colored from its `surface` texture, as seen by `camera`
     /// from `cam`, out to `view_distance`. Whatever macroquad has queued is drawn first, so the
     /// terrain lands on top of it.
-    pub fn draw(&self, mesh: &mut TerrainMesh, world: &World, surface: &Texture2D, resources: &[Texture2D; RESOURCE_TEXTURES], regions: &Texture2D, region_overlay: bool, region_highlight: Option<u16>, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
+    pub fn draw(&self, mesh: &mut TerrainMesh, world: &World, surface: &Texture2D, resources: &[Texture2D; RESOURCE_TEXTURES], regions: &Texture2D, region_overlay: RegionOverlay, region_highlight: Option<u16>, camera: &Camera3D, cam: Vec3, view_distance: f32, time: f32, topo: bool) {
         let mut gl = unsafe { get_internal_gl() };
         gl.flush();
         let ctx: &mut dyn RenderingBackend = gl.quad_context;
@@ -167,7 +180,11 @@ impl TerrainRenderer {
             surface_offset: (world.half_extents() / CELL_SIZE + 0.5) / texels,
             pixel_cells: pixel_angle / CELL_SIZE,
             topo: if topo { 1.0 } else { 0.0 },
-            region_overlay: if region_overlay { 1.0 } else { 0.0 },
+            region_overlay: match region_overlay {
+                RegionOverlay::Off => 0.0,
+                RegionOverlay::Tinted => 1.0,
+                RegionOverlay::Borders => 2.0,
+            },
             region_highlight: region_highlight.map_or(vec2(-1.0, -1.0), |id| vec2((id & 0xFF) as f32, (id >> 8) as f32) / 255.0),
         };
 
@@ -915,9 +932,10 @@ void main() {
         col = mix(col, reflection, fresnel * wet) + sun_color * glitter * (0.3 + fresnel) * wet;
     }
 
-    // The regions. With `region_overlay` each is tinted by its kind of ground, a little differently
+    // The regions. With `region_overlay` 1 each is tinted by its kind of ground, a little differently
     // from its neighbours, and outlined where one meets another, in a faint line about as wide on screen
-    // at any distance. The region picked by `region_highlight` is lit up and outlined in gold.
+    // at any distance. With 2 only the lines are drawn. The region picked by `region_highlight` is
+    // lit up and outlined in gold.
     bool show_regions = region_overlay > 0.5;
     bool show_pick = region_highlight.x >= 0.0;
     if (show_regions || show_pick) {
@@ -931,7 +949,9 @@ void main() {
                 || texture2D(regions, uv - step).rg != here.rg
                 || texture2D(regions, uv + step_z).rg != here.rg
                 || texture2D(regions, uv - step_z).rg != here.rg;
-            if (show_regions) {
+            if (region_overlay > 1.5) {
+                col = edge ? mix(col, vec3(1.0), 0.5) : col;
+            } else if (show_regions) {
                 float kind = floor(here.g * 255.0 / 64.0 + 0.5);
                 vec3 tint = kind < 0.5 ? vec3(0.10, 0.22, 0.85)
                     : (kind < 1.5 ? vec3(0.10, 0.85, 0.90)

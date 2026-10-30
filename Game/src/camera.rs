@@ -23,6 +23,8 @@ pub struct GameCamera {
     pitch: f32,
     max_distance: f32,
     last_mouse: Vec2,
+    /// A place and a distance the camera is flying to, until the player steers it somewhere else.
+    goal: Option<(Vec2, f32)>,
 }
 
 impl GameCamera {
@@ -37,9 +39,15 @@ impl GameCamera {
             pitch: 1.15,
             max_distance: size.max_element() * 1.2,
             last_mouse: Vec2::ZERO,
+            goal: None,
         }
     }
 
+    /// Flies the camera, smoothly, to look at the ground at `at` from `distance` meters away. Any
+    /// steering by the player stops it.
+    pub fn fly_to(&mut self, at: Vec2, distance: f32) {
+        self.goal = Some((at, distance.clamp(MIN_DISTANCE, self.max_distance)));
+    }
 
     /// Reacts to the keyboard and mouse, `dt` seconds after the last frame. The mouse is ignored
     /// while it is not `mouse_free`, as when it is over the interface.
@@ -70,6 +78,19 @@ impl GameCamera {
         if mouse_free && is_mouse_button_down(MouseButton::Left) {
             // Grab the ground: it follows the mouse.
             self.pan(vec2(-drag.x, drag.y) * self.distance * 0.0016);
+        }
+
+        let steering = pan != Vec2::ZERO || turn != 0.0 || wheel != 0.0 || (mouse_free && (is_mouse_button_down(MouseButton::Left) || is_mouse_button_down(MouseButton::Right)));
+        if steering {
+            self.goal = None;
+        }
+        if let Some((at, distance)) = self.goal {
+            let ease = 1.0 - (-3.0 * dt).exp();
+            self.focus += (at - self.focus) * ease;
+            self.distance += (distance - self.distance) * ease;
+            if at.distance(self.focus) < 1.0 && (distance - self.distance).abs() < 1.0 {
+                self.goal = None;
+            }
         }
 
         self.distance = self.distance.clamp(MIN_DISTANCE, self.max_distance);
