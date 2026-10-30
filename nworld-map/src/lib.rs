@@ -11,6 +11,8 @@
 //! * [`continents`], [`islands`], [`hills`], [`rivers`], [`shallows`], [`passes`], [`regions`] and
 //!   [`density`]: what those steps are made of, which works on the plain arrays of a world, and
 //!   the brushes an editor paints with. A program that only reads maps never needs them.
+//! * [`water_bodies`]: the rivers and lakes (bodies of inland water), each told apart from the others, for a game
+//!   that names them.
 //! * [`region_map`]: where the regions are (a center for each) and how they meet (the middle of each border),
 //!   for a game that lays paths or borders over them.
 //! * [`noise`] and [`gen_common`]: what the generators share.
@@ -31,4 +33,5 @@ pub mod regions;
 pub mod rivers;
 pub mod shallows;
 pub mod storage;
+pub mod water_bodies;
 pub mod world;

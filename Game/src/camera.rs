@@ -60,6 +60,11 @@ impl GameCamera {
         self.last_mouse = Vec2::from(mouse_position());
     }
 
+    /// How far the camera is from the ground it looks at, in meters.
+    pub fn distance(&self) -> f32 {
+        self.distance
+    }
+
     /// The compass direction being looked in, in radians. Zero looks towards +z, which is south on the map, and
     /// [`NORTH`] looks north.
     pub fn yaw(&self) -> f32 {

@@ -19,6 +19,8 @@ use crate::newsreel::{Event, News};
 use crate::path::PathSegment;
 use crate::person::{self, Person};
 use crate::region_name::RegionName;
+use crate::lake_name::LakeName;
+use crate::river_name::RiverName;
 use crate::rgb::Rgb;
 use crate::saves::DAY_VERSION;
 use crate::title_type::{self, TitleType};
@@ -57,6 +59,13 @@ pub struct DaySave {
     /// day to day.
     #[serde(default)]
     pub region_names: Vec<RegionName>,
+    /// The names the rivers of the map have been given. A river that isn't here has no name. Carried forward from day
+    /// to day.
+    #[serde(default)]
+    pub river_names: Vec<RiverName>,
+    /// The names the lakes of the map have been given, in the same way.
+    #[serde(default)]
+    pub lake_names: Vec<LakeName>,
     /// The segments of road that have been built, which belong to no country either. A road is a path of stone, and
     /// costs more. Carried forward from day to day.
     #[serde(default)]
@@ -81,7 +90,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.

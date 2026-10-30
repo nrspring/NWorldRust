@@ -36,6 +36,7 @@ pub enum Icon {
     Person,
     City,
     Region,
+    River,
 }
 
 struct Field {
@@ -155,6 +156,21 @@ impl Popup {
             Icon::Region,
             "Save name",
             vec![Field::new("REGION NAME", "Leave blank for no name", region_name::MAX_NAME_CHARS)],
+            check_region,
+        );
+        popup.fields[0].value = current.to_owned();
+        popup
+    }
+
+    /// Asks for the name of a river, or of a lake if `lake`, which starts as `current`, and can be left blank, for no
+    /// name.
+    pub fn river(current: &str, lake: bool) -> Self {
+        let mut popup = Self::new(
+            if lake { "Name this lake" } else { "Name this river" },
+            if lake { "A lake. Leave the name blank for none." } else { "A river. Leave the name blank for none." }.to_owned(),
+            Icon::River,
+            "Save name",
+            vec![Field::new(if lake { "LAKE NAME" } else { "RIVER NAME" }, "Leave blank for no name", region_name::MAX_NAME_CHARS)],
             check_region,
         );
         popup.fields[0].value = current.to_owned();
@@ -501,6 +517,16 @@ pub fn draw_icon(icon: Icon, badge: Rect) {
             // A little town: three houses of different heights on a line.
             for (dx, w, h) in [(-11.0, 9.0, 12.0), (-1.5, 10.0, 19.0), (9.0, 8.0, 9.0)] {
                 style::rounded_rect(Rect::new(c.x + dx, c.y + 13.0 - h, w, h), 1.5, style::ACCENT);
+            }
+        }
+        Icon::River => {
+            // A winding stream: a wavy line.
+            let mut last = vec2(c.x - 13.0, c.y - 8.0);
+            for k in 1..=12 {
+                let t = k as f32 / 12.0;
+                let next = vec2(c.x - 13.0 + 26.0 * t, c.y - 8.0 + 16.0 * t + 4.5 * (t * std::f32::consts::TAU * 1.5).sin());
+                draw_line(last.x, last.y, next.x, next.y, 3.0, style::ACCENT);
+                last = next;
             }
         }
         Icon::Region => {

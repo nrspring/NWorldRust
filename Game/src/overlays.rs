@@ -77,7 +77,7 @@ impl OverlaysUi {
             self.panel = None;
             return;
         }
-        let rows = 2;
+        let rows = 3;
         let height = HEADER_HEIGHT + ROW_HEIGHT * rows as f32 + GAP;
         let panel = Rect::new(button.right() - PANEL_WIDTH, footer.y - GAP - height, PANEL_WIDTH, height);
         self.panel = Some(panel);
@@ -91,5 +91,7 @@ impl OverlaysUi {
         let names = Rect::new(row.x, row.y + ROW_HEIGHT, row.w, ROW_HEIGHT);
         let names_note = if has_regions { Some("Click a region to name it.") } else { note };
         options::toggle(style, names, "Region names", names_note, &mut options.show_region_names, has_regions);
+        let places = Rect::new(row.x, row.y + ROW_HEIGHT * 2.0, row.w, ROW_HEIGHT);
+        options::toggle(style, places, "Named places", Some("Click a river or lake to name it."), &mut options.show_named_places, true);
     }
 }

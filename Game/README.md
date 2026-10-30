@@ -115,6 +115,16 @@ Every region of the map, land or sea, can have a name. **Regions have no name to
 - **Names.** Up to 32 characters: letters, numbers, spaces, hyphens, apostrophes and full stops. Two regions may have the same name. Names are saved the moment you save them.
 - **Saved.** The day's file has `region_names`: the region's number and its name, only for regions that have one. Names carry forward from day to day, and days saved before this load with none.
 
+## River and lake names
+
+Rivers and lakes (the **named places**) can be named in the same way as regions, with one overlay for both. **They have no name to begin with**, and one with no name has no label.
+
+- **What a lake and a river are.** The map doesn't record which waters were dug as rivers or lakes, so they are worked out from the water when the game starts. Inland water (above sea level) that is **at least 5 samples (20 m) from any shore** is the heart of a **lake**, and the water out to 8 samples (32 m) from the heart goes with it. The rest of the inland water is **river**, each patch whose samples touch (even across a corner) being one river, so a river with branches is one river, and a river that runs into a lake is a river on each side of it. A river wider than about 40 m is counted as a lake where it is that wide, and a pond smaller than that is a river; that is the price of working it out from the water. Each is numbered by the first sample of its water, which stays the same while the map does.
+- **Showing them.** Turn on **Named places** in the [overlays menu](#overlays-menu). Each river or lake that has a name is then labeled on its water, near its middle, in pale blue (rivers) or pale green-blue (lakes) text with a dark edge. It is off when the game starts, and separate from **Region names**.
+- **Naming one.** With the overlay on, **click a river or lake** (clicking just beside a thin river counts, more so when the camera is far away; a city or a tool wins) and a popup asks for its name: type it and press Enter (or click **Save name**). It starts with the current name, so it works for renaming too. **Leave it blank to take the name away.** Esc closes it without changing anything. A note by the mouse says "Unnamed river" (or "lake") or its name, and that clicking names it. If **Region names** is on too, a click on water is for the river or lake and a click anywhere else is for the region.
+- **Names.** The same as region names: up to 32 characters, and two may share one. Saved the moment you save them.
+- **Saved.** The day's file has `river_names` and `lake_names`: the number and the name, only for those that have one. Names carry forward from day to day, and days saved before this load with none.
+
 ## Region ownership
 
 Every region of the map can be owned by a country. They all start unowned. The day's file lists the owned ones (`region_owners`: the region's number and the owner's country id), which carries forward with the countries and cities.
@@ -131,6 +141,7 @@ The **Overlays** button in the footer, just left of the gear, opens a panel of l
 
 - **Country areas**: the regions that countries own, in their colors (see [Region ownership](#region-ownership)). **On** when the game starts; greyed out, with a note, for a map that has no regions. Like the options, it isn't saved.
 - **Region names**: the names the regions have been given, written on the map, and a way to change them (see [Region names](#region-names)). **Off** when the game starts.
+- **Named places**: the names the rivers and lakes have been given, written on the water, and a way to change them (see [River and lake names](#river-and-lake-names)). **Off** when the game starts.
 
 ## Options
 

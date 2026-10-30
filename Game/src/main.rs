@@ -36,6 +36,8 @@ mod placement;
 mod popup;
 mod region_labels;
 mod region_name;
+mod lake_name;
+mod river_name;
 mod rules;
 mod rgb;
 mod saves;
@@ -50,7 +52,8 @@ use macroquad::prelude::*;
 use nworld_map::region_map::RegionMap;
 use nworld_map::regions::RegionId;
 use nworld_map::storage;
-use nworld_map::world::World;
+use nworld_map::water_bodies::WaterBodies;
+use nworld_map::world::{World, CELL_SIZE};
 use nworld_view::style::{Style, Weight};
 use nworld_view::{mouse_ray, pick_terrain, MapView};
 
@@ -179,6 +182,7 @@ async fn main() {
 
     // Where the regions are and how they meet, for the paths.
     let region_map = RegionMap::build(&world);
+    let water_bodies = WaterBodies::build(&world);
     let mut camera = GameCamera::new(&world);
     let mut view = MapView::new(&world, camera.camera(&world).position);
     let mut time = 0.0f32;
@@ -190,6 +194,8 @@ async fn main() {
     let mut naming_city: Option<(Vec2, Popup)> = None;
     // The popup for the name of the region that was clicked while the region names are showing, and its number.
     let mut naming_region: Option<(u16, Popup)> = None;
+    // The same for a river or a lake: its number, whether it is a lake, and the popup.
+    let mut naming_water: Option<(u32, bool, Popup)> = None;
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
@@ -234,6 +240,8 @@ async fn main() {
                 naming_city = None;
             } else if naming_region.is_some() {
                 naming_region = None;
+            } else if naming_water.is_some() {
+                naming_water = None;
             } else if path_tool.is_active() {
                 path_tool.escape();
             } else if road_tool.is_active() {
@@ -255,7 +263,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
@@ -311,6 +319,15 @@ async fn main() {
         // The city under the mouse, if there is one, which the tooltip tells about.
         let hovered = if modal || naming_city.is_some() || over_interface || path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
 
+        // The river or lake under the mouse while the named places are showing, with a little give so that a thin river can be
+        // hit when the camera is far away.
+        let water_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+            let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 1.5, 40.0);
+            pick_terrain(&eye, &world, mouse).and_then(|at| water_bodies.near(at.x, at.y, reach))
+        } else {
+            None
+        };
+
         // A click on the map (a drag is for the camera) places the first city, and after that opens the
         // popup of the city clicked.
         let clicked = clicks.update(!modal && !over_interface);
@@ -356,6 +373,13 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 city_popup.open(id);
+            } else if let Some(id) = water_hover {
+                // With the names of rivers or lakes showing, a click on one is for naming it.
+                options_ui.close();
+                overlays_ui.close();
+                let lake = water_bodies.body(id).is_some_and(|b| b.lake);
+                let current = if lake { day.lake_name(id.0) } else { day.river_name(id.0) };
+                naming_water = Some((id.0, lake, Popup::river(current.unwrap_or(""), lake)));
             } else if options.show_region_names {
                 // With the region names showing, a click on a region is for naming it.
                 if let Some(region) = pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y)) {
@@ -366,17 +390,22 @@ async fn main() {
             }
         }
 
-        // The region under the mouse, for a note about it while the region names are showing.
-        let region_hover = if options.show_region_names && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+        // The region under the mouse, for a note about it while the region names are showing, unless it is a river or
+        // lake that is under the mouse and the named places are showing.
+        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
             pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y))
         } else {
             None
         };
 
         set_default_camera();
-        // The names of the regions, over the map and under everything else.
+        // The names of the regions and the rivers, over the map and under everything else.
         if options.show_region_names {
             region_labels::draw(&style, &day, &region_map, &world, &eye);
+        }
+        if options.show_named_places {
+            region_labels::draw_rivers(&style, &day, &water_bodies, &world, &eye);
+            region_labels::draw_lakes(&style, &day, &water_bodies, &world, &eye);
         }
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
         let header = hud::header(&style, &day, !modal, camera.yaw());
@@ -442,6 +471,12 @@ async fn main() {
             }
             if let Some(city) = hovered.and_then(|id| day.city(id)) {
                 hud::city_tooltip(&style, &day, city);
+            } else if let Some(id) = water_hover {
+                if water_bodies.body(id).is_some_and(|b| b.lake) {
+                    hud::river_tooltip(&style, day.lake_name(id.0), "lake");
+                } else {
+                    hud::river_tooltip(&style, day.river_name(id.0), "river");
+                }
             } else if let Some(region) = region_hover {
                 hud::region_tooltip(&style, day.region_name(region.raw()), region_name::kind_text(region));
             }
@@ -563,6 +598,25 @@ async fn main() {
         }
         if named {
             naming_region = None;
+        }
+
+        let mut named = false;
+        if let Some((water, lake, popup)) = naming_water.as_mut() {
+            if let Some(typed) = popup.show(&style) {
+                // Only keep the name if it is saved too.
+                let mut updated = day.clone();
+                let set = if *lake { updated.set_lake_name(*water, &typed[0]) } else { updated.set_river_name(*water, &typed[0]) };
+                match set.and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        named = true;
+                    }
+                    Err(message) => popup.fail(message),
+                }
+            }
+        }
+        if named {
+            naming_water = None;
         }
         next_frame().await;
     }
