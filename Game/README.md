@@ -17,15 +17,29 @@ cargo run --release -p nworld-game
 
 Everything the game adds to the map, such as roads, cities and units, belongs to the game. `nworld-map` knows nothing about them. The map only answers questions about the ground.
 
+## Header and footer
+
+A **header** along the top of the window shows the player's country, once there is one, and the current day. Click the country to open the [countries menu](#countries-menu). A **footer** along the bottom holds the frame rate at the left, the keys in the middle (left out when the window is too narrow for them) and the options button at the right. While the mouse is over either, it doesn't move the camera, and a click there doesn't place a city. The newsreel and the save-failed notice sit below the header.
+
+## Countries menu
+
+Clicking the country in the header opens a popup listing every country, with a filled mark beside the one you play.
+
+- **Choose** a country by clicking its row (or the arrow keys and Enter). It becomes the player's: new people and cities belong to it, and the header shows it.
+- **Edit** (the button on a row) asks for a new name. Everything that belongs to the country, and the newsreel, follows the rename, because they hold its id. Two countries can't share a name (capitals don't count).
+- **Add a new country** asks for a name and adds it to the list, and to the newsreel. It doesn't become the player's until it is chosen.
+
+Esc backs out of a rename or add to the list, and then closes the menu; so does a click outside it. Each change is saved as it is made. The country being played is kept in the day's file (`player`) and carries forward; a file without one plays the first country.
+
 ## Options
 
-The gear button beside the day opens the options panel. Click it again, or press Esc, to close it. While the mouse is over the button or the panel, it doesn't move the camera.
+The gear button at the right of the footer opens the options panel above it. Click it again, or press Esc, to close it. While the mouse is over the panel, it doesn't move the camera.
 
 - **Show regions**: draws thin lines between the map's regions, and leaves the ground as it is. It is **on** when the game starts. It is greyed out, with a note, for a map that has no regions. Turning it off lasts until the game closes; it isn't saved, so it is on again next time.
 
 ## Cities
 
-A city has a name, belongs to a country, stands on the map, and has a population from 100 up to 100,000. Once the game has a country and a person but no city, it asks you to place the first one: move the mouse over the map, where a ring and a preview of the starting buildings show where it would go (green if it can, red if not, with the reason in the prompt), and click on dry land that is not up in the mountains. A drag still moves the map, so only a click places it. A popup then asks for the city's name (Esc gives up and goes back to placing it). The city starts with 100 people, belongs to the first country, is reported in the newsreel, and the camera flies to it. Two cities can't have the same name.
+A city has a name, belongs to a country, stands on the map, and has a population from 100 up to 100,000. Once the game has a country and a person but no city, it asks you to place the first one: move the mouse over the map, where a ring and a preview of the starting buildings show where it would go (green if it can, red if not, with the reason in the prompt), and click on dry land that is not up in the mountains. A drag still moves the map, so only a click places it. A popup then asks for the city's name (Esc gives up and goes back to placing it). The city starts with 100 people, belongs to the player's country, is reported in the newsreel, and the camera flies to it. Two cities can't have the same name.
 
 **Hover over a city** to see a small panel with its name, its country and its population (with commas, like 12,345). A city counts as under the mouse when the mouse is over its buildings or just beside them, with a little extra room so a far-off city is not hard to point at.
 
@@ -70,13 +84,13 @@ A day's file also holds the countries, the people and that day's newsreel:
 ]
 ```
 
-- **Countries and people** carry forward: the next day's file starts with the same ones. The first country is the player's. Each person and each city belongs to a country by its id.
+- **Countries and people** carry forward: the next day's file starts with the same ones. The country being played (the first one founded, until another is chosen in the countries menu) is carried forward too. Each person and each city belongs to a country by its id.
 - **Ids:** every country, person and city has a GUID, and things refer to one another by it, never by name. A person's country is the country's GUID, and every news item stores the GUID of its **subject**, the primary thing it is about (the country founded, the person who joined, the city), in a `subject` field. The subject is only stored, for statistics: the newsreel never shows it, and its headlines look the names up when they are shown, so a name can change without breaking anything. Each kind of id is its own type in the code, so a country's id can't be used for a city. Ids are random GUIDs (version 4 UUIDs), made when the thing is founded.
 - **The newsreel** belongs to its day alone: the next day starts with an empty one. Each item has a `type`, so statistics can count them by kind. Things like a country being founded are added to it, and it shows in the panel at the top right.
 
 If the saved game has no country, a popup asks for the name of a new one when the game starts. Type the name and press Enter (or click **Found country**). The country is saved, and the day's newsreel reports it.
 
-If there is a country but no people, a second popup asks for the name, the title and the **title type** of a person, and the person is added to the first country. Tab (or the arrow keys, or a click) moves between the fields, and Enter moves on to the next one.
+If there is a country but no people, a second popup asks for the name, the title and the **title type** of a person, and the person is added to the player's country. Tab (or the arrow keys, or a click) moves between the fields, and Enter moves on to the next one.
 
 **Title types.** A person's title is what they are called ("President", "Sea Mother"); the title type is what kind of title it is, such as Monarch, Nobility or Clergy. There are none to begin with. The title type field is a drop-down: **type a kind to make it** (a "New" tag shows that it isn't known yet), and it is added when the person is. After that it is in the list, so later people can pick it: click the field, or press Down, to see the list, and type to narrow it. Pick one with the mouse, or with Down and Enter. Esc closes an open list.
 
@@ -84,4 +98,4 @@ Title types are saved in each day's file (`title_types`) and carry forward, in t
 
 ## Autosave
 
-The game saves itself. Every 30 seconds, if anything in the current day has changed since it was last saved, the day's file is written, and it is written once more when the game closes (Esc or the window's close button). A day that hasn't changed is not rewritten. Founding a country is saved at once. If a save fails, a red notice under the top bar says why, and the game tries again at the next interval.
+The game saves itself. Every 30 seconds, if anything in the current day has changed since it was last saved, the day's file is written, and it is written once more when the game closes (Esc or the window's close button). A day that hasn't changed is not rewritten. Founding a country is saved at once. If a save fails, a red notice at the top of the window says why, and the game tries again at the next interval.

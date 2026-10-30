@@ -31,7 +31,7 @@ const MAX_ROWS: usize = 7;
 type Check = fn(&[String]) -> Result<Vec<String>, String>;
 
 #[derive(Clone, Copy)]
-enum Icon {
+pub enum Icon {
     Flag,
     Person,
     City,
@@ -125,6 +125,20 @@ impl Popup {
             vec![Field::new("COUNTRY NAME", "e.g. Aldoria", country::MAX_NAME_CHARS)],
             check_country,
         )
+    }
+
+    /// Asks for a new name for the country now called `current`, which is what the name starts as.
+    pub fn rename_country(current: &str) -> Self {
+        let mut popup = Self::new(
+            "Edit country",
+            format!("Change the name of {current}."),
+            Icon::Flag,
+            "Save name",
+            vec![Field::new("COUNTRY NAME", "e.g. Aldoria", country::MAX_NAME_CHARS)],
+            check_country,
+        );
+        popup.fields[0].value = current.to_owned();
+        popup
     }
 
     /// Asks for the name of the city being founded.
@@ -455,7 +469,7 @@ fn draw_field(style: &Style, rect: Rect, field: &Field, focused: bool, open: boo
 }
 
 /// A small picture inside `badge`.
-fn draw_icon(icon: Icon, badge: Rect) {
+pub fn draw_icon(icon: Icon, badge: Rect) {
     let c = badge.center();
     match icon {
         Icon::Flag => {

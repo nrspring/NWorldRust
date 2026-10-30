@@ -11,6 +11,7 @@ mod city_mesh;
 mod city_pick;
 mod city_view;
 mod country;
+mod country_menu;
 mod day;
 mod hud;
 mod ids;
@@ -37,6 +38,7 @@ use autosave::Autosave;
 use camera::GameCamera;
 use city_view::CityRenderer;
 use day::DaySave;
+use country_menu::CountryMenu;
 use options::{Options, OptionsUi};
 use placement::ClickTracker;
 use popup::Popup;
@@ -116,8 +118,8 @@ impl Asking {
     fn popup(&self, day: &DaySave) -> Popup {
         match self {
             Self::Country => Popup::country(),
-            // The first country is the player's, and the person belongs to it.
-            Self::Person => Popup::person(&day.countries[0].name, day.title_types.iter().map(|t| t.name.clone()).collect()),
+            // The person belongs to the player's country.
+            Self::Person => Popup::person(day.player_country().map_or("your country", |c| c.name.as_str()), day.title_types.iter().map(|t| t.name.clone()).collect()),
         }
     }
 
@@ -153,6 +155,7 @@ async fn main() {
     let mut naming_city: Option<(Vec2, Popup)> = None;
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
+    let mut country_menu = CountryMenu::default();
     let mut autosave = Autosave::new(&day, get_time());
     // Closing the window is a request, so the game can save before it goes.
     prevent_quit();
@@ -162,8 +165,11 @@ async fn main() {
             break;
         }
         if is_key_pressed(KeyCode::Escape) {
-            // Esc first closes the options, or gives up on naming a city, and only then quits.
-            if options_ui.is_open() {
+            // Esc first backs out of the countries menu, or closes the options, or gives up on naming a
+            // city, and only then quits.
+            if country_menu.is_open() {
+                country_menu.escape();
+            } else if options_ui.is_open() {
                 options_ui.close();
             } else if asking.as_mut().is_some_and(|(_, popup)| popup.close_dropdown()) {
                 // A drop-down list was open, and is closed.
@@ -184,9 +190,15 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some();
-        if !modal {
-            camera.update(&world, dt, !options_ui.has_mouse(Vec2::from(mouse_position())));
+        let modal = asking.is_some() || naming_city.is_some() || country_menu.is_open();
+        // The mouse is over the interface, and so not for the map, when it is on the header or the
+        // options (which has the footer).
+        let mouse = Vec2::from(mouse_position());
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse);
+        if modal {
+            camera.skip_frame();
+        } else {
+            camera.update(&world, dt, !over_interface);
         }
         let eye = camera.camera(&world);
         view.set_show_regions(options.show_regions);
@@ -194,8 +206,6 @@ async fn main() {
 
         // Once there is a country and a person, the first city has to be placed.
         let placing = !modal && day.cities.is_empty();
-        let mouse = Vec2::from(mouse_position());
-        let over_interface = options_ui.has_mouse(mouse);
         let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
         let problem = site.and_then(|at| city::site_problem(&world, at.x, at.y));
         cities.draw(&world, &day.cities, &eye);
@@ -213,21 +223,26 @@ async fn main() {
         let hovered = if modal || naming_city.is_some() || over_interface { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
 
         set_default_camera();
-        let bar = hud::top_bar(&style, day.date);
+        // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
+        let country_button = hud::header(&style, &day, !modal);
+        if !modal && is_mouse_button_pressed(MouseButton::Left) && country_button.is_some_and(|b| b.contains(mouse)) {
+            options_ui.close();
+            country_menu.open(&day);
+        }
+        let footer = hud::footer(&style, !modal);
         autosave.update(&saves, &day, get_time());
         if let Some(message) = autosave.error() {
             hud::save_failed(&style, message);
         }
         if !modal {
             hud::newsreel(&style, &day);
-            hud::help(&style);
             if placing {
                 hud::placing_prompt(&style, problem);
             }
             if let Some(city) = hovered.and_then(|id| day.city(id)) {
                 hud::city_tooltip(&style, &day, city);
             }
-            options_ui.show(&style, bar, &mut options, view.has_regions());
+            options_ui.show(&style, footer, &mut options, view.has_regions());
         }
 
         let mut answered = false;
@@ -246,6 +261,18 @@ async fn main() {
         }
         if answered {
             asking = None;
+        }
+
+        if let Some(choice) = country_menu.show(&style, &day) {
+            // Only keep the change if it is saved too.
+            let mut updated = day.clone();
+            match choice.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
+                Ok(()) => {
+                    day = updated;
+                    country_menu.done(&choice, &day);
+                }
+                Err(message) => country_menu.fail(message),
+            }
         }
 
         let mut founded = false;

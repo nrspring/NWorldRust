@@ -28,9 +28,13 @@ pub struct DaySave {
     /// kind that isn't here yet. Carried forward from day to day.
     #[serde(default)]
     pub title_types: Vec<TitleType>,
-    /// Carried forward from day to day. The first is the player's.
+    /// Carried forward from day to day.
     #[serde(default)]
     pub countries: Vec<Country>,
+    /// The country the player plays, which new people and cities belong to. The first country founded
+    /// is it until another is chosen. Carried forward from day to day.
+    #[serde(default)]
+    pub player: Option<CountryId>,
     /// Carried forward from day to day. Each belongs to one of the countries.
     #[serde(default)]
     pub people: Vec<Person>,
@@ -44,7 +48,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), people: Vec::new(), cities: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.
@@ -84,24 +88,55 @@ impl DaySave {
         self.country(id).map_or("an unknown country", |c| c.name.as_str())
     }
 
-    /// Founds a country called `typed` today, and reports it in the newsreel. An error says why it
-    /// can't be done.
+    /// The country the player plays: the one chosen, or else the first there is.
+    pub fn player_country(&self) -> Option<&Country> {
+        self.player.and_then(|id| self.country(id)).or_else(|| self.countries.first())
+    }
+
+    /// Founds a country called `typed` today, and reports it in the newsreel. The first country there is
+    /// becomes the player's. An error says why it can't be done.
     pub fn found_country(&mut self, typed: &str) -> Result<(), String> {
-        let name = country::clean_name(typed)?;
-        if self.countries.iter().any(|c| c.name.to_lowercase() == name.to_lowercase()) {
-            return Err(format!("There is already a country called {name}."));
-        }
+        let name = self.free_country_name(typed, None)?;
         let id = CountryId::new();
         self.countries.push(Country { id, name });
+        self.player.get_or_insert(id);
         self.newsreel.push(News::about(id, Event::CountryFounded));
         Ok(())
     }
 
+    /// Makes the country with this id the one the player plays. An error says why it can't be done.
+    pub fn select_country(&mut self, id: CountryId) -> Result<(), String> {
+        self.country(id).ok_or("There is no such country.")?;
+        self.player = Some(id);
+        Ok(())
+    }
+
+    /// Renames the country with this id to `typed`. People, cities and news follow it, since they hold
+    /// its id. A name that only differs in its capitals from the country's own is fine. An error says
+    /// why it can't be done.
+    pub fn rename_country(&mut self, id: CountryId, typed: &str) -> Result<(), String> {
+        self.country(id).ok_or("There is no such country.")?;
+        let name = self.free_country_name(typed, Some(id))?;
+        if let Some(country) = self.countries.iter_mut().find(|c| c.id == id) {
+            country.name = name;
+        }
+        Ok(())
+    }
+
+    /// `typed` as a country name, if it is a good one and no country other than `except` has it.
+    fn free_country_name(&self, typed: &str, except: Option<CountryId>) -> Result<String, String> {
+        let name = country::clean_name(typed)?;
+        if self.countries.iter().any(|c| Some(c.id) != except && c.name.to_lowercase() == name.to_lowercase()) {
+            return Err(format!("There is already a country called {name}."));
+        }
+        Ok(name)
+    }
+
     /// Adds a person called `name` with the given `title`, of the kind of title called `title_type`,
-    /// to the first country, and reports it in the newsreel. A `title_type` the game doesn't have yet
+    /// to the player's country, and reports it in the newsreel. A `title_type` the game doesn't have yet
     /// is added to the kinds there are. An error says why it can't be done.
     pub fn found_person(&mut self, name: &str, title: &str, title_type: &str) -> Result<(), String> {
-        let country = self.countries.first().ok_or("There is no country yet for them to belong to.")?.id;
+        let country = self.player_country().ok_or("There is no country yet for them to belong to.")?.id;
         let (name, title) = (person::clean_name(name)?, person::clean_title(title)?);
         let type_name = title_type::clean_name(title_type)?;
         let title_type = match self.title_type_named(&type_name) {
@@ -118,11 +153,11 @@ impl DaySave {
         Ok(())
     }
 
-    /// Founds a city called `typed` at (`x`, `z`) with the starting population, for the first country,
+    /// Founds a city called `typed` at (`x`, `z`) with the starting population, for the player's country,
     /// and reports it in the newsreel. Whether the ground is fit for a city is for the caller to say.
     /// An error says why it can't be done.
     pub fn found_city(&mut self, typed: &str, x: f32, z: f32) -> Result<(), String> {
-        let country = self.countries.first().ok_or("There is no country yet for the city to belong to.")?.id;
+        let country = self.player_country().ok_or("There is no country yet for the city to belong to.")?.id;
         if !x.is_finite() || !z.is_finite() {
             return Err("That is not a place on the map.".to_owned());
         }
@@ -288,6 +323,82 @@ mod tests {
     }
 
     #[test]
+    fn the_first_country_is_the_players_until_another_is_chosen() {
+        let mut day = day();
+        assert!(day.player_country().is_none());
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        assert_eq!(day.player, Some(aldoria), "founding another doesn't change whose it is");
+        assert_eq!(day.player_country().unwrap().id, aldoria);
+
+        day.select_country(brevon).unwrap();
+        assert_eq!(day.player_country().unwrap().name, "Brevon");
+    }
+
+    #[test]
+    fn a_day_saved_without_a_chosen_country_plays_the_first() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        day.player = None;
+        assert_eq!(day.player_country().unwrap().name, "Aldoria");
+        // And one that names a country that is gone does too.
+        day.player = Some(CountryId::new());
+        assert_eq!(day.player_country().unwrap().name, "Aldoria");
+    }
+
+    #[test]
+    fn people_and_cities_join_the_country_that_is_chosen() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let brevon = day.countries[1].id;
+        day.select_country(brevon).unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0).unwrap();
+        assert_eq!(day.people[0].country, brevon);
+        assert_eq!(day.cities[0].country, brevon);
+    }
+
+    #[test]
+    fn only_a_country_that_there_is_can_be_chosen() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let before = day.clone();
+        assert!(day.select_country(CountryId::new()).is_err());
+        assert_eq!(day, before);
+    }
+
+    #[test]
+    fn a_country_can_be_renamed_and_everything_of_it_follows() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        let id = day.countries[0].id;
+        day.rename_country(id, "  New   Aldoria ").unwrap();
+        assert_eq!(day.countries[0].name, "New Aldoria");
+        assert_eq!(day.countries[0].id, id);
+        assert_eq!(day.country_name(day.people[0].country), "New Aldoria");
+        // Just the capitals, or the very same name, is allowed.
+        day.rename_country(id, "NEW ALDORIA").unwrap();
+        assert_eq!(day.countries[0].name, "NEW ALDORIA");
+    }
+
+    #[test]
+    fn a_country_cannot_be_renamed_to_a_bad_or_taken_name() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let before = day.clone();
+        let brevon = day.countries[1].id;
+        assert!(day.rename_country(brevon, " ").is_err());
+        assert!(day.rename_country(brevon, "aldoria").unwrap_err().contains("already"));
+        assert!(day.rename_country(CountryId::new(), "Cardell").is_err());
+        assert_eq!(day, before);
+    }
+
+    #[test]
     fn what_refers_to_a_country_follows_it_by_id_not_by_name() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
@@ -295,7 +406,8 @@ mod tests {
         day.found_city("Port Aldor", 0.0, 0.0).unwrap();
 
         // Rename the country: the person, the city and the news still find it.
-        day.countries[0].name = "New Aldoria".to_owned();
+        let id = day.countries[0].id;
+        day.rename_country(id, "New Aldoria").unwrap();
         assert_eq!(day.country_name(day.people[0].country), "New Aldoria");
         assert_eq!(day.country_name(day.cities[0].country), "New Aldoria");
         assert_eq!(day.newsreel[0].headline(&day), "The nation of New Aldoria is founded");

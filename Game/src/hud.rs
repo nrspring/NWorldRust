@@ -1,15 +1,15 @@
-//! What the game draws over the map: the top bar, the key help and the day's newsreel.
+//! What the game draws over the map: the header (the country and the day), the footer (the frame rate
+//! and the key help) and the day's newsreel.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
-use crate::calendar::Date;
 use crate::city::City;
 use crate::day::DaySave;
 
 /// Distance of the panels from the edges of the window.
 const MARGIN: f32 = 16.0;
-const NEWSREEL_WIDTH: f32 = 340.0;
+const NEWSREEL_WIDTH: f32 = 280.0;
 
 const HELP: &[(&str, &str)] = &[
     ("W A S D", "pan"),
@@ -21,20 +21,70 @@ const HELP: &[(&str, &str)] = &[
     ("Esc", "quit"),
 ];
 
-/// The bar at the top left: the day, and the frame rate. Returns where it is.
-pub fn top_bar(style: &Style, date: Date) -> Rect {
-    let day = format!("Day {date}");
-    let fps = format!("{} fps", get_fps());
+/// How tall the footer is.
+pub const FOOTER_HEIGHT: f32 = 48.0;
+/// Distance of what is in the footer from its left edge. The options button keeps the same from the right.
+pub const FOOTER_PADDING: f32 = 12.0;
+/// Room kept at the right end of the footer for the options button.
+const OPTIONS_ROOM: f32 = 64.0;
 
-    let gap = 14.0;
-    let day_width = style.measure(&day, 17, Weight::Semibold).width;
-    // Room for four digits however many there are, so the bar and what sits beside it never move.
-    let fps_width = style.measure("8888 fps", 13, Weight::Regular).width;
-    let bar = Rect::new(MARGIN, MARGIN, day_width + fps_width + gap + 32.0, 40.0);
-    style::card(bar, 12.0, style::GLASS);
+/// The size of the text in the header and the footer.
+const BAR_TEXT_SIZE: u16 = 13;
+/// How tall the header is.
+pub const HEADER_HEIGHT: f32 = 48.0;
+
+/// Where the header is: along the top of the window.
+pub fn header_rect() -> Rect {
+    Rect::new(0.0, 0.0, screen_width(), HEADER_HEIGHT)
+}
+
+/// The header along the top of the window: the player's country, once there is one, which is a button
+/// for the countries menu (lit when the mouse is over it, if `interactive`), and the day. Returns
+/// where the button is.
+pub fn header(style: &Style, day: &DaySave, interactive: bool) -> Option<Rect> {
+    let bar = header_rect();
+    draw_rectangle(bar.x, bar.y, bar.w, bar.h, style::GLASS);
+    draw_line(bar.x, bar.bottom(), bar.right(), bar.bottom(), 1.0, style::BORDER);
+
     let y = bar.center().y;
-    style.text_mid(&day, bar.x + 16.0, y, 17, Weight::Semibold, style::TEXT);
-    style.text_mid(&fps, bar.x + 16.0 + day_width + gap, y, 13, Weight::Regular, style::TEXT_MUTED);
+    let mut x = bar.x + FOOTER_PADDING;
+    let mut button = None;
+    if let Some(country) = day.player_country() {
+        let name_width = style.measure(&country.name, BAR_TEXT_SIZE, Weight::Semibold).width;
+        let pill = Rect::new(x, y - 14.0, name_width + 36.0, 28.0);
+        if interactive && pill.contains(Vec2::from(mouse_position())) {
+            style::rounded_rect(pill, 8.0, style::HOVER);
+        }
+        style.text_mid(&country.name, pill.x + 10.0, y, BAR_TEXT_SIZE, Weight::Semibold, style::TEXT);
+        // A small arrow, to say there is more to choose.
+        let arrow = pill.right() - 13.0;
+        draw_triangle(vec2(arrow - 4.0, y - 1.5), vec2(arrow + 4.0, y - 1.5), vec2(arrow, y + 2.5), style::TEXT_MUTED);
+        // A dot between the country and the day.
+        draw_circle(pill.right() + 8.0, y, 2.0, style::TEXT_MUTED);
+        x = pill.right() + 18.0;
+        button = Some(pill);
+    }
+    style.text_mid(&format!("Day {}", day.date), x, y, BAR_TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
+    button
+}
+
+/// The footer along the bottom of the window: the frame rate at the left and, when `keys` is set and
+/// there is room for them, the keys in the middle. The options button goes at the right, which
+/// `OptionsUi` draws. Returns where the footer is.
+pub fn footer(style: &Style, keys: bool) -> Rect {
+    let bar = Rect::new(0.0, screen_height() - FOOTER_HEIGHT, screen_width(), FOOTER_HEIGHT);
+    draw_rectangle(bar.x, bar.y, bar.w, bar.h, style::GLASS);
+    draw_line(bar.x, bar.y, bar.right(), bar.y, 1.0, style::BORDER);
+
+    let y = bar.center().y;
+    let fps_x = bar.x + FOOTER_PADDING + 8.0;
+    style.text_mid(&format!("{} fps", get_fps()), fps_x, y, BAR_TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
+    // Room for four digits however many there are, so the keys beside it never move.
+    let fps_width = style.measure("8888 fps", BAR_TEXT_SIZE, Weight::Regular).width;
+
+    if keys {
+        help(style, bar, fps_x + fps_width + 24.0, bar.right() - OPTIONS_ROOM);
+    }
     bar
 }
 
@@ -43,7 +93,7 @@ pub fn save_failed(style: &Style, message: &str) {
     let title = "Couldn't save the game. Trying again soon.";
     let width = style.measure(title, 14, Weight::Semibold).width.max(style.measure(message, 12, Weight::Regular).width) + 32.0;
     let width = width.min(screen_width() - MARGIN * 2.0);
-    let panel = Rect::new((screen_width() - width) * 0.5, MARGIN, width, 52.0);
+    let panel = Rect::new((screen_width() - width) * 0.5, HEADER_HEIGHT + MARGIN, width, 52.0);
     style::card(panel, 12.0, style::GLASS);
     style::rounded_rect_lines(panel, 12.0, 1.5, style::ERROR);
     style.text_mid(title, panel.x + 16.0, panel.y + 18.0, 14, Weight::Semibold, style::ERROR);
@@ -73,7 +123,7 @@ pub fn city_tooltip(style: &Style, day: &DaySave, city: &City) {
     let height = 16.0 + 24.0 + 12.0 + rows.len() as f32 * 22.0 + 6.0;
 
     let mouse = Vec2::from(mouse_position());
-    let panel = Rect::new((mouse.x + 20.0).min(screen_width() - width - MARGIN), (mouse.y + 20.0).min(screen_height() - height - MARGIN - 44.0), width, height);
+    let panel = Rect::new((mouse.x + 20.0).min(screen_width() - width - MARGIN), (mouse.y + 20.0).min(screen_height() - height - FOOTER_HEIGHT - 8.0), width, height);
     style::card(panel, 10.0, style::GLASS);
     style.text_mid(&city.name, panel.x + 16.0, panel.y + 16.0 + 12.0, 17, Weight::Semibold, style::TEXT);
     draw_line(panel.x + 16.0, panel.y + 16.0 + 24.0 + 2.0, panel.right() - 16.0, panel.y + 16.0 + 24.0 + 2.0, 1.0, style::BORDER);
@@ -85,10 +135,10 @@ pub fn city_tooltip(style: &Style, day: &DaySave, city: &City) {
     }
 }
 
-/// The prompt for placing the first city, above the key help. `problem` says why the city can't go
+/// The prompt for placing the first city, above the footer. `problem` says why the city can't go
 /// where the mouse is, if it can't.
 pub fn placing_prompt(style: &Style, problem: Option<&str>) {
-    let panel = Rect::new((screen_width() - 460.0) * 0.5, screen_height() - MARGIN - 36.0 - 8.0 - 72.0, 460.0, 72.0);
+    let panel = Rect::new((screen_width() - 460.0) * 0.5, screen_height() - FOOTER_HEIGHT - MARGIN - 72.0, 460.0, 72.0);
     style::card(panel, 12.0, style::GLASS);
     style.text_mid("Found your first city", panel.x + 20.0, panel.y + 24.0, 16, Weight::Semibold, style::TEXT);
     match problem {
@@ -104,30 +154,32 @@ pub fn placing_prompt(style: &Style, problem: Option<&str>) {
     }
 }
 
-/// The keys, along the bottom.
-pub fn help(style: &Style) {
+/// The keys, in the middle of the `footer`, as long as they fit between `left` and `right`.
+fn help(style: &Style, footer: Rect, left: f32, right: f32) {
     let item_gap = 18.0;
     let measured: Vec<(f32, f32)> = HELP
         .iter()
         .map(|(key, what)| ((style.measure(key, 12, Weight::Semibold).width + 10.0).max(18.0), style.measure(what, 13, Weight::Regular).width))
         .collect();
     let total: f32 = measured.iter().map(|(k, w)| k + 6.0 + w).sum::<f32>() + item_gap * (HELP.len() - 1) as f32;
-    let bar = Rect::new((screen_width() - total - 32.0) * 0.5, screen_height() - MARGIN - 36.0, total + 32.0, 36.0);
-    style::card(bar, 12.0, style::GLASS);
-    let mut x = bar.x + 16.0;
+    if total > right - left {
+        return;
+    }
+    // In the middle of the window if that is clear of the rest, and otherwise as near as it can be.
+    let mut x = ((footer.w - total) * 0.5).clamp(left, right - total);
     for ((key, what), (key_w, what_w)) in HELP.iter().zip(&measured) {
-        style.keycap(key, x, bar.center().y);
-        style.text_mid(what, x + key_w + 6.0, bar.center().y, 13, Weight::Regular, style::TEXT_MUTED);
+        style.keycap(key, x, footer.center().y);
+        style.text_mid(what, x + key_w + 6.0, footer.center().y, 13, Weight::Regular, style::TEXT_MUTED);
         x += key_w + 6.0 + what_w + item_gap;
     }
 }
 
 /// The day's newsreel, at the top right.
 pub fn newsreel(style: &Style, day: &DaySave) {
-    const TEXT_SIZE: u16 = 15;
-    const LINE: f32 = 20.0;
-    const ITEM_GAP: f32 = 10.0;
-    let text_width = NEWSREEL_WIDTH - 32.0 - 18.0;
+    const TEXT_SIZE: u16 = 12;
+    const LINE: f32 = 16.0;
+    const ITEM_GAP: f32 = 7.0;
+    let text_width = NEWSREEL_WIDTH - 24.0 - 16.0;
 
     let items: Vec<Vec<String>> = day.newsreel.iter().map(|n| wrap(style, &n.headline(day), TEXT_SIZE, text_width)).collect();
     let body: f32 = if items.is_empty() {
@@ -135,27 +187,27 @@ pub fn newsreel(style: &Style, day: &DaySave) {
     } else {
         items.iter().map(|lines| lines.len() as f32 * LINE).sum::<f32>() + ITEM_GAP * (items.len() - 1) as f32
     };
-    let panel = Rect::new(screen_width() - NEWSREEL_WIDTH - MARGIN, MARGIN, NEWSREEL_WIDTH, 16.0 + 18.0 + 14.0 + body + 16.0);
-    style::card(panel, 12.0, style::GLASS);
+    let panel = Rect::new(screen_width() - NEWSREEL_WIDTH - MARGIN, HEADER_HEIGHT + MARGIN, NEWSREEL_WIDTH, 12.0 + 14.0 + 10.0 + body + 12.0);
+    style::card(panel, 10.0, style::GLASS);
 
     // The header: a red "live" dot, the name, and the day.
-    let header_y = panel.y + 16.0 + 9.0;
-    draw_circle(panel.x + 20.0, header_y, 4.0, Color::new(0.93, 0.27, 0.27, 1.0));
-    style.text_mid("NEWSREEL", panel.x + 32.0, header_y, 12, Weight::Semibold, style::TEXT);
+    let header_y = panel.y + 12.0 + 7.0;
+    draw_circle(panel.x + 16.0, header_y, 3.0, Color::new(0.93, 0.27, 0.27, 1.0));
+    style.text_mid("NEWSREEL", panel.x + 26.0, header_y, 10, Weight::Semibold, style::TEXT);
     let date = format!("Day {}", day.date);
-    let date_w = style.measure(&date, 12, Weight::Regular).width;
-    style.text_mid(&date, panel.right() - 16.0 - date_w, header_y, 12, Weight::Regular, style::TEXT_MUTED);
-    draw_line(panel.x + 16.0, header_y + 15.0, panel.right() - 16.0, header_y + 15.0, 1.0, style::BORDER);
+    let date_w = style.measure(&date, 10, Weight::Regular).width;
+    style.text_mid(&date, panel.right() - 12.0 - date_w, header_y, 10, Weight::Regular, style::TEXT_MUTED);
+    draw_line(panel.x + 12.0, header_y + 11.0, panel.right() - 12.0, header_y + 11.0, 1.0, style::BORDER);
 
-    let mut y = header_y + 15.0 + 14.0;
+    let mut y = header_y + 11.0 + 10.0;
     if items.is_empty() {
-        style.text_mid("Nothing to report yet.", panel.x + 16.0, y + LINE * 0.5, TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid("Nothing to report yet.", panel.x + 12.0, y + LINE * 0.5, TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
         return;
     }
     for lines in &items {
-        draw_circle(panel.x + 20.0, y + LINE * 0.5, 3.0, style::ACCENT);
+        draw_circle(panel.x + 16.0, y + LINE * 0.5, 2.5, style::ACCENT);
         for (k, line) in lines.iter().enumerate() {
-            style.text_mid(line, panel.x + 34.0, y + LINE * (k as f32 + 0.5), TEXT_SIZE, Weight::Regular, style::TEXT);
+            style.text_mid(line, panel.x + 28.0, y + LINE * (k as f32 + 0.5), TEXT_SIZE, Weight::Regular, style::TEXT);
         }
         y += lines.len() as f32 * LINE + ITEM_GAP;
     }

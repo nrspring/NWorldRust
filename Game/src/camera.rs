@@ -23,6 +23,10 @@ pub struct GameCamera {
     pitch: f32,
     max_distance: f32,
     last_mouse: Vec2,
+    /// Whether the mouse button held down began on the map, and so is a drag of the map. A press that
+    /// began on the interface, or on a popup, is not.
+    grabbing: bool,
+    looking: bool,
     /// A place and a distance the camera is flying to, until the player steers it somewhere else.
     goal: Option<(Vec2, f32)>,
 }
@@ -39,8 +43,16 @@ impl GameCamera {
             pitch: 1.15,
             max_distance: size.max_element() * 1.2,
             last_mouse: Vec2::ZERO,
+            grabbing: false,
+            looking: false,
             goal: None,
         }
+    }
+
+    /// For a frame the camera isn't updated in, such as while a popup is up: notes where the mouse is,
+    /// so that moving it then isn't taken for a drag of the map afterwards.
+    pub fn skip_frame(&mut self) {
+        self.last_mouse = Vec2::from(mouse_position());
     }
 
     /// Flies the camera, smoothly, to look at the ground at `at` from `distance` meters away. Any
@@ -71,16 +83,19 @@ impl GameCamera {
         let mouse = Vec2::from(mouse_position());
         let drag = mouse - self.last_mouse;
         self.last_mouse = mouse;
-        if mouse_free && is_mouse_button_down(MouseButton::Right) {
+        // A drag is of the map only if the button went down on it, and lasts until the button is let go.
+        self.looking = is_mouse_button_down(MouseButton::Right) && (self.looking || (mouse_free && is_mouse_button_pressed(MouseButton::Right)));
+        self.grabbing = is_mouse_button_down(MouseButton::Left) && (self.grabbing || (mouse_free && is_mouse_button_pressed(MouseButton::Left)));
+        if mouse_free && self.looking {
             self.yaw += drag.x * 0.006;
             self.pitch = (self.pitch + drag.y * 0.006).clamp(MIN_PITCH, MAX_PITCH);
         }
-        if mouse_free && is_mouse_button_down(MouseButton::Left) {
+        if mouse_free && self.grabbing {
             // Grab the ground: it follows the mouse.
             self.pan(vec2(-drag.x, drag.y) * self.distance * 0.0016);
         }
 
-        let steering = pan != Vec2::ZERO || turn != 0.0 || wheel != 0.0 || (mouse_free && (is_mouse_button_down(MouseButton::Left) || is_mouse_button_down(MouseButton::Right)));
+        let steering = pan != Vec2::ZERO || turn != 0.0 || wheel != 0.0 || (mouse_free && (self.grabbing || self.looking));
         if steering {
             self.goal = None;
         }

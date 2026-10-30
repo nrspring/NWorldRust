@@ -3,6 +3,8 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
+use crate::hud::FOOTER_PADDING;
+
 /// The settings. They are for how the game looks and feels, and are not part of the saved game.
 pub struct Options {
     /// Show the map's regions on the ground.
@@ -16,7 +18,7 @@ impl Default for Options {
     }
 }
 
-const BUTTON_SIZE: f32 = 40.0;
+const BUTTON_SIZE: f32 = 36.0;
 const PANEL_WIDTH: f32 = 320.0;
 const HEADER_HEIGHT: f32 = 48.0;
 const ROW_HEIGHT: f32 = 56.0;
@@ -26,8 +28,8 @@ const GAP: f32 = 8.0;
 #[derive(Default)]
 pub struct OptionsUi {
     open: bool,
-    /// Where the button and the panel were drawn last, so the mouse can be told it is over them.
-    button: Rect,
+    /// Where the footer and the panel were drawn last, so the mouse can be told it is over them.
+    footer: Rect,
     panel: Option<Rect>,
 }
 
@@ -40,35 +42,38 @@ impl OptionsUi {
         self.open = false;
     }
 
-    /// Whether the mouse is over the button or the panel, and so is not for the map.
+    /// Whether the mouse is over the footer or the panel, and so is not for the map.
     pub fn has_mouse(&self, mouse: Vec2) -> bool {
-        self.button.contains(mouse) || self.panel.is_some_and(|p| p.contains(mouse))
+        self.footer.contains(mouse) || self.panel.is_some_and(|p| p.contains(mouse))
     }
 
-    /// Draws the button beside the top bar, `bar`, and the panel under it when it is open, and
+    /// Draws the button at the right end of the `footer`, and the panel above it when it is open, and
     /// changes `options` when the player clicks a setting. `has_regions` is whether the map has
     /// any, since there is nothing to show without them.
-    pub fn show(&mut self, style: &Style, bar: Rect, options: &mut Options, has_regions: bool) {
+    pub fn show(&mut self, style: &Style, footer: Rect, options: &mut Options, has_regions: bool) {
         let mouse = Vec2::from(mouse_position());
         let clicked = is_mouse_button_pressed(MouseButton::Left);
 
-        self.button = Rect::new(bar.right() + GAP, bar.y, BUTTON_SIZE, BUTTON_SIZE);
-        let hovered = self.button.contains(mouse);
+        self.footer = footer;
+        let button = Rect::new(footer.right() - FOOTER_PADDING - BUTTON_SIZE, footer.center().y - BUTTON_SIZE * 0.5, BUTTON_SIZE, BUTTON_SIZE);
+        let hovered = button.contains(mouse);
         if hovered && clicked {
             self.open = !self.open;
         }
-        style::card(self.button, 12.0, style::GLASS);
-        if hovered || self.open {
-            style::rounded_rect_lines(self.button, 12.0, 1.5, if self.open { style::ACCENT } else { style::BORDER_STRONG });
+        if self.open {
+            style::rounded_rect(button, 10.0, style::ACCENT_SOFT);
+        } else if hovered {
+            style::rounded_rect(button, 10.0, style::HOVER);
         }
-        draw_gear(self.button.center(), if self.open { style::ACCENT_HOVER } else { style::TEXT });
+        draw_gear(button.center(), if self.open { style::ACCENT_HOVER } else { style::TEXT });
 
         if !self.open {
             self.panel = None;
             return;
         }
         let rows = 1;
-        let panel = Rect::new(bar.x, bar.bottom() + GAP, PANEL_WIDTH, HEADER_HEIGHT + ROW_HEIGHT * rows as f32 + GAP);
+        let height = HEADER_HEIGHT + ROW_HEIGHT * rows as f32 + GAP;
+        let panel = Rect::new(footer.right() - FOOTER_PADDING - PANEL_WIDTH, footer.y - GAP - height, PANEL_WIDTH, height);
         self.panel = Some(panel);
         style::card(panel, 14.0, style::GLASS);
         style.text_mid("Options", panel.x + 16.0, panel.y + HEADER_HEIGHT * 0.5, 16, Weight::Semibold, style::TEXT);
