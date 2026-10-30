@@ -1,4 +1,4 @@
-//! Visual style shared by the editor UI and the HUD: fonts, colors and drawing helpers for a
+//! Visual style shared by the editor UI and the game: fonts, colors and drawing helpers for a
 //! flat, modern dark theme.
 
 use std::path::PathBuf;

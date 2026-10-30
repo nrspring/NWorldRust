@@ -2,7 +2,6 @@ mod camera;
 mod dialogs;
 mod history;
 mod open_map;
-mod style;
 mod toast;
 mod topo;
 mod ui;
@@ -11,7 +10,7 @@ mod ui;
 // drawing. The editor reaches it by the same names it always had.
 use nworld_map::{continents, hills, islands, noise, passes, shallows, storage, world};
 // The drawing of the map is shared with the game. These keep `crate::render::` and friends working.
-use nworld_view::{copper, forest, iron, oil, props, render, render_data, stone, sulphur, terrain_mesh};
+use nworld_view::{copper, forest, iron, oil, props, render, render_data, stone, style, sulphur, terrain_mesh};
 
 use std::time::Duration;
 

@@ -39,6 +39,8 @@ pub struct MapView {
     surface: Texture2D,
     resources: [Texture2D; RESOURCE_TEXTURES],
     regions: Texture2D,
+    has_regions: bool,
+    show_regions: bool,
 }
 
 impl MapView {
@@ -58,7 +60,20 @@ impl MapView {
             surface: render::surface_texture(world),
             resources: render::resources_texture(world),
             regions: render::regions_texture(world),
+            has_regions: world.regions().iter().any(|&r| r != 0),
+            show_regions: false,
         }
+    }
+
+    /// Whether the map has been divided into regions. Without them there is nothing to show.
+    pub fn has_regions(&self) -> bool {
+        self.has_regions
+    }
+
+    /// Shows the regions on the ground, each tinted by the kind of ground it is and edged, or hides
+    /// them again. A map with no regions shows nothing either way.
+    pub fn set_show_regions(&mut self, show: bool) {
+        self.show_regions = show;
     }
 
     /// The camera for looking at the map from `position` towards `target`, with the field of view
@@ -92,7 +107,7 @@ impl MapView {
         gl_use_material(&self.backdrop_material);
         draw_mesh(&self.backdrop);
 
-        self.terrain.draw(&mut self.mesh, world, &self.surface, &self.resources, &self.regions, false, None, camera, pos, view_distance, time, false);
+        self.terrain.draw(&mut self.mesh, world, &self.surface, &self.resources, &self.regions, self.show_regions, None, camera, pos, view_distance, time, false);
         for kind in &mut self.props {
             kind.draw(world, camera, pos, view_distance, time);
         }

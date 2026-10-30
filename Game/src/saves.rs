@@ -1,6 +1,7 @@
 //! The saved game: a main file that says which day the game is on, and one file for every day.
 //!
-//! Everything is under the `Saves` folder of the game's data folder:
+//! Everything is under the `Saves` folder of the game's data folder (what a day's file holds is
+//! in [`crate::day`]):
 //!
 //! ```text
 //! Saves/game.json                          the main file: the current day
@@ -18,11 +19,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::calendar::Date;
+use crate::day::DaySave;
 
 const SAVES_DIR: &str = "Saves";
 const DAYS_DIR: &str = "Days";
 const MAIN_FILE: &str = "game.json";
-const VERSION: u32 = 1;
+pub const VERSION: u32 = 1;
 
 /// The main file: what the game needs to know to carry on where it left off.
 #[derive(Serialize, Deserialize)]
@@ -30,21 +32,6 @@ struct MainFile {
     version: u32,
     /// The day the game is on.
     date: Date,
-}
-
-/// The state of the game on one day.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct DaySave {
-    version: u32,
-    pub date: Date,
-    /// The map the game is played on, relative to the data folder.
-    pub map: String,
-}
-
-impl DaySave {
-    fn new(date: Date, map: &str) -> Self {
-        Self { version: VERSION, date, map: map.to_owned() }
-    }
 }
 
 /// The saved game as found at startup.
@@ -72,6 +59,12 @@ impl Saves {
 
     fn day_path(&self, date: Date) -> PathBuf {
         self.dir.join(DAYS_DIR).join(format!("{}.json", date.file_stem()))
+    }
+
+    /// Saves `day`, replacing that day's file. The main file doesn't change: it says which day the
+    /// game is on, not what is in it.
+    pub fn save_day(&self, day: &DaySave) -> Result<(), String> {
+        write_json(&self.day_path(day.date), day)
     }
 
     /// Opens the saved game. With no main file this is a new game: the day is set to 1-1-1 and the
@@ -138,27 +131,9 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use crate::test_support::TempRoot;
 
     const MAP: &str = "Assets/map.nworld";
-
-    /// A data folder of its own, removed again when dropped.
-    struct TempRoot(PathBuf);
-
-    impl TempRoot {
-        fn new() -> Self {
-            static COUNTER: AtomicU32 = AtomicU32::new(0);
-            let dir = std::env::temp_dir().join(format!("nworld-saves-test-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
-            let _ = fs::remove_dir_all(&dir);
-            Self(dir)
-        }
-    }
-
-    impl Drop for TempRoot {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn saves(root: &TempRoot) -> Saves {
         Saves::new(&root.0)
@@ -202,6 +177,21 @@ mod tests {
         let opened = saves.open(MAP).unwrap();
         assert!(!opened.new_game);
         assert_eq!(opened.day, DaySave::new(date, "Assets/later.nworld"));
+    }
+
+    #[test]
+    fn a_saved_day_keeps_its_countries_and_newsreel() {
+        let root = TempRoot::new();
+        let saves = saves(&root);
+        let mut day = saves.open(MAP).unwrap().day;
+        day.found_country("Aldoria").unwrap();
+        saves.save_day(&day).unwrap();
+
+        let reopened = saves.open(MAP).unwrap();
+        assert!(!reopened.new_game);
+        assert_eq!(reopened.day, day);
+        assert_eq!(reopened.day.countries.len(), 1);
+        assert_eq!(reopened.day.newsreel.len(), 1);
     }
 
     #[test]

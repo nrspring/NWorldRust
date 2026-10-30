@@ -41,8 +41,9 @@ impl GameCamera {
     }
 
 
-    /// Reacts to the keyboard and mouse, `dt` seconds after the last frame.
-    pub fn update(&mut self, world: &World, dt: f32) {
+    /// Reacts to the keyboard and mouse, `dt` seconds after the last frame. The mouse is ignored
+    /// while it is not `mouse_free`, as when it is over the interface.
+    pub fn update(&mut self, world: &World, dt: f32, mouse_free: bool) {
         let key = |code| is_key_down(code) as i32 as f32;
         let pan = vec2(
             key(KeyCode::D) + key(KeyCode::Right) - key(KeyCode::A) - key(KeyCode::Left),
@@ -54,7 +55,7 @@ impl GameCamera {
         let turn = key(KeyCode::E) - key(KeyCode::Q);
         self.yaw += turn * 1.4 * dt;
 
-        let wheel = mouse_wheel().1;
+        let wheel = if mouse_free { mouse_wheel().1 } else { 0.0 };
         if wheel != 0.0 {
             self.distance *= 0.88f32.powf(wheel.clamp(-3.0, 3.0));
         }
@@ -62,11 +63,11 @@ impl GameCamera {
         let mouse = Vec2::from(mouse_position());
         let drag = mouse - self.last_mouse;
         self.last_mouse = mouse;
-        if is_mouse_button_down(MouseButton::Right) {
+        if mouse_free && is_mouse_button_down(MouseButton::Right) {
             self.yaw += drag.x * 0.006;
             self.pitch = (self.pitch + drag.y * 0.006).clamp(MIN_PITCH, MAX_PITCH);
         }
-        if is_mouse_button_down(MouseButton::Left) {
+        if mouse_free && is_mouse_button_down(MouseButton::Left) {
             // Grab the ground: it follows the mouse.
             self.pan(vec2(-drag.x, drag.y) * self.distance * 0.0016);
         }

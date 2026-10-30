@@ -1,5 +1,6 @@
 //! Draws an `nworld-map` map with macroquad: the terrain as meshes and textures, the sky and the
-//! backdrop around the world, and the trees and rocks of the resources.
+//! backdrop around the world, and the trees and rocks of the resources. It also holds the dark,
+//! rounded look (`style`) of the interfaces drawn over the map.
 //!
 //! The editor and the game share this crate, so a map looks the same in both. Most programs only
 //! need [`MapView`]. The pieces under it are public for the editor, which updates textures and
@@ -15,6 +16,7 @@ pub mod props;
 pub mod render;
 pub mod render_data;
 pub mod stone;
+pub mod style;
 pub mod sulphur;
 pub mod terrain_mesh;
 
