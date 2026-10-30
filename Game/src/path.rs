@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bridge::BridgeLink;
 use crate::day::DaySave;
 
 /// What a segment of path costs, in coins.
@@ -37,6 +38,14 @@ impl PathSegment {
     pub fn across(region: u16, a: u16, b: u16) -> Self {
         Self { region, neighbor: a.min(b), other: Some(a.max(b)) }
     }
+}
+
+/// A segment of path of either kind: one joining parts of the map's regions, or one that starts at the end of a
+/// bridge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PathPiece {
+    Segment(PathSegment),
+    Link(BridgeLink),
 }
 
 /// Why no path can be built now.
@@ -77,6 +86,15 @@ impl DaySave {
             Err(problem) => Some(problem),
             Ok(country) if country.money < PATH_COST => Some(PathProblem::NotEnoughCoin { country: country.name.clone(), money: country.money }),
             Ok(_) => None,
+        }
+    }
+
+    /// Builds a piece of path of either kind (see [`build_path`](Self::build_path) and
+    /// [`build_link`](Self::build_link)).
+    pub fn build_piece(&mut self, piece: PathPiece) -> Result<(), String> {
+        match piece {
+            PathPiece::Segment(segment) => self.build_path(segment),
+            PathPiece::Link(link) => self.build_link(link),
         }
     }
 

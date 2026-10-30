@@ -1,7 +1,9 @@
 //! The path tool: a button in the footer that turns it on, and then the player clicks one end of a segment of
 //! path, and then the other. An end is either the center of a region or the middle point of one of its edges.
 //! A segment joins a center to the middle of one of its region's edges, or the middle of one edge of a region to
-//! the middle of another of the same region, which doesn't go through the center.
+//! the middle of another of the same region, which doesn't go through the center. A path can also start at either
+//! end of a bridge: an end of a bridge is a third kind of point, and it joins to the center of the region it is in or
+//! the middle of one of that region's edges.
 //!
 //! With the tool on, the points that can be clicked are shown on the map as markers: round ones for centers
 //! and square ones for edges. At first those are the points of the region under the mouse. Once one end is
@@ -16,9 +18,11 @@ use nworld_map::world::World;
 use nworld_view::{mouse_ray, pick_terrain};
 use nworld_view::style::{self, Style, Weight};
 
+use crate::bridge::{Bridge, BridgeLink, End};
 use crate::day::DaySave;
 use crate::hud;
-use crate::path::{PathProblem, PathSegment, PATH_COST};
+use crate::ids::BridgeId;
+use crate::path::{PathPiece, PathProblem, PathSegment, PATH_COST};
 use crate::path_view;
 
 /// Why a segment that crosses water is refused.
@@ -39,6 +43,8 @@ enum Point {
     Center(u16),
     /// The middle of the border between two regions, given with the lower number first.
     Edge(u16, u16),
+    /// One end of a bridge.
+    BridgeEnd(BridgeId, End),
 }
 
 impl Point {
@@ -47,10 +53,11 @@ impl Point {
     }
 
     /// Where it is on the map, in world x and z.
-    fn position(self, map: &RegionMap) -> Option<Vec2> {
+    fn position(self, map: &RegionMap, bridges: &[Bridge]) -> Option<Vec2> {
         match self {
             Self::Center(region) => map.center(RegionId::from_raw(region)?),
             Self::Edge(a, b) => map.edge_midpoint(RegionId::from_raw(a)?, RegionId::from_raw(b)?),
+            Self::BridgeEnd(id, end) => bridges.iter().find(|b| b.id == id).map(|b| b.end(end)),
         }
     }
 }
@@ -70,15 +77,51 @@ fn segment(a: Point, b: Point) -> Option<PathSegment> {
     }
 }
 
+/// The path from an end of a bridge that two points make, if they belong together: the end of the bridge, and the
+/// center of the region the end is in or the middle of one of that region's edges.
+fn link_between(world: &World, bridges: &[Bridge], a: Point, b: Point) -> Option<BridgeLink> {
+    let ((bridge, end), other) = match (a, b) {
+        (Point::BridgeEnd(id, end), other) | (other, Point::BridgeEnd(id, end)) if !matches!(other, Point::BridgeEnd(..)) => ((id, end), other),
+        _ => return None,
+    };
+    let at = bridges.iter().find(|x| x.id == bridge)?.end(end);
+    let region = world.region_at(at.x, at.y)?.raw();
+    match other {
+        Point::Center(r) if r == region => Some(BridgeLink { bridge, end, region, to: None }),
+        Point::Edge(x, y) if x == region => Some(BridgeLink { bridge, end, region, to: Some(y) }),
+        Point::Edge(x, y) if y == region => Some(BridgeLink { bridge, end, region, to: Some(x) }),
+        _ => None,
+    }
+}
+
+/// The piece of path two points make, of either kind, if they belong together.
+fn piece_between(world: &World, bridges: &[Bridge], a: Point, b: Point) -> Option<PathPiece> {
+    segment(a, b).map(PathPiece::Segment).or_else(|| link_between(world, bridges, a, b).map(PathPiece::Link))
+}
+
+/// The bridge ends that are in the region numbered `region`.
+fn bridge_ends_in(world: &World, bridges: &[Bridge], region: u16) -> Vec<Point> {
+    let mut ends = Vec::new();
+    for bridge in bridges {
+        for end in [End::First, End::Second] {
+            let at = bridge.end(end);
+            if world.region_at(at.x, at.y).is_some_and(|r| r.raw() == region) {
+                ends.push(Point::BridgeEnd(bridge.id, end));
+            }
+        }
+    }
+    ends
+}
+
 /// Whether a path can go through the region: it is dry land, which includes the mountains.
 fn walkable(region: RegionId) -> bool {
     matches!(region.kind(), RegionKind::Land | RegionKind::Mountain)
 }
 
-/// Whether `segment` would have to cross water: a river or a lake with no way round it, or an end in the water.
-/// A segment that goes round a lake doesn't.
-fn crosses_water(world: &World, map: &RegionMap, segment: PathSegment) -> bool {
-    path_view::ends(map, segment).is_none_or(|(from, to)| !path_view::connects(world, from, to))
+/// Whether `piece` would have to cross water: a river or a lake with no way round it, or an end in the water.
+/// A piece that goes round a lake doesn't.
+fn crosses_water(world: &World, map: &RegionMap, bridges: &[Bridge], piece: PathPiece) -> bool {
+    path_view::piece_ends(map, bridges, piece).is_none_or(|(from, to)| !path_view::connects(world, from, to))
 }
 
 /// What the tool needs to know about the map and the mouse each frame.
@@ -100,8 +143,8 @@ pub struct PathTool {
     notice: Option<String>,
     /// Where the prompt was drawn last, so the mouse can be told it is over it.
     prompt: Rect,
-    /// Whether each segment looked at would cross water, so that it is only worked out once.
-    crossing: HashMap<PathSegment, bool>,
+    /// Whether each piece looked at would cross water, so that it is only worked out once.
+    crossing: HashMap<PathPiece, bool>,
     /// Whether the segment the mouse is on would cross water, for the prompt to say so.
     hover_blocked: bool,
 }
@@ -144,22 +187,37 @@ impl PathTool {
 
     /// The points that can be clicked now: with none chosen, those of the region at `hovered`; with a center
     /// chosen, the edges of its region; with an edge chosen, the centers of the two regions it divides and their
-    /// other edges.
-    fn candidates(&self, map: &RegionMap, hovered: Option<RegionId>) -> Vec<Point> {
+    /// other edges. The ends of bridges that are in those regions are offered too, and with an end of a bridge
+    /// chosen, the center and the edges of the region it is in.
+    fn candidates(&self, world: &World, map: &RegionMap, bridges: &[Bridge], hovered: Option<RegionId>) -> Vec<Point> {
         let edges_of = |region: RegionId| map.neighbors(region).iter().filter(|n| walkable(n.region)).map(move |n| Point::edge(region, n.region)).collect::<Vec<_>>();
         match self.first {
             None => hovered.filter(|r| walkable(*r)).map_or(Vec::new(), |region| {
                 let mut points = vec![Point::Center(region.raw())];
                 points.extend(edges_of(region));
+                points.extend(bridge_ends_in(world, bridges, region.raw()));
                 points
             }),
-            Some(Point::Center(region)) => RegionId::from_raw(region).map_or(Vec::new(), edges_of),
+            Some(Point::Center(region)) => {
+                let mut points = RegionId::from_raw(region).map_or(Vec::new(), edges_of);
+                points.extend(bridge_ends_in(world, bridges, region));
+                points
+            }
             Some(Point::Edge(a, b)) => {
                 let mut points = vec![Point::Center(a), Point::Center(b)];
                 for region in [a, b].into_iter().filter_map(RegionId::from_raw) {
                     points.extend(edges_of(region).into_iter().filter(|p| *p != Point::Edge(a, b)));
+                    points.extend(bridge_ends_in(world, bridges, region.raw()));
                 }
                 points
+            }
+            Some(Point::BridgeEnd(id, end)) => {
+                let region = bridges.iter().find(|b| b.id == id).map(|b| b.end(end)).and_then(|at| world.region_at(at.x, at.y)).filter(|r| walkable(*r));
+                region.map_or(Vec::new(), |region| {
+                    let mut points = vec![Point::Center(region.raw())];
+                    points.extend(edges_of(region));
+                    points
+                })
             }
         }
     }
@@ -167,15 +225,15 @@ impl PathTool {
     /// Draws the markers and the line to the end the mouse is on, in the map's camera, and works out what the
     /// player is doing. `clicked` is whether the left button was just clicked on the map. Returns the segment
     /// the player has just finished choosing, for the caller to build.
-    pub fn update(&mut self, scene: &Scene, existing: &[PathSegment], clicked: bool) -> Option<PathSegment> {
+    pub fn update(&mut self, scene: &Scene, day: &DaySave, clicked: bool) -> Option<PathPiece> {
         if !self.active {
             return None;
         }
         let hovered_region = if scene.over_map { pick_terrain(scene.eye, scene.world, scene.mouse).and_then(|at| scene.world.region_at(at.x, at.y)) } else { None };
         let points: Vec<(Point, Vec3)> = self
-            .candidates(scene.regions, hovered_region)
+            .candidates(scene.world, scene.regions, &day.bridges, hovered_region)
             .into_iter()
-            .filter_map(|p| p.position(scene.regions).map(|at| (p, vec3(at.x, scene.world.surface_height(at.x, at.y) + HOLD, at.y))))
+            .filter_map(|p| p.position(scene.regions, &day.bridges).map(|at| (p, vec3(at.x, scene.world.surface_height(at.x, at.y) + HOLD, at.y))))
             .collect();
 
         // The marker the mouse is on: the one the view ray passes nearest, if it passes close enough.
@@ -195,15 +253,18 @@ impl PathTool {
         };
 
         // Whether the segment the mouse is on is one that can't be built.
-        let hover_segment = self.first.zip(under_mouse).and_then(|(first, point)| segment(first, point));
-        let wet = hover_segment.is_some_and(|s| *self.crossing.entry(s).or_insert_with(|| crosses_water(scene.world, scene.regions, s)));
+        let hover_piece = self.first.zip(under_mouse).and_then(|(first, point)| piece_between(scene.world, &day.bridges, first, point));
+        let wet = hover_piece.is_some_and(|piece| *self.crossing.entry(piece).or_insert_with(|| crosses_water(scene.world, scene.regions, &day.bridges, piece)));
         self.hover_blocked = wet;
 
         // The markers, and a line from the chosen end to the one the mouse is on.
-        let first_at = self.first.and_then(|f| points.iter().find(|(p, _)| *p == f).map(|(_, at)| *at).or_else(|| f.position(scene.regions).map(|a| vec3(a.x, scene.world.surface_height(a.x, a.y) + HOLD, a.y))));
+        let first_at = self.first.and_then(|f| points.iter().find(|(p, _)| *p == f).map(|(_, at)| *at).or_else(|| f.position(scene.regions, &day.bridges).map(|a| vec3(a.x, scene.world.surface_height(a.x, a.y) + HOLD, a.y))));
         if let (Some(from), Some(point)) = (first_at, under_mouse) {
             if let Some((_, to)) = points.iter().find(|(p, _)| *p == point) {
-                let exists = self.first.and_then(|f| segment(f, point)).is_some_and(|s| existing.contains(&s));
+                let exists = hover_piece.is_some_and(|piece| match piece {
+                    PathPiece::Segment(s) => day.paths.contains(&s),
+                    PathPiece::Link(l) => day.bridge_links.contains(&l),
+                });
                 draw_line_3d(from, *to, if exists || wet { RED } else { Color::new(1.0, 0.85, 0.35, 1.0) });
             }
         }
@@ -213,6 +274,8 @@ impl PathTool {
             match point {
                 Point::Center(_) => draw_sphere(*at, size, None, color),
                 Point::Edge(..) => draw_cube(*at, vec3(size * 1.7, size * 1.7, size * 1.7), None, color),
+                // The end of a bridge is a stone gray block, bigger than the rest.
+                Point::BridgeEnd(..) => draw_cube(*at, vec3(size * 2.4, size * 1.2, size * 2.4), None, if Some(*point) == under_mouse { color } else { Color::new(0.62, 0.64, 0.70, 1.0) }),
             }
         }
         if let Some(at) = first_at {
@@ -234,7 +297,7 @@ impl PathTool {
             }
             (Some(first), Some(point)) => {
                 self.first = None;
-                let chosen = segment(first, point)?;
+                let chosen = piece_between(scene.world, &day.bridges, first, point)?;
                 if wet {
                     self.notice = Some(CROSSES_WATER.to_owned());
                     return None;
@@ -286,11 +349,10 @@ impl PathTool {
         draw_circle(icon.x + 6.0, icon.y - 4.0, 2.2, color);
         style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
 
-        // Why it can't be used, beside it, and in full over it.
+        // Why it can't be used, in full over it. (The short reason goes beside the leftmost of the footer's tool
+        // buttons: see `BridgeTool::show_button`.)
         let reason = if no_regions { Some(("This map has no regions".to_owned(), "Paths join the regions of the map, and this map has none.".to_owned())) } else { problem.map(|p| (p.short(), p.long())) };
-        if let Some((short, long)) = reason {
-            let short_width = style.measure(&short, 12, Weight::Regular).width;
-            style.text_mid(&short, button.x - 10.0 - short_width, button.center().y, 12, Weight::Regular, style::ERROR);
+        if let Some((_, long)) = reason {
             if hovered {
                 let lines = hud::wrap(style, &long, 12, 260.0);
                 let height = lines.len() as f32 * 17.0 + 20.0;
@@ -321,6 +383,7 @@ impl PathTool {
             (None, None) => style.text_mid("Click the center of a region, or the middle of one of its edges.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
             (None, Some(Point::Center(_))) => style.text_mid("Now click the middle of one of its edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
             (None, Some(Point::Edge(..))) => style.text_mid("Now click the center of one of the two regions, or another of their edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
+            (None, Some(Point::BridgeEnd(..))) => style.text_mid("Now click the center of its region, or the middle of one of its edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         let paying = day.player_country().map_or_else(|| "No country".to_owned(), |c| format!("{} has {}", c.name, crate::format::money(c.money)));
         style.text_mid(&format!("{PATH_COST} coins a segment. {paying} coins."), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
@@ -378,9 +441,8 @@ mod tests {
         // Three regions in a row, A | B | C, and the edge chosen is A|B: the other edge of A has nowhere to go
         // (A is at the end), and the other edge of B is B|C.
         let (world, map) = three_regions(|_| false);
-        let _ = world;
         let tool = PathTool { active: true, first: Some(Point::Edge(0xC001, 0xC002)), ..PathTool::default() };
-        let points = tool.candidates(&map, None);
+        let points = tool.candidates(&world, &map, &[], None);
         assert_eq!(points, [Point::Center(0xC001), Point::Center(0xC002), Point::Edge(0xC002, 0xC003)]);
     }
 
@@ -413,14 +475,81 @@ mod tests {
         let (a_b, b_c) = (map.edge_midpoint(region_id(0xC001), region_id(0xC002)).unwrap(), map.edge_midpoint(region_id(0xC002), region_id(0xC003)).unwrap());
         assert_eq!((from, to), (a_b, b_c));
         assert!(from.distance(to) > 100.0, "{}", from.distance(to));
-        assert!(!crosses_water(&world, &map, across));
+        assert!(!crosses_water(&world, &map, &[], PathPiece::Segment(across)));
         // A river between the two edges, inside B, stops it like any other.
         let (river_world, river_map) = three_regions(|p| p.x.abs() < 10.0 && p.y.abs() < 250.0);
-        assert!(crosses_water(&river_world, &river_map, across));
+        assert!(crosses_water(&river_world, &river_map, &[], PathPiece::Segment(across)));
     }
 
     fn region_id(raw: u16) -> RegionId {
         RegionId::from_raw(raw).unwrap()
+    }
+
+    /// A bridge with its first end in the middle region B of `three_regions` and its second end in the right-hand one, C.
+    fn bridge_in_b_and_c() -> Bridge {
+        Bridge { id: BridgeId::new(), first: vec2(0.0, 0.0).into(), second: vec2(120.0, 0.0).into() }
+    }
+
+    #[test]
+    fn a_path_can_go_from_an_end_of_a_bridge_to_the_center_or_an_edge_of_the_region_it_is_in() {
+        let (world, _map) = three_regions(|_| false);
+        let bridge = bridge_in_b_and_c();
+        let bridges = [bridge];
+        let first = Point::BridgeEnd(bridge.id, End::First);
+        let second = Point::BridgeEnd(bridge.id, End::Second);
+        // The first end is in B: its center and both its edges, whichever is chosen first.
+        let link = |to| Some(BridgeLink { bridge: bridge.id, end: End::First, region: 0xC002, to });
+        assert_eq!(link_between(&world, &bridges, first, Point::Center(0xC002)), link(None));
+        assert_eq!(link_between(&world, &bridges, Point::Center(0xC002), first), link(None));
+        assert_eq!(link_between(&world, &bridges, first, Point::Edge(0xC001, 0xC002)), link(Some(0xC001)));
+        assert_eq!(link_between(&world, &bridges, Point::Edge(0xC002, 0xC003), first), link(Some(0xC003)));
+        // But not to another region's center, or an edge it isn't on, or another end.
+        assert_eq!(link_between(&world, &bridges, first, Point::Center(0xC001)), None);
+        assert_eq!(link_between(&world, &bridges, first, Point::Edge(0xC001, 0xC003)), None);
+        assert_eq!(link_between(&world, &bridges, first, second), None);
+        // The second end is in C, so it joins to C's center.
+        assert_eq!(
+            link_between(&world, &bridges, second, Point::Center(0xC003)),
+            Some(BridgeLink { bridge: bridge.id, end: End::Second, region: 0xC003, to: None })
+        );
+        // A piece of path is whichever kind the two points make.
+        assert!(matches!(piece_between(&world, &bridges, first, Point::Center(0xC002)), Some(PathPiece::Link(_))));
+        assert!(matches!(piece_between(&world, &bridges, Point::Center(0xC002), Point::Edge(0xC002, 0xC003)), Some(PathPiece::Segment(_))));
+    }
+
+    #[test]
+    fn the_ends_of_bridges_are_offered_as_points_in_their_regions_and_lead_to_the_region_they_are_in() {
+        let (world, map) = three_regions(|_| false);
+        let bridge = bridge_in_b_and_c();
+        let first = Point::BridgeEnd(bridge.id, End::First);
+        let second = Point::BridgeEnd(bridge.id, End::Second);
+        let tool = PathTool { active: true, ..PathTool::default() };
+        // Over B, the first end is there along with B's center and edges, and the second is not.
+        let over_b = tool.candidates(&world, &map, &[bridge], Some(region_id(0xC002)));
+        assert!(over_b.contains(&first) && !over_b.contains(&second) && over_b.contains(&Point::Center(0xC002)), "{over_b:?}");
+        // With B's center chosen, its edges and the end are what is left.
+        let after_center = PathTool { active: true, first: Some(Point::Center(0xC002)), ..PathTool::default() };
+        let points = after_center.candidates(&world, &map, &[bridge], None);
+        assert_eq!(points, [Point::Edge(0xC001, 0xC002), Point::Edge(0xC002, 0xC003), first]);
+        // With the end chosen, the center and edges of the region it is in.
+        let from_end = PathTool { active: true, first: Some(first), ..PathTool::default() };
+        assert_eq!(from_end.candidates(&world, &map, &[bridge], None), [Point::Center(0xC002), Point::Edge(0xC001, 0xC002), Point::Edge(0xC002, 0xC003)]);
+        // And where they are, the end is at the bridge's end.
+        assert_eq!(first.position(&map, &[bridge]), Some(vec2(0.0, 0.0)));
+        assert_eq!(second.position(&map, &[bridge]), Some(vec2(120.0, 0.0)));
+    }
+
+    #[test]
+    fn a_path_from_a_bridge_cannot_cross_water_either() {
+        let bridge = bridge_in_b_and_c();
+        // A river inside B, between the first end of the bridge and the border with A.
+        let (dry_world, dry_map) = three_regions(|_| false);
+        let link = BridgeLink { bridge: bridge.id, end: End::First, region: 0xC002, to: Some(0xC001) };
+        assert!(!crosses_water(&dry_world, &dry_map, &[bridge], PathPiece::Link(link)));
+        let (river_world, river_map) = three_regions(|p| (-60.0..-45.0).contains(&p.x));
+        assert!(crosses_water(&river_world, &river_map, &[bridge], PathPiece::Link(link)), "a river between the end and the edge");
+        // A link to a bridge that isn't there can't be checked, so it counts as crossing.
+        assert!(crosses_water(&dry_world, &dry_map, &[], PathPiece::Link(link)));
     }
 
     #[test]
@@ -457,21 +586,21 @@ mod tests {
     fn a_segment_that_crosses_a_river_is_refused_and_one_that_does_not_is_allowed() {
         let a_to_edge = PathSegment::to_edge(0xC001, 0xC002);
         let (dry, map) = two_regions(|_| false);
-        assert!(!crosses_water(&dry, &map, a_to_edge));
+        assert!(!crosses_water(&dry, &map, &[], PathPiece::Segment(a_to_edge)));
         // A river across all of A, between its center and the edge it goes to.
         let (river, map) = two_regions(|p| (-90.0..-70.0).contains(&p.x));
-        assert!(crosses_water(&river, &map, a_to_edge));
+        assert!(crosses_water(&river, &map, &[], PathPiece::Segment(a_to_edge)));
         // The other side of the border has no river, so its segment is fine.
-        assert!(!crosses_water(&river, &map, PathSegment::to_edge(0xC002, 0xC001)));
+        assert!(!crosses_water(&river, &map, &[], PathPiece::Segment(PathSegment::to_edge(0xC002, 0xC001))));
         // A lake that can be got round doesn't count.
         let (lake, map) = two_regions(|p| p.distance(vec2(-65.0, 0.0)) < 30.0);
-        assert!(!crosses_water(&lake, &map, a_to_edge));
+        assert!(!crosses_water(&lake, &map, &[], PathPiece::Segment(a_to_edge)));
     }
 
     #[test]
     fn a_segment_that_is_not_a_real_one_counts_as_crossing() {
         let (world, map) = two_regions(|_| false);
-        assert!(crosses_water(&world, &map, PathSegment::to_edge(0xC001, 0xC009)), "no such neighbor");
+        assert!(crosses_water(&world, &map, &[], PathPiece::Segment(PathSegment::to_edge(0xC001, 0xC009))), "no such neighbor");
     }
 
     #[test]
@@ -490,10 +619,11 @@ mod tests {
     #[test]
     fn the_points_to_choose_from_follow_what_has_been_chosen() {
         let map = RegionMap::default();
+        let world = World::new(512.0, 512.0);
         let tool = PathTool { active: true, first: Some(Point::Edge(0xC001, 0xC002)), ..PathTool::default() };
         // After an edge, the two centers; the map is not needed for that.
-        assert_eq!(tool.candidates(&map, None), [Point::Center(0xC001), Point::Center(0xC002)]);
+        assert_eq!(tool.candidates(&world, &map, &[], None), [Point::Center(0xC001), Point::Center(0xC002)]);
         // Before anything, with nothing under the mouse there is nothing to choose from.
-        assert!(PathTool { active: true, ..PathTool::default() }.candidates(&map, None).is_empty());
+        assert!(PathTool { active: true, ..PathTool::default() }.candidates(&world, &map, &[], None).is_empty());
     }
 }

@@ -123,6 +123,10 @@ id_type!(
     /// The id of a kind of title, like "Monarch".
     TitleTypeId
 );
+id_type!(
+    /// The id of a bridge.
+    BridgeId
+);
 
 impl CityId {
     /// A number made from the id, for anything that should come out the same for the same city every

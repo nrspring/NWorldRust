@@ -12,9 +12,12 @@ use macroquad::models::{draw_mesh, Mesh, Vertex};
 use macroquad::prelude::*;
 use nworld_map::region_map::RegionMap;
 use nworld_map::regions::RegionId;
-use nworld_map::world::{WaterClass, World, CELL_SIZE};
+use nworld_map::world::{World, CELL_SIZE};
 
-use crate::path::PathSegment;
+use crate::bridge::{Bridge, BridgeLink};
+use crate::day::DaySave;
+use crate::ground::{clear, dry, line_clear, CHECK_EVERY};
+use crate::path::{PathPiece, PathSegment};
 
 /// How wide a path is, in meters, counting its soft edges.
 const WIDTH: f32 = 7.0;
@@ -25,37 +28,37 @@ const DIRT: [f32; 3] = [0.56, 0.42, 0.27];
 const VARIATION: f32 = 0.10;
 /// Most vertices in one mesh, which a mesh's 16 bit indices can't go past.
 const MAX_VERTICES: usize = 60_000;
-/// How far from water, in meters, the middle of a path keeps, so that its width stays off the water.
-const SHORE_CLEARANCE: f32 = 3.0;
-/// How far apart the points are that the way round is looked for among, and how far apart the points are
-/// checked along a line for water, in meters.
+/// How far apart the points are that the way round is looked for among, in meters.
 const GRID: f32 = 6.0;
-const CHECK_EVERY: f32 = 2.0;
 
 /// The paths as meshes, made again when the paths change.
 #[derive(Default)]
 pub struct PathRenderer {
-    built: Vec<PathSegment>,
-    /// Where each segment goes, as lines of points over dry ground, so that the way round a lake is only
+    built_paths: Vec<PathSegment>,
+    built_links: Vec<BridgeLink>,
+    /// Where each piece goes, as lines of points over dry ground, so that the way round a lake is only
     /// worked out once.
-    routes: HashMap<PathSegment, Vec<Vec<Vec2>>>,
+    routes: HashMap<PathPiece, Vec<Vec<Vec2>>>,
     meshes: Vec<Mesh>,
 }
 
 impl PathRenderer {
-    /// Draws `paths`, as seen by the camera that is set, which must still be the one the map was drawn with.
-    pub fn draw(&mut self, world: &World, map: &RegionMap, paths: &[PathSegment]) {
-        if self.built != paths {
-            for segment in paths {
-                if !self.routes.contains_key(segment) {
-                    let route = ends(map, *segment).map(|(from, to)| route(world, from, to)).unwrap_or_default();
-                    self.routes.insert(*segment, route);
+    /// Draws the paths of `day`, as seen by the camera that is set, which must still be the one the map was drawn
+    /// with.
+    pub fn draw(&mut self, world: &World, map: &RegionMap, day: &DaySave) {
+        if self.built_paths != day.paths || self.built_links != day.bridge_links {
+            let pieces: Vec<PathPiece> = day.paths.iter().map(|s| PathPiece::Segment(*s)).chain(day.bridge_links.iter().map(|l| PathPiece::Link(*l))).collect();
+            for piece in &pieces {
+                if !self.routes.contains_key(piece) {
+                    let route = piece_ends(map, &day.bridges, *piece).map(|(from, to)| route(world, from, to)).unwrap_or_default();
+                    self.routes.insert(*piece, route);
                 }
             }
-            self.routes.retain(|segment, _| paths.contains(segment));
-            let lines: Vec<&Vec<Vec2>> = paths.iter().filter_map(|segment| self.routes.get(segment)).flatten().collect();
+            self.routes.retain(|piece, _| pieces.contains(piece));
+            let lines: Vec<&Vec<Vec2>> = pieces.iter().filter_map(|piece| self.routes.get(piece)).flatten().collect();
             self.meshes = build(world, &lines);
-            self.built = paths.to_vec();
+            self.built_paths = day.paths.clone();
+            self.built_links = day.bridge_links.clone();
         }
         for mesh in &self.meshes {
             draw_mesh(mesh);
@@ -74,26 +77,31 @@ pub fn ends(map: &RegionMap, segment: PathSegment) -> Option<(Vec2, Vec2)> {
     }
 }
 
+/// The ends of a path from the end of a bridge: the end itself, and the center of its region or the middle of one
+/// of that region's borders.
+pub fn link_ends(map: &RegionMap, bridges: &[Bridge], link: BridgeLink) -> Option<(Vec2, Vec2)> {
+    let from = bridges.iter().find(|b| b.id == link.bridge)?.end(link.end);
+    let region = RegionId::from_raw(link.region)?;
+    let to = match link.to {
+        None => map.center(region)?,
+        Some(neighbor) => map.edge_midpoint(region, RegionId::from_raw(neighbor)?)?,
+    };
+    Some((from, to))
+}
+
+/// The ends of a piece of path of either kind.
+pub fn piece_ends(map: &RegionMap, bridges: &[Bridge], piece: PathPiece) -> Option<(Vec2, Vec2)> {
+    match piece {
+        PathPiece::Segment(segment) => ends(map, segment),
+        PathPiece::Link(link) => link_ends(map, bridges, link),
+    }
+}
+
 /// Whether a path from `from` to `to` can be drawn all the way over dry ground, straight or going round the
 /// water, and so doesn't have to cross a river or a lake.
 pub fn connects(world: &World, from: Vec2, to: Vec2) -> bool {
     let lines = route(world, from, to);
     lines.len() == 1 && lines[0].first() == Some(&from) && lines[0].last() == Some(&to)
-}
-
-fn dry(world: &World, at: Vec2) -> bool {
-    world.water_class(at.x, at.y) == WaterClass::Dry
-}
-
-/// Whether the ground at `at` is dry, and so is some way round it.
-fn clear(world: &World, at: Vec2) -> bool {
-    dry(world, at) && [vec2(SHORE_CLEARANCE, 0.0), vec2(-SHORE_CLEARANCE, 0.0), vec2(0.0, SHORE_CLEARANCE), vec2(0.0, -SHORE_CLEARANCE)].iter().all(|o| dry(world, at + *o))
-}
-
-/// Whether the straight line from `a` to `b` is clear all along.
-fn line_clear(world: &World, a: Vec2, b: Vec2) -> bool {
-    let steps = (a.distance(b) / CHECK_EVERY).ceil().max(1.0) as usize;
-    (0..=steps).all(|k| clear(world, a.lerp(b, k as f32 / steps as f32)))
 }
 
 /// Where a path from `from` to `to` goes: lines of points that are all over dry ground. Usually that is the straight

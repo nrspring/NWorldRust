@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bridge::{Bridge, BridgeLink};
 use crate::calendar::Date;
 use crate::city::{self, City, INITIAL_POPULATION};
 use crate::country::{self, Country, RegionOwner, STARTING_MONEY};
@@ -50,6 +51,12 @@ pub struct DaySave {
     /// The segments of path that have been built, which belong to no country. Carried forward from day to day.
     #[serde(default)]
     pub paths: Vec<PathSegment>,
+    /// The bridges that have been built, which belong to no country. Carried forward from day to day.
+    #[serde(default)]
+    pub bridges: Vec<Bridge>,
+    /// The segments of path that start at one end of a bridge. Carried forward from day to day.
+    #[serde(default)]
+    pub bridge_links: Vec<BridgeLink>,
     /// What happened today. Not carried forward.
     #[serde(default)]
     pub newsreel: Vec<News>,
@@ -57,7 +64,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.
