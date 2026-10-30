@@ -25,6 +25,11 @@ impl Autosave {
         Self { saved: day.clone(), checked_at: now, error: None }
     }
 
+    /// Carries on with `day`, which has just been saved by something else, such as the start of a new day.
+    pub fn reset(&mut self, day: &DaySave, now: f64) {
+        *self = Self::new(day, now);
+    }
+
     /// Call every frame with the current day and time. Saves it if it has changed and it is time.
     pub fn update(&mut self, saves: &Saves, day: &DaySave, now: f64) {
         if now - self.checked_at >= INTERVAL {

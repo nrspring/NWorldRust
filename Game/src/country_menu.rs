@@ -7,11 +7,13 @@ use nworld_view::style::{self, Style, Weight};
 
 use crate::color_picker::{ColorPicker, Outcome};
 use crate::day::DaySave;
+use crate::format::money;
+use crate::hud;
 use crate::ids::CountryId;
 use crate::popup::{self, Icon, Popup};
 use crate::rgb::Rgb;
 
-const CARD_WIDTH: f32 = 420.0;
+const CARD_WIDTH: f32 = 480.0;
 const PADDING: f32 = 24.0;
 const ROW_HEIGHT: f32 = 34.0;
 /// The most countries the list shows before it scrolls.
@@ -300,8 +302,15 @@ impl CountryMenu {
             style::rounded_rect(swatch, 4.0, country.color.color());
             style::rounded_rect_lines(swatch, 4.0, if over_swatch { 2.0 } else { 1.0 }, if over_swatch { WHITE } else { style::BORDER_STRONG });
             let weight = if current == Some(country.id) { Weight::Semibold } else { Weight::Regular };
-            // The name has room up to the buttons, and a country with cities has no Delete.
-            let name_end = if has_cities { edit.x } else { delete.x };
+            // The country's money, in a column of its own before the buttons.
+            let money_right = delete.x - 14.0;
+            let money_text = money(country.money);
+            let money_width = style.measure(&money_text, 13, Weight::Regular).width;
+            let money_color = if country.money < 0 { style::ERROR } else { style::TEXT_MUTED };
+            style.text_mid(&money_text, money_right - money_width, rect.center().y, 13, Weight::Regular, money_color);
+            hud::draw_coin(vec2(money_right - money_width - 12.0, rect.center().y), 5.5);
+            // The name has room up to the money.
+            let name_end = money_right - 90.0;
             let name = fit(style, &country.name, 15, weight, name_end - 8.0 - (rect.x + 62.0));
             style.text_mid(&name, rect.x + 62.0, rect.center().y, 15, weight, style::TEXT);
 

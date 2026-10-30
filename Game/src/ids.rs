@@ -37,6 +37,11 @@ pub fn random_u64() -> u64 {
     a.rotate_left(17) ^ b
 }
 
+/// A random number from 0 up to (but not including) 1, from the same source as the ids.
+pub fn random_unit() -> f32 {
+    (random_u64() >> 40) as f32 / (1u64 << 24) as f32
+}
+
 /// The id of any thing, whichever kind it is. The typed ids below turn into one and back, for the places
 /// that have to hold the id of any kind of thing, like the subject of a news item.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

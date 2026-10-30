@@ -19,7 +19,7 @@ Everything the game adds to the map, such as roads, cities and units, belongs to
 
 ## Header and footer
 
-A **header** along the top of the window shows the player's country, once there is one, and the current day. Click the country to open the [countries menu](#countries-menu). A **footer** along the bottom holds the frame rate at the left, the keys in the middle (left out when the window is too narrow for them) and the overlays and options buttons at the right. While the mouse is over either, it doesn't move the camera, and a click there doesn't place a city. The newsreel and the save-failed notice sit below the header.
+A **header** along the top of the window shows the player's country, once there is one, and the current day. Click the country to open the [countries menu](#countries-menu). A **footer** along the bottom holds the frame rate at the left, the keys in the middle (left out when the window is too narrow for them) and the overlays and options buttons at the right. While the mouse is over either, it doesn't move the camera, and a click there doesn't place a city. The newsreel and the save-failed notice sit below the header. A newsreel that is longer than about 45% of the window's height shows as many items as fit, with a note saying how many are above or below, and **the mouse wheel over it scrolls** through them an item at a time (it doesn't zoom the map).
 
 ## Countries menu
 
@@ -42,6 +42,29 @@ Alerts are worked out from the game as it is, every frame, so they come and go a
 - **A country has no cities**, one for each such country (so the first country has one until its first city is founded).
 
 New alerts go in `Game/src/alerts.rs`: a variant of `Alert`, found in `Alert::current`, with its text.
+
+## Ending the day
+
+**Click the day** in the header (it lights up when the mouse is over it) to end it and start the next. A popup asks first ("Start the next day?", from day X to day Y). Only a **mouse click on Start day** goes ahead: no key does, so Enter can't end a day by accident. Cancel, a click outside, or Esc gives up. The popup says nothing more than that, and doesn't list the day's rules. Nothing advances the day by itself: it only moves when you confirm.
+
+Going ahead saves the day that ended exactly as it was, writes the next day's file (it starts with the same countries, money, people, cities and region owners, and an empty newsreel), and then makes the new day the one the game is on in the main file, so a game that stops at any point can be opened again. Every day's file is kept. Days count through the calendar: 20 days to a month, 10 months to a year (1-1-20 is followed by 1-2-1, and 1-10-20 by 2-1-1).
+
+## Day rules
+
+When a day ends, the next day starts as a copy of it and then a series of **rules** runs on the new day, one after another in the order they are listed, so a later rule sees what the earlier ones did. The rules are in `Game/src/rules.rs` (`DAY_RULES`); each is a function with a sentence saying what it does (only for people reading the rules: the game doesn't show it). The day that ended is saved before they run and isn't changed by them.
+
+The rules so far:
+
+1. **Income:** each country earns 1 coin for each person living in its cities, the total population of the cities it owns, which is added to its money.
+2. **Population:** each city's population changes by a random amount. A city that is **not under siege grows by 1 to 3 percent**, and one that **is under siege shrinks by 5 to 10 percent** (each city gets its own random percent, anywhere in the range, not just whole numbers). The result is rounded to a whole number of people and kept between **100 and 100,000**: a city at 100 stays there under siege, and one at 100,000 stops growing. Because this comes after income, a country earns on the people its cities had at the end of the day, not the new ones. A city's size on the map follows its population, so cities that grow or shrink enough are redrawn.
+
+Both rules report in the newsreel of the day they start: **"Aldoria earns 18,642 coins"** for each country that earned something (a country with no cities earns nothing and isn't mentioned), and **"Port Aldor grows by 20 to 1,020"**, **"Port Aldor loses 75 people and falls to 925"** or **"Port Aldor, under siege, loses 75 people and falls to 925"** for each city whose population changed (one that stayed the same, such as a besieged city already at 100, isn't mentioned). Each item is saved with the id of its country or city (`income` and `population_changed`, with the amounts), like the rest of the news.
+
+## Money
+
+Every country has money, in whole coins, which it has none of when it is founded (`STARTING_MONEY` in `country.rs` is 0). It can go below zero (debt, shown in red). It is part of the country in each day's file (`money`), so it carries forward from day to day and every day's file keeps what the country had then, for looking back on.
+
+The **header** shows the money of the country you play, after the day, and the [countries menu](#countries-menu) shows each country's money beside its name. `DaySave::add_money` adds to or takes from a country's money; nothing earns or spends money yet, so it stays as it started.
 
 ## Region ownership
 
@@ -72,6 +95,8 @@ A city has a name, belongs to a country, stands on the map, and has a population
 **Hover over a city** to see a small panel with its name, its country and its population (with commas, like 12,345). A city counts as under the mouse when the mouse is over its buildings or just beside them, with a little extra room so a far-off city is not hard to point at.
 
 **Click a city** to open its popup, which shows its name, its country (with the country's color) and its population. A click is a press and release that hardly moves, so dragging the map over a city doesn't open it. Esc, Enter, the Close button, or a click outside the popup closes it.
+
+**Under siege:** every city has an *Under siege* switch in its popup, off when the city is founded. It is saved with the city (`under_siege`), carries forward from day to day, and each city has its own. Nothing in the game reacts to it yet: it is for the rules that will.
 
 **Changing a city's country:** click the country row of the popup to open a list of the countries (the current one is marked), and click another to give the city to it. The city's region goes with it, so it is owned by the new country (see [Region ownership](#region-ownership)). If another city of the old country stands in the same region, the change is refused with a message saying which, since a region can only belong to one country. The change is saved as soon as it is made. Esc closes the list first, and then the popup.
 

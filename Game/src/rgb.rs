@@ -74,7 +74,7 @@ impl Rgb {
     /// A random color, that is a pleasant one (not too pale, dark or dull) and as unlike `others` as
     /// the best of a handful of tries.
     pub fn random_distinct_from(others: &[Rgb]) -> Self {
-        let unit = || (ids::random_u64() >> 40) as f32 / (1u64 << 24) as f32;
+        let unit = ids::random_unit;
         let mut best = (f32::NEG_INFINITY, Self { r: 0, g: 0, b: 0 });
         for _ in 0..16 {
             let candidate = Self::from_hsv(unit() * 360.0, 0.5 + unit() * 0.25, 0.75 + unit() * 0.2);

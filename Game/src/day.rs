@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::calendar::Date;
 use crate::city::{self, City, INITIAL_POPULATION};
-use crate::country::{self, Country, RegionOwner};
+use crate::country::{self, Country, RegionOwner, STARTING_MONEY};
 use crate::ids::{CityId, CountryId, Guid, PersonId, TitleTypeId};
 use crate::newsreel::{Event, News};
 use crate::person::{self, Person};
@@ -69,10 +69,16 @@ impl DaySave {
 
     /// The save of the day after this one, as it starts: with everything that carries forward, and
     /// an empty newsreel.
-    // Used once days advance, which nothing does yet.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn following(&self, date: Date) -> Self {
         Self { date, newsreel: Vec::new(), ..self.clone() }
+    }
+
+    /// The day after this one, as it starts: everything that carries forward (see [`following`](Self::following)),
+    /// with the day's rules run on it (see [`crate::rules`]).
+    pub fn next_day(&self) -> Self {
+        let mut next = self.following(self.date.next());
+        crate::rules::run(&mut next);
+        next
     }
 
     /// The country with this id.
@@ -104,7 +110,7 @@ impl DaySave {
         let name = self.free_country_name(typed, None)?;
         let id = CountryId::new();
         let color = Rgb::random_distinct_from(&self.countries.iter().map(|c| c.color).collect::<Vec<_>>());
-        self.countries.push(Country { id, name, color });
+        self.countries.push(Country { id, name, color, money: STARTING_MONEY });
         self.player.get_or_insert(id);
         self.newsreel.push(News::about(id, Event::CountryFounded));
         Ok(())
@@ -126,6 +132,16 @@ impl DaySave {
         if let Some(country) = self.countries.iter_mut().find(|c| c.id == id) {
             country.name = name;
         }
+        Ok(())
+    }
+
+    /// Adds `amount` coins to the money of the country with this id, or takes them away if it is negative (the
+    /// money can go below zero). An error says why it can't be done.
+    // For income and spending, which nothing does yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn add_money(&mut self, id: CountryId, amount: i64) -> Result<(), String> {
+        let country = self.countries.iter_mut().find(|c| c.id == id).ok_or("There is no such country.")?;
+        country.money = country.money.checked_add(amount).ok_or("That is more money than there can be.")?;
         Ok(())
     }
 
@@ -215,6 +231,12 @@ impl DaySave {
         Ok(())
     }
 
+    /// Puts the city with this id under siege, or lifts the siege. An error says why it can't be done.
+    pub fn set_city_under_siege(&mut self, city: CityId, under_siege: bool) -> Result<(), String> {
+        self.cities.iter_mut().find(|c| c.id == city).ok_or("There is no such city.")?.under_siege = under_siege;
+        Ok(())
+    }
+
     /// Why a city of `country` can't stand in `region` (`None` for a map with no regions): a region that
     /// belongs to another country is that country's.
     pub fn city_region_problem(&self, country: CountryId, region: Option<u16>) -> Option<String> {
@@ -257,7 +279,7 @@ impl DaySave {
             return Err(format!("There is already a city called {name}."));
         }
         let id = CityId::new();
-        self.cities.push(City { id, country, name, x, z, region, population: INITIAL_POPULATION });
+        self.cities.push(City { id, country, name, x, z, region, population: INITIAL_POPULATION, under_siege: false });
         if let Some(region) = region {
             self.region_owners.retain(|o| o.region != region);
             self.region_owners.push(RegionOwner { region, country });
@@ -499,6 +521,55 @@ mod tests {
     }
 
     #[test]
+    fn every_country_starts_with_the_same_money_and_keeps_its_own() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        assert!(day.countries.iter().all(|c| c.money == STARTING_MONEY));
+
+        day.add_money(aldoria, 250).unwrap();
+        day.add_money(brevon, -400).unwrap();
+        assert_eq!(day.country(aldoria).unwrap().money, STARTING_MONEY + 250);
+        assert_eq!(day.country(brevon).unwrap().money, STARTING_MONEY - 400);
+        // It can go below zero, and come back up.
+        day.add_money(brevon, -1_000).unwrap();
+        assert_eq!(day.country(brevon).unwrap().money, STARTING_MONEY - 1_400);
+        day.add_money(brevon, 2_000).unwrap();
+        assert_eq!(day.country(brevon).unwrap().money, STARTING_MONEY + 600);
+    }
+
+    #[test]
+    fn money_that_cannot_be_added_changes_nothing() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let id = day.countries[0].id;
+        let before = day.clone();
+        assert!(day.add_money(CountryId::new(), 5).is_err());
+        day.add_money(id, i64::MAX - STARTING_MONEY).unwrap();
+        let full = day.clone();
+        assert!(day.add_money(id, 1).unwrap_err().contains("more money"));
+        assert_eq!(day, full);
+        assert_ne!(full, before);
+    }
+
+    #[test]
+    fn money_is_saved_with_the_country_and_carries_forward() {
+        let mut today = day();
+        today.found_country("Aldoria").unwrap();
+        let id = today.countries[0].id;
+        today.add_money(id, 234).unwrap();
+        let json = serde_json::to_value(&today).unwrap();
+        assert_eq!(json["countries"][0]["money"], STARTING_MONEY + 234);
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), today);
+        // Tomorrow starts with what it ended today with, and the two days then go their own ways.
+        let mut tomorrow = today.following(Date { year: 1, month: 1, day: 2 });
+        assert_eq!(tomorrow.country(id).unwrap().money, STARTING_MONEY + 234);
+        tomorrow.add_money(id, -100).unwrap();
+        assert_eq!(today.country(id).unwrap().money, STARTING_MONEY + 234);
+    }
+
+    #[test]
     fn only_a_country_that_there_is_can_be_recolored() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
@@ -628,6 +699,39 @@ mod tests {
         day.set_city_country(day.cities[0].id, brevon).unwrap();
         assert_eq!(day.cities[0].country, brevon);
         assert!(day.region_owners.is_empty());
+    }
+
+    #[test]
+    fn a_city_starts_free_and_can_be_put_under_siege_and_freed() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.found_city("Highmark", 100.0, 0.0, None).unwrap();
+        let (port, highmark) = (day.cities[0].id, day.cities[1].id);
+        assert!(day.cities.iter().all(|c| !c.under_siege));
+
+        day.set_city_under_siege(port, true).unwrap();
+        assert!(day.city(port).unwrap().under_siege);
+        assert!(!day.city(highmark).unwrap().under_siege, "each city has its own");
+        // It is saved, carries forward, and can be lifted.
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(json["cities"][0]["under_siege"], true);
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
+        assert!(day.following(Date { year: 1, month: 1, day: 2 }).city(port).unwrap().under_siege);
+        day.set_city_under_siege(port, false).unwrap();
+        assert!(!day.city(port).unwrap().under_siege);
+        assert!(day.set_city_under_siege(CityId::new(), true).is_err());
+    }
+
+    #[test]
+    fn a_city_saved_without_a_siege_is_not_under_one() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        let mut json = serde_json::to_value(&day).unwrap();
+        json["cities"][0].as_object_mut().unwrap().remove("under_siege");
+        let loaded: DaySave = serde_json::from_value(json).unwrap();
+        assert!(!loaded.cities[0].under_siege);
     }
 
     #[test]

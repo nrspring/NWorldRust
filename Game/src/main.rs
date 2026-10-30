@@ -2,6 +2,7 @@
 //! on it. Roads and units will be laid over the map from here too; none of that belongs to
 //! `nworld-map`.
 
+mod advance_popup;
 mod alerts;
 mod autosave;
 mod calendar;
@@ -16,6 +17,7 @@ mod color_picker;
 mod country;
 mod country_menu;
 mod day;
+mod format;
 mod hud;
 mod ids;
 mod newsreel;
@@ -24,6 +26,7 @@ mod overlays;
 mod person;
 mod placement;
 mod popup;
+mod rules;
 mod rgb;
 mod saves;
 #[cfg(test)]
@@ -40,6 +43,7 @@ use nworld_map::world::World;
 use nworld_view::style::{Style, Weight};
 use nworld_view::{mouse_ray, pick_terrain, MapView};
 
+use advance_popup::AdvancePopup;
 use alerts::AlertsUi;
 use autosave::Autosave;
 use camera::GameCamera;
@@ -167,6 +171,9 @@ async fn main() {
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
     let mut alerts_ui = AlertsUi::default();
+    let mut newsreel_panel = hud::NewsreelPanel::default();
+    // The popup that asks whether to end the day.
+    let mut advance_popup = AdvancePopup::default();
     let mut country_menu = CountryMenu::default();
     // The popup for the city that was clicked.
     let mut city_popup = CityPopup::default();
@@ -183,7 +190,9 @@ async fn main() {
         if is_key_pressed(KeyCode::Escape) {
             // Esc first backs out of the countries menu, or closes the options, or gives up on naming a
             // city, and only then quits.
-            if city_popup.is_open() {
+            if advance_popup.is_open() {
+                advance_popup.close();
+            } else if city_popup.is_open() {
                 city_popup.escape();
             } else if country_menu.is_open() {
                 country_menu.escape();
@@ -209,11 +218,11 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || country_menu.is_open() || city_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse);
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse);
         if modal {
             camera.skip_frame();
         } else {
@@ -265,11 +274,18 @@ async fn main() {
 
         set_default_camera();
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
-        let country_button = hud::header(&style, &day, !modal);
-        if !modal && is_mouse_button_pressed(MouseButton::Left) && country_button.is_some_and(|b| b.contains(mouse)) {
-            options_ui.close();
-            overlays_ui.close();
-            country_menu.open(&day);
+        let header = hud::header(&style, &day, !modal);
+        if !modal && is_mouse_button_pressed(MouseButton::Left) {
+            if header.country.is_some_and(|b| b.contains(mouse)) {
+                options_ui.close();
+                overlays_ui.close();
+                country_menu.open(&day);
+            } else if header.day.contains(mouse) {
+                // Ending the day is asked about first.
+                options_ui.close();
+                overlays_ui.close();
+                advance_popup.open(day.date);
+            }
         }
         let footer = hud::footer(&style, !modal);
         autosave.update(&saves, &day, get_time());
@@ -277,7 +293,7 @@ async fn main() {
             hud::save_failed(&style, message);
         }
         if !modal {
-            let newsreel = hud::newsreel(&style, &day);
+            let newsreel = newsreel_panel.show(&style, &day);
             // An alert opens the countries menu at the country it is about.
             if let Some(country) = alerts_ui.show(&style, &day, newsreel) {
                 options_ui.close();
@@ -331,10 +347,22 @@ async fn main() {
             }
         }
 
-        if let Some((city, country)) = city_popup.show(&style, &day) {
+        if advance_popup.show(&style) {
+            // The day that ended is saved as it was, and the game goes on to the next.
+            match saves.advance(&day) {
+                Ok(next) => {
+                    day = next;
+                    autosave.reset(&day, get_time());
+                    advance_popup.close();
+                }
+                Err(message) => advance_popup.fail(message),
+            }
+        }
+
+        if let Some(change) = city_popup.show(&style, &day) {
             // Only keep the change if it is saved too.
             let mut updated = day.clone();
-            match updated.set_city_country(city, country).and_then(|()| autosave.save_now(&saves, &updated)) {
+            match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
                 Ok(()) => day = updated,
                 Err(message) => city_popup.fail(message),
             }

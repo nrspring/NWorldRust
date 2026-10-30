@@ -5,8 +5,9 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
 use crate::day::DaySave;
-use crate::hud::thousands;
+use crate::format::thousands;
 use crate::ids::{CityId, CountryId};
+use crate::options;
 use crate::popup::{self, Icon};
 
 const CARD_WIDTH: f32 = 380.0;
@@ -21,6 +22,25 @@ const LIST_PADDING: f32 = 6.0;
 const MAX_LIST_ROWS: usize = 6;
 /// How long the popup takes to appear, in seconds.
 const FADE_IN: f64 = 0.22;
+
+/// What the player changed about the city in the popup.
+#[derive(Debug, PartialEq)]
+pub enum Change {
+    /// The city now belongs to this country.
+    Country(CityId, CountryId),
+    /// The city is now under siege (or not).
+    Siege(CityId, bool),
+}
+
+impl Change {
+    /// Does it to `day`. An error says why it can't be done.
+    pub fn apply(&self, day: &mut DaySave) -> Result<(), String> {
+        match self {
+            Self::Country(city, country) => day.set_city_country(*city, *country),
+            Self::Siege(city, under_siege) => day.set_city_under_siege(*city, *under_siege),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct CityPopup {
@@ -61,8 +81,8 @@ impl CityPopup {
     }
 
     /// Takes the mouse and Enter for this frame and draws the popup over everything. A city that is not
-    /// in `day` is not shown. Returns the city and the country the player chose to change it to.
-    pub fn show(&mut self, style: &Style, day: &DaySave) -> Option<(CityId, CountryId)> {
+    /// in `day` is not shown. Returns what the player changed about the city, if they did.
+    pub fn show(&mut self, style: &Style, day: &DaySave) -> Option<Change> {
         let Some(city) = self.city.and_then(|id| day.city(id)) else {
             self.city = None;
             return None;
@@ -78,7 +98,7 @@ impl CityPopup {
 
         let country = day.country(city.country);
         let error_height = if self.error.is_some() { 24.0 } else { 0.0 };
-        let height = ROWS_TOP + ROW_HEIGHT * 2.0 + 16.0 + error_height + BUTTON_HEIGHT + PADDING;
+        let height = ROWS_TOP + ROW_HEIGHT * 3.0 + 16.0 + error_height + BUTTON_HEIGHT + PADDING;
         let card = Rect::new((screen_w - CARD_WIDTH) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, CARD_WIDTH, height);
         style::card(card, 18.0, style::PANEL);
 
@@ -97,7 +117,9 @@ impl CityPopup {
         let population_row = Rect::new(inner_x, country_row.bottom(), inner_w, ROW_HEIGHT);
         draw_line(inner_x, country_row.y, inner_x + inner_w, country_row.y, 1.0, style::BORDER);
         draw_line(inner_x, population_row.y, inner_x + inner_w, population_row.y, 1.0, style::BORDER);
-        draw_line(inner_x, population_row.bottom(), inner_x + inner_w, population_row.bottom(), 1.0, style::BORDER);
+        let siege_row = Rect::new(inner_x, population_row.bottom(), inner_w, ROW_HEIGHT);
+        draw_line(inner_x, siege_row.y, inner_x + inner_w, siege_row.y, 1.0, style::BORDER);
+        draw_line(inner_x, siege_row.bottom(), inner_x + inner_w, siege_row.bottom(), 1.0, style::BORDER);
 
         let over_country = country_row.contains(mouse);
         if over_country || self.choosing {
@@ -125,8 +147,15 @@ impl CityPopup {
         let population_x = population_row.right() - style.measure(&population, 14, Weight::Semibold).width;
         style.text_mid(&population, population_x, population_row.center().y, 14, Weight::Semibold, style::TEXT);
 
+        // The siege switch, which is for the list of countries to cover while it is open.
+        let mut under_siege = city.under_siege;
+        options::toggle(style, Rect::new(siege_row.x - 12.0, siege_row.y, siege_row.w + 24.0, siege_row.h), "Under siege", None, &mut under_siege, !self.choosing);
+        if under_siege != city.under_siege {
+            change = Some(Change::Siege(city.id, under_siege));
+        }
+
         if let Some(error) = &self.error {
-            style.text(error, inner_x, population_row.bottom() + 24.0, 12, Weight::Regular, style::ERROR);
+            style.text(error, inner_x, siege_row.bottom() + 24.0, 12, Weight::Regular, style::ERROR);
         }
 
         // The button that closes it.
@@ -166,7 +195,7 @@ impl CityPopup {
                 if clicked && rect.contains(mouse) {
                     // The country it is already in is no change, so there is nothing to save.
                     if listed.id != city.country {
-                        change = Some((city.id, listed.id));
+                        change = Some(Change::Country(city.id, listed.id));
                     }
                     self.choosing = false;
                 }

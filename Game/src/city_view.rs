@@ -193,7 +193,7 @@ impl CityRenderer {
     /// easy to see from far away.
     pub fn draw_site(&mut self, world: &World, at: Vec2, can_build: bool, camera: &Camera3D) {
         // The preview is not a real city, so it has ids that are never any city's.
-        let city = City { id: CityId::from_u128(0), country: CountryId::from_u128(0), name: String::new(), x: at.x, z: at.y, region: None, population: INITIAL_POPULATION };
+        let city = City { id: CityId::from_u128(0), country: CountryId::from_u128(0), name: String::new(), x: at.x, z: at.y, region: None, population: INITIAL_POPULATION, under_siege: false };
         let tint = if can_build { vec4(0.3, 0.9, 0.4, 0.45) } else { vec4(0.95, 0.3, 0.3, 0.6) };
         self.use_material(camera, tint);
         for mesh in &shape(&city, world).meshes {

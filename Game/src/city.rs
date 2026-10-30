@@ -11,9 +11,9 @@ use crate::text;
 pub const MAX_NAME_CHARS: usize = 32;
 /// The population of a new city.
 pub const INITIAL_POPULATION: u32 = 100;
+/// The fewest people a city can have: it doesn't fall below the number it started with.
+pub const MIN_POPULATION: u32 = INITIAL_POPULATION;
 /// The most people a city can have.
-// Used once cities grow, which nothing does yet.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const MAX_POPULATION: u32 = 100_000;
 /// The population at which a city stops growing in size. With more people than this it is the same
 /// size, though the population goes on up to [`MAX_POPULATION`].
@@ -34,6 +34,9 @@ pub struct City {
     #[serde(default)]
     pub region: Option<u16>,
     pub population: u32,
+    /// Whether the city is under siege. It starts out not, and the player switches it on and off.
+    #[serde(default)]
+    pub under_siege: bool,
 }
 
 impl City {

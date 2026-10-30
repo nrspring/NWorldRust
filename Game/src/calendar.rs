@@ -24,6 +24,18 @@ impl Date {
         self.year >= 1 && (1..=MONTHS_PER_YEAR).contains(&self.month) && (1..=DAYS_PER_MONTH).contains(&self.day)
     }
 
+    /// The day after this one: the next day of the month, then the first of the next month, then the first
+    /// of the next year.
+    pub fn next(self) -> Date {
+        if self.day < DAYS_PER_MONTH {
+            Date { day: self.day + 1, ..self }
+        } else if self.month < MONTHS_PER_YEAR {
+            Date { month: self.month + 1, day: 1, ..self }
+        } else {
+            Date { year: self.year.saturating_add(1), month: 1, day: 1 }
+        }
+    }
+
     /// A name for the day's save file. Names sort in date order, up to year 9999.
     pub fn file_stem(self) -> String {
         format!("year-{:04}_month-{:02}_day-{:02}", self.year, self.month, self.day)
@@ -52,6 +64,21 @@ mod tests {
         assert!(last.is_valid());
         assert!(!Date { month: 11, ..last }.is_valid());
         assert!(!Date { day: 21, ..last }.is_valid());
+    }
+
+    #[test]
+    fn the_next_day_goes_on_through_the_months_and_years() {
+        assert_eq!(Date::FIRST.next(), Date { year: 1, month: 1, day: 2 });
+        assert_eq!(Date { year: 1, month: 1, day: 20 }.next(), Date { year: 1, month: 2, day: 1 });
+        assert_eq!(Date { year: 1, month: 10, day: 19 }.next(), Date { year: 1, month: 10, day: 20 });
+        assert_eq!(Date { year: 1, month: 10, day: 20 }.next(), Date { year: 2, month: 1, day: 1 });
+        // Every day from the first on is a day of the calendar, and there are 200 in a year.
+        let mut date = Date::FIRST;
+        for _ in 0..2_000 {
+            date = date.next();
+            assert!(date.is_valid(), "{date}");
+        }
+        assert_eq!(date, Date { year: 11, month: 1, day: 1 });
     }
 
     #[test]

@@ -1,0 +1,298 @@
+//! The rules that run when the day changes. When the player ends a day, the next day starts as a copy of
+//! it (see [`DaySave::following`]) and then each rule here runs on the new day, one after another in the
+//! order they are listed, so a later rule sees what the earlier ones did.
+//!
+//! A rule is a function that changes the new day. To add one, write the function and put it in [`DAY_RULES`]
+//! with a sentence saying what it does. The popup that asks about ending the day doesn't list them.
+
+use crate::city::{MAX_POPULATION, MIN_POPULATION};
+use crate::day::DaySave;
+use crate::ids;
+use crate::newsreel::{Event, News};
+
+/// A rule that runs on a day switch.
+pub struct Rule {
+    /// What it does, in a sentence. Nothing in the game shows it; it is there for whoever reads the rules, and the
+    /// tests check that every rule has one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub description: &'static str,
+    /// Changes the day that is starting.
+    apply: fn(&mut DaySave),
+}
+
+/// How much a city that is not under siege grows by in a day, as a percent of its population: somewhere
+/// between these.
+const GROWTH_PERCENT: (f64, f64) = (1.0, 3.0);
+/// How much a city under siege shrinks by in a day, as a percent of its population: somewhere between these.
+const SIEGE_LOSS_PERCENT: (f64, f64) = (5.0, 10.0);
+
+/// The rules, in the order they run.
+pub const DAY_RULES: &[Rule] = &[
+    Rule { description: "Each country earns 1 coin for each person living in its cities.", apply: income },
+    Rule {
+        description: "A city that is not under siege grows by 1 to 3 percent, and one under siege shrinks by 5 to 10 percent, each by a random amount. No city has fewer than 100 people or more than 100,000.",
+        apply: population,
+    },
+];
+
+/// Runs every rule, in order, on `day`, which has just started.
+pub fn run(day: &mut DaySave) {
+    for rule in DAY_RULES {
+        (rule.apply)(day);
+    }
+}
+
+/// Each country gets 1 coin for each person in the cities it owns: the total population of its cities. A country
+/// that earned something is in the newsreel.
+fn income(day: &mut DaySave) {
+    for country in &mut day.countries {
+        let population: u64 = day.cities.iter().filter(|city| city.country == country.id).map(|city| city.population as u64).sum();
+        let before = country.money;
+        country.money = before.saturating_add(i64::try_from(population).unwrap_or(i64::MAX));
+        let earned = country.money - before;
+        if earned > 0 {
+            day.newsreel.push(News::about(country.id, Event::Income { amount: earned }));
+        }
+    }
+}
+
+/// Each city's population changes by a random amount: it grows by 1 to 3 percent, or, if the city is under
+/// siege, shrinks by 5 to 10 percent, and then stays between the least and the most a city can have. A city
+/// whose population changed is in the newsreel.
+fn population(day: &mut DaySave) {
+    change_populations(day, ids::random_unit);
+}
+
+/// [`population`], with `unit` giving the random numbers (each from 0 up to 1, one for each city), so that
+/// tests can choose them.
+fn change_populations(day: &mut DaySave, mut unit: impl FnMut() -> f32) {
+    for city in &mut day.cities {
+        let from = city.population;
+        city.population = next_population(from, city.under_siege, unit());
+        if city.population != from {
+            day.newsreel.push(News::about(city.id, Event::PopulationChanged { from, to: city.population, under_siege: city.under_siege }));
+        }
+    }
+}
+
+/// What a city of `population` people has the next day: it changes by a percent that is `unit` (0 up to 1) of the
+/// way through the range for its situation, and the result is kept between the least and the most a city can
+/// have. A city under siege loses people, and any other gains them.
+fn next_population(population: u32, under_siege: bool, unit: f32) -> u32 {
+    let unit = f64::from(unit.clamp(0.0, 1.0));
+    let factor = if under_siege {
+        1.0 - (SIEGE_LOSS_PERCENT.0 + (SIEGE_LOSS_PERCENT.1 - SIEGE_LOSS_PERCENT.0) * unit) / 100.0
+    } else {
+        1.0 + (GROWTH_PERCENT.0 + (GROWTH_PERCENT.1 - GROWTH_PERCENT.0) * unit) / 100.0
+    };
+    let changed = (f64::from(population) * factor).round();
+    (changed as u32).clamp(MIN_POPULATION, MAX_POPULATION)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calendar::Date;
+
+    #[test]
+    fn a_city_that_is_free_grows_by_one_to_three_percent() {
+        assert_eq!(next_population(1_000, false, 0.0), 1_010, "the least");
+        assert_eq!(next_population(1_000, false, 0.5), 1_020, "in the middle");
+        assert_eq!(next_population(1_000, false, 1.0), 1_030, "the most");
+        for n in 0..1_000 {
+            let grown = next_population(5_000, false, n as f32 / 1_000.0);
+            assert!((5_050..=5_150).contains(&grown), "{grown}");
+        }
+    }
+
+    #[test]
+    fn a_city_under_siege_shrinks_by_five_to_ten_percent() {
+        assert_eq!(next_population(1_000, true, 0.0), 950, "the least");
+        assert_eq!(next_population(1_000, true, 0.5), 925, "in the middle");
+        assert_eq!(next_population(1_000, true, 1.0), 900, "the most");
+        for n in 0..1_000 {
+            let shrunk = next_population(5_000, true, n as f32 / 1_000.0);
+            assert!((4_500..=4_750).contains(&shrunk), "{shrunk}");
+        }
+    }
+
+    #[test]
+    fn a_citys_population_stays_between_100_and_100_000() {
+        // Under siege at the least a city can have, it stays there.
+        assert_eq!(next_population(100, true, 0.7), 100);
+        assert_eq!(next_population(105, true, 1.0), 100, "it can't fall below it");
+        // As big as it can be, it stays there.
+        assert_eq!(next_population(100_000, false, 0.7), 100_000);
+        assert_eq!(next_population(99_000, false, 1.0), 100_000, "it can't pass it");
+        // A city that somehow has more or fewer than the limits is brought back to them.
+        assert_eq!(next_population(250_000, false, 0.5), 100_000);
+        assert_eq!(next_population(30, false, 0.5), 100);
+        // Both are loosened by a siege being lifted or put on: a city at the top shrinks if besieged.
+        assert_eq!(next_population(100_000, true, 0.0), 95_000);
+        assert!(next_population(100, false, 0.0) > 100, "a city at the bottom grows if free");
+    }
+
+    #[test]
+    fn a_random_number_outside_the_range_is_taken_as_its_nearest_end() {
+        assert_eq!(next_population(1_000, false, 7.0), 1_030);
+        assert_eq!(next_population(1_000, false, -3.0), 1_010);
+    }
+
+    #[test]
+    fn each_city_has_its_own_random_number_and_its_own_siege() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        for (k, name) in ["Port Aldor", "Highmark", "Lowmoor"].into_iter().enumerate() {
+            day.found_city(name, k as f32 * 100.0, 0.0, None).unwrap();
+            day.cities[k].population = 1_000;
+        }
+        day.set_city_under_siege(day.cities[1].id, true).unwrap();
+
+        // The numbers are used one for each city, in order: 0 for the first, 1 for the second, 0.5 for the third.
+        let mut numbers = [0.0, 1.0, 0.5].into_iter();
+        change_populations(&mut day, || numbers.next().unwrap());
+        assert_eq!(day.cities.iter().map(|c| c.population).collect::<Vec<_>>(), [1_010, 900, 1_020]);
+    }
+
+    #[test]
+    fn the_real_rule_changes_populations_within_the_ranges() {
+        for _ in 0..50 {
+            let mut day = day();
+            day.found_country("Aldoria").unwrap();
+            day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+            day.found_city("Highmark", 100.0, 0.0, None).unwrap();
+            day.cities[0].population = 10_000;
+            day.cities[1].population = 10_000;
+            day.set_city_under_siege(day.cities[1].id, true).unwrap();
+            population(&mut day);
+            assert!((10_100..=10_300).contains(&day.cities[0].population), "{}", day.cities[0].population);
+            assert!((9_000..=9_500).contains(&day.cities[1].population), "{}", day.cities[1].population);
+        }
+    }
+
+    #[test]
+    fn income_comes_from_the_populations_before_they_change() {
+        // Income is the first rule and population the second, so a country earns on the people it had.
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let id = day.countries[0].id;
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.cities[0].population = 1_000;
+        run(&mut day);
+        assert_eq!(day.country(id).unwrap().money, 1_000);
+        assert!((1_010..=1_030).contains(&day.cities[0].population));
+    }
+
+    fn day() -> DaySave {
+        DaySave::new(Date::FIRST, "Assets/map.nworld")
+    }
+
+    #[test]
+    fn a_country_earns_a_coin_for_each_person_in_its_cities() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        day.found_country("Cardell").unwrap();
+        let (aldoria, brevon, cardell) = (day.countries[0].id, day.countries[1].id, day.countries[2].id);
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.found_city("Highmark", 100.0, 0.0, None).unwrap();
+        day.cities[0].population = 1_200;
+        day.cities[1].population = 340;
+        day.set_city_country(day.cities[1].id, brevon).unwrap();
+        day.found_city("Lowmoor", 200.0, 0.0, None).unwrap();
+        day.cities[2].population = 60;
+
+        income(&mut day);
+        // Aldoria has Port Aldor and Lowmoor (the player's country gets new cities), Brevon has Highmark.
+        assert_eq!(day.country(aldoria).unwrap().money, 1_200 + 60);
+        assert_eq!(day.country(brevon).unwrap().money, 340);
+        assert_eq!(day.country(cardell).unwrap().money, 0, "a country with no cities earns nothing");
+    }
+
+    #[test]
+    fn income_is_added_to_the_money_a_country_has() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let id = day.countries[0].id;
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.add_money(id, 500).unwrap();
+        income(&mut day);
+        assert_eq!(day.country(id).unwrap().money, 500 + 100);
+        income(&mut day);
+        assert_eq!(day.country(id).unwrap().money, 500 + 200);
+    }
+
+    #[test]
+    fn a_country_that_earns_is_in_the_newsreel_and_one_that_does_not_is_not() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.cities[0].population = 1_200;
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.newsreel.clear();
+
+        income(&mut day);
+        assert_eq!(day.newsreel, [News::about(aldoria, Event::Income { amount: 1_200 })]);
+        assert!(day.newsreel.iter().all(|n| n.subject != brevon.into()), "Brevon earned nothing, so there is no news of it");
+    }
+
+    #[test]
+    fn a_city_whose_population_changed_is_in_the_newsreel_with_how() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        for (k, name) in ["Port Aldor", "Highmark", "Lowmoor"].into_iter().enumerate() {
+            day.found_city(name, k as f32 * 100.0, 0.0, None).unwrap();
+        }
+        day.cities[0].population = 1_000;
+        day.cities[1].population = 1_000;
+        day.cities[2].population = 100; // As few as there can be, and under siege: no change.
+        day.set_city_under_siege(day.cities[1].id, true).unwrap();
+        day.set_city_under_siege(day.cities[2].id, true).unwrap();
+        let ids: Vec<_> = day.cities.iter().map(|c| c.id).collect();
+        day.newsreel.clear();
+
+        change_populations(&mut day, || 0.0);
+        assert_eq!(
+            day.newsreel,
+            [
+                News::about(ids[0], Event::PopulationChanged { from: 1_000, to: 1_010, under_siege: false }),
+                News::about(ids[1], Event::PopulationChanged { from: 1_000, to: 950, under_siege: true }),
+            ],
+            "the city that did not change is not in it"
+        );
+    }
+
+    #[test]
+    fn income_cannot_overflow_the_money() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let id = day.countries[0].id;
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.add_money(id, i64::MAX - 10).unwrap();
+        income(&mut day);
+        assert_eq!(day.country(id).unwrap().money, i64::MAX);
+    }
+
+    #[test]
+    fn running_the_rules_changes_only_money_populations_and_the_newsreel() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
+        let mut ran = day.clone();
+        run(&mut ran);
+        ran.countries[0].money = day.countries[0].money;
+        ran.cities[0].population = day.cities[0].population;
+        // The news is added to, and what was in it is as it was.
+        assert_eq!(ran.newsreel.len(), day.newsreel.len() + 2, "income and population");
+        ran.newsreel.truncate(day.newsreel.len());
+        assert_eq!(ran, day);
+    }
+
+    #[test]
+    fn every_rule_says_what_it_does() {
+        assert!(!DAY_RULES.is_empty());
+        assert!(DAY_RULES.iter().all(|rule| !rule.description.trim().is_empty()));
+    }
+}

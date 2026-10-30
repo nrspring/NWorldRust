@@ -8,6 +8,8 @@ use crate::text;
 
 /// The longest a country's name can be, in characters.
 pub const MAX_NAME_CHARS: usize = 32;
+/// The money a country has when it is founded.
+pub const STARTING_MONEY: i64 = 0;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Country {
@@ -17,6 +19,10 @@ pub struct Country {
     pub name: String,
     /// What the country is shown in. Random when it is founded, and the player can change it.
     pub color: Rgb,
+    /// The country's money, in whole coins. It can go below zero, which is debt. Each day's file has what the
+    /// country had that day, so it can be looked back on.
+    #[serde(default)]
+    pub money: i64,
 }
 
 /// A region of the map that a country owns. A region nobody owns has none of these.

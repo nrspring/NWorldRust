@@ -6,6 +6,7 @@ use nworld_view::style::{self, Style, Weight};
 
 use crate::city::City;
 use crate::day::DaySave;
+use crate::format::{money, thousands};
 
 /// Distance of the panels from the edges of the window.
 const MARGIN: f32 = 16.0;
@@ -38,10 +39,18 @@ pub fn header_rect() -> Rect {
     Rect::new(0.0, 0.0, screen_width(), HEADER_HEIGHT)
 }
 
+/// The buttons of the header, where they are.
+pub struct HeaderButtons {
+    /// The player's country, for the countries menu, once there is one.
+    pub country: Option<Rect>,
+    /// The day, for ending it.
+    pub day: Rect,
+}
+
 /// The header along the top of the window: the player's country, once there is one, which is a button
-/// for the countries menu (lit when the mouse is over it, if `interactive`), and the day. Returns
-/// where the button is.
-pub fn header(style: &Style, day: &DaySave, interactive: bool) -> Option<Rect> {
+/// for the countries menu, and the day, which is a button for ending it (each lit when the mouse is over
+/// it, if `interactive`), and the money of the country. Returns where the buttons are.
+pub fn header(style: &Style, day: &DaySave, interactive: bool) -> HeaderButtons {
     let bar = header_rect();
     draw_rectangle(bar.x, bar.y, bar.w, bar.h, style::GLASS);
     draw_line(bar.x, bar.bottom(), bar.right(), bar.bottom(), 1.0, style::BORDER);
@@ -62,11 +71,26 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool) -> Option<Rect> {
         draw_triangle(vec2(arrow - 4.0, y - 1.5), vec2(arrow + 4.0, y - 1.5), vec2(arrow, y + 2.5), style::TEXT_MUTED);
         // A dot between the country and the day.
         draw_circle(pill.right() + 8.0, y, 2.0, style::TEXT_MUTED);
-        x = pill.right() + 18.0;
+        x = pill.right() + 28.0;
         button = Some(pill);
     }
-    style.text_mid(&format!("Day {}", day.date), x, y, BAR_TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
-    button
+    let day_text = format!("Day {}", day.date);
+    let day_width = style.measure(&day_text, BAR_TEXT_SIZE, Weight::Regular).width;
+    let day_button = Rect::new(x - 8.0, y - 14.0, day_width + 16.0, 28.0);
+    let day_hovered = interactive && day_button.contains(Vec2::from(mouse_position()));
+    if day_hovered {
+        style::rounded_rect(day_button, 8.0, style::HOVER);
+    }
+    style.text_mid(&day_text, x, y, BAR_TEXT_SIZE, Weight::Regular, if day_hovered { style::TEXT } else { style::TEXT_MUTED });
+    // The player's country's money, after the day.
+    if let Some(country) = day.player_country() {
+        x += day_width;
+        draw_circle(x + 14.0, y, 2.0, style::TEXT_MUTED);
+        draw_coin(vec2(x + 31.0, y), 6.5);
+        let color = if country.money < 0 { style::ERROR } else { style::TEXT };
+        style.text_mid(&money(country.money), x + 43.0, y, BAR_TEXT_SIZE, Weight::Semibold, color);
+    }
+    HeaderButtons { country: button, day: day_button }
 }
 
 /// The footer along the bottom of the window: the frame rate at the left and, when `keys` is set and
@@ -101,17 +125,11 @@ pub fn save_failed(style: &Style, message: &str) {
     style.text_mid(message, panel.x + 16.0, panel.y + 38.0, 12, Weight::Regular, style::TEXT_MUTED);
 }
 
-/// A whole number with a comma between each three digits: 12,345.
-pub fn thousands(n: u32) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
+/// A gold coin, about `radius` pixels across.
+pub fn draw_coin(center: Vec2, radius: f32) {
+    draw_circle(center.x, center.y, radius, Color::new(0.80, 0.58, 0.12, 1.0));
+    draw_circle(center.x, center.y, radius * 0.78, Color::new(0.97, 0.78, 0.28, 1.0));
+    draw_circle(center.x, center.y, radius * 0.42, Color::new(0.80, 0.58, 0.12, 1.0));
 }
 
 /// What there is to know of `city`, next to the mouse: its name, its country and its population.
@@ -175,44 +193,105 @@ fn help(style: &Style, footer: Rect, left: f32, right: f32) {
     }
 }
 
-/// The day's newsreel, at the top right. Returns where it is.
-pub fn newsreel(style: &Style, day: &DaySave) -> Rect {
-    const TEXT_SIZE: u16 = 12;
-    const LINE: f32 = 16.0;
-    const ITEM_GAP: f32 = 7.0;
-    let text_width = NEWSREEL_WIDTH - 24.0 - 16.0;
+/// The day's newsreel, at the top right. It is as tall as its news, up to a limit, and past that it shows
+/// as many items as fit and the mouse wheel scrolls through the rest, an item at a time.
+#[derive(Default)]
+pub struct NewsreelPanel {
+    /// The first item showing.
+    first: usize,
+    /// Where it was drawn last, so the mouse can be told it is over it.
+    rect: Rect,
+}
 
-    let items: Vec<Vec<String>> = day.newsreel.iter().map(|n| wrap(style, &n.headline(day), TEXT_SIZE, text_width)).collect();
-    let body: f32 = if items.is_empty() {
-        LINE
-    } else {
-        items.iter().map(|lines| lines.len() as f32 * LINE).sum::<f32>() + ITEM_GAP * (items.len() - 1) as f32
-    };
-    let panel = Rect::new(screen_width() - NEWSREEL_WIDTH - MARGIN, HEADER_HEIGHT + MARGIN, NEWSREEL_WIDTH, 12.0 + 14.0 + 10.0 + body + 12.0);
-    style::card(panel, 10.0, style::GLASS);
-
-    // The header: a red "live" dot, the name, and the day.
-    let header_y = panel.y + 12.0 + 7.0;
-    draw_circle(panel.x + 16.0, header_y, 3.0, Color::new(0.93, 0.27, 0.27, 1.0));
-    style.text_mid("NEWSREEL", panel.x + 26.0, header_y, 10, Weight::Semibold, style::TEXT);
-    let date = format!("Day {}", day.date);
-    let date_w = style.measure(&date, 10, Weight::Regular).width;
-    style.text_mid(&date, panel.right() - 12.0 - date_w, header_y, 10, Weight::Regular, style::TEXT_MUTED);
-    draw_line(panel.x + 12.0, header_y + 11.0, panel.right() - 12.0, header_y + 11.0, 1.0, style::BORDER);
-
-    let mut y = header_y + 11.0 + 10.0;
-    if items.is_empty() {
-        style.text_mid("Nothing to report yet.", panel.x + 12.0, y + LINE * 0.5, TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
-        return panel;
+impl NewsreelPanel {
+    /// Whether the mouse is over it, and so is not for the map.
+    pub fn has_mouse(&self, mouse: Vec2) -> bool {
+        self.rect.contains(mouse)
     }
-    for lines in &items {
-        draw_circle(panel.x + 16.0, y + LINE * 0.5, 2.5, style::ACCENT);
-        for (k, line) in lines.iter().enumerate() {
-            style.text_mid(line, panel.x + 28.0, y + LINE * (k as f32 + 0.5), TEXT_SIZE, Weight::Regular, style::TEXT);
+
+    /// Draws it and scrolls it if the player turns the wheel over it. Returns where it is.
+    pub fn show(&mut self, style: &Style, day: &DaySave) -> Rect {
+        const TEXT_SIZE: u16 = 12;
+        const LINE: f32 = 16.0;
+        const ITEM_GAP: f32 = 7.0;
+        const NOTE_HEIGHT: f32 = 26.0;
+        let text_width = NEWSREEL_WIDTH - 24.0 - 16.0;
+
+        let items: Vec<Vec<String>> = day.newsreel.iter().map(|n| wrap(style, &n.headline(day), TEXT_SIZE, text_width)).collect();
+        let heights: Vec<f32> = items.iter().map(|lines| lines.len() as f32 * LINE).collect();
+        // The most the body of the panel may take: a good part of the window, and room left for what is under it.
+        let room = screen_height() - HEADER_HEIGHT - FOOTER_HEIGHT - MARGIN * 2.0 - 110.0;
+        let max_body = room.min(screen_height() * 0.45).max(80.0);
+
+        // The wheel scrolls it while the mouse is over it.
+        if self.rect.contains(Vec2::from(mouse_position())) && mouse_wheel().1 != 0.0 {
+            self.first = if mouse_wheel().1 > 0.0 { self.first.saturating_sub(1) } else { self.first + 1 };
         }
-        y += lines.len() as f32 * LINE + ITEM_GAP;
+        // Scrolled no further than where the last item is at the bottom of a full panel.
+        let mut used = 0.0;
+        let mut last_page = items.len();
+        for i in (0..items.len()).rev() {
+            let need = heights[i] + if i + 1 < items.len() { ITEM_GAP } else { 0.0 };
+            if used + need > max_body {
+                break;
+            }
+            used += need;
+            last_page = i;
+        }
+        self.first = self.first.min(last_page.min(items.len().saturating_sub(1)));
+
+        // The items that fit from there.
+        let mut shown = 0;
+        let mut body = 0.0;
+        for h in &heights[self.first..] {
+            let need = h + if shown > 0 { ITEM_GAP } else { 0.0 };
+            if body + need > max_body && shown > 0 {
+                break;
+            }
+            body += need;
+            shown += 1;
+        }
+        let (before, after) = (self.first, items.len() - self.first - shown);
+        if items.is_empty() {
+            body = LINE;
+        }
+        let note = if before + after > 0 { NOTE_HEIGHT } else { 0.0 };
+        let panel = Rect::new(screen_width() - NEWSREEL_WIDTH - MARGIN, HEADER_HEIGHT + MARGIN, NEWSREEL_WIDTH, 12.0 + 14.0 + 10.0 + body + note + 12.0);
+        self.rect = panel;
+        style::card(panel, 10.0, style::GLASS);
+
+        // The header: a red "live" dot, the name, and the day.
+        let header_y = panel.y + 12.0 + 7.0;
+        draw_circle(panel.x + 16.0, header_y, 3.0, Color::new(0.93, 0.27, 0.27, 1.0));
+        style.text_mid("NEWSREEL", panel.x + 26.0, header_y, 10, Weight::Semibold, style::TEXT);
+        let date = format!("Day {}", day.date);
+        let date_w = style.measure(&date, 10, Weight::Regular).width;
+        style.text_mid(&date, panel.right() - 12.0 - date_w, header_y, 10, Weight::Regular, style::TEXT_MUTED);
+        draw_line(panel.x + 12.0, header_y + 11.0, panel.right() - 12.0, header_y + 11.0, 1.0, style::BORDER);
+
+        let mut y = header_y + 11.0 + 10.0;
+        if items.is_empty() {
+            style.text_mid("Nothing to report yet.", panel.x + 12.0, y + LINE * 0.5, TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
+            return panel;
+        }
+        for lines in &items[self.first..self.first + shown] {
+            draw_circle(panel.x + 16.0, y + LINE * 0.5, 2.5, style::ACCENT);
+            for (k, line) in lines.iter().enumerate() {
+                style.text_mid(line, panel.x + 28.0, y + LINE * (k as f32 + 0.5), TEXT_SIZE, Weight::Regular, style::TEXT);
+            }
+            y += lines.len() as f32 * LINE + ITEM_GAP;
+        }
+        // What is out of sight, and that the wheel brings it in.
+        if before + after > 0 {
+            let more = match (before, after) {
+                (0, after) => format!("{after} more below. Scroll for them."),
+                (before, 0) => format!("{before} earlier above. Scroll up for them."),
+                (before, after) => format!("{before} above and {after} below. Scroll for them."),
+            };
+            style.text_mid(&more, panel.x + 14.0, panel.bottom() - 12.0 - NOTE_HEIGHT * 0.5, 10, Weight::Regular, style::TEXT_MUTED);
+        }
+        panel
     }
-    panel
 }
 
 /// Breaks `s` into lines no wider than `width`, at the spaces.
@@ -228,19 +307,4 @@ pub fn wrap(style: &Style, s: &str, size: u16, width: f32) -> Vec<String> {
         }
     }
     lines
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thousands_get_commas() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(100), "100");
-        assert_eq!(thousands(1_000), "1,000");
-        assert_eq!(thousands(12_345), "12,345");
-        assert_eq!(thousands(100_000), "100,000");
-        assert_eq!(thousands(1_234_567), "1,234,567");
-    }
 }

@@ -70,6 +70,19 @@ impl Saves {
         write_json(&self.day_path(day.date), day)
     }
 
+    /// Ends the day `current` and starts the day after it, which begins as `current` is with the day's rules
+    /// run on it (see [`DaySave::next_day`]), and makes it the day the game is on. `current` is saved first, as it ended,
+    /// then the new day's file, then the main file, so that stopping at any point leaves the game on a day
+    /// that is saved. Returns the new day. An error says what couldn't be written, and the game stays on
+    /// `current`.
+    pub fn advance(&self, current: &DaySave) -> Result<DaySave, String> {
+        let next = current.next_day();
+        self.save_day(current)?;
+        self.save_day(&next)?;
+        write_json(&self.main_path(), &MainFile { version: MAIN_VERSION, date: next.date })?;
+        Ok(next)
+    }
+
     /// Opens the saved game. With no main file this is a new game: the day is set to 1-1-1 and the
     /// main file and the first day's save are written. Otherwise the main file says which day to
     /// load. A file that exists but can't be read is an error, never replaced, so a bad file can't
@@ -154,6 +167,61 @@ mod tests {
         let main = fs::read_to_string(root.0.join("Saves/game.json")).unwrap();
         assert!(main.contains("\"year\": 1") && main.contains("\"month\": 1") && main.contains("\"day\": 1"));
         assert!(root.0.join("Saves/Days/year-0001_month-01_day-01.json").is_file());
+    }
+
+    #[test]
+    fn advancing_saves_the_day_that_ended_and_starts_the_next_from_it() {
+        let root = TempRoot::new();
+        let saves = saves(&root);
+        let mut day = saves.open(MAP).unwrap().day;
+        day.found_country("Aldoria").unwrap();
+
+        let next = saves.advance(&day).unwrap();
+        assert_eq!(next.date.to_string(), "1-1-2");
+        assert_eq!(next.countries, day.countries, "what carries forward does");
+        assert!(next.newsreel.is_empty(), "the news doesn't");
+        // The day that ended was saved as it was, news and all, and stays as it was.
+        let first: DaySave = serde_json::from_str(&fs::read_to_string(root.0.join("Saves/Days/year-0001_month-01_day-01.json")).unwrap()).unwrap();
+        assert_eq!(first, day);
+        assert!(root.0.join("Saves/Days/year-0001_month-01_day-02.json").is_file());
+        // The game is now on the new day, and opens on it.
+        let opened = saves.open(MAP).unwrap();
+        assert!(!opened.new_game);
+        assert_eq!(opened.day, next);
+    }
+
+    #[test]
+    fn the_rules_run_on_the_new_day_and_not_on_the_one_that_ended() {
+        let root = TempRoot::new();
+        let saves = saves(&root);
+        let mut day = saves.open(MAP).unwrap().day;
+        day.found_country("Aldoria").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.cities[0].population = 250;
+
+        let next = saves.advance(&day).unwrap();
+        assert_eq!(next.countries[0].money, 250, "a coin for each person");
+        // The day that ended is as it was, with no income, and the day after is saved with it.
+        let ended: DaySave = serde_json::from_str(&fs::read_to_string(root.0.join("Saves/Days/year-0001_month-01_day-01.json")).unwrap()).unwrap();
+        assert_eq!(ended.countries[0].money, 0);
+        assert_eq!(saves.open(MAP).unwrap().day.countries[0].money, 250);
+        // And again the next day, on the people the city has grown to by then.
+        let after = saves.advance(&next).unwrap();
+        assert_eq!(after.countries[0].money, 250 + i64::from(next.cities[0].population));
+        assert!(next.cities[0].population > 250, "a free city grows");
+    }
+
+    #[test]
+    fn advancing_goes_on_day_after_day() {
+        let root = TempRoot::new();
+        let saves = saves(&root);
+        let mut day = saves.open(MAP).unwrap().day;
+        for _ in 0..25 {
+            day = saves.advance(&day).unwrap();
+        }
+        assert_eq!(day.date.to_string(), "1-2-6");
+        assert_eq!(saves.open(MAP).unwrap().day.date, day.date);
+        assert_eq!(fs::read_dir(root.0.join("Saves/Days")).unwrap().count(), 26, "every day has its file");
     }
 
     #[test]
