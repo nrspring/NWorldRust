@@ -10,6 +10,7 @@ cargo run --release -p nworld-game
 |---|---|
 | W A S D or arrows | Pan (hold Shift for faster) |
 | Q / E | Turn |
+| N, or click the compass in the header | Turn the map to look straight down with north at the top (it turns round the short way, from where you are and as far away as you are) |
 | Wheel | Zoom |
 | Right-drag | Look around and tilt |
 | Left-drag | Grab the ground |
@@ -19,7 +20,7 @@ Everything the game adds to the map, such as roads, cities and units, belongs to
 
 ## Header and footer
 
-A **header** along the top of the window shows the player's country, once there is one, and the current day. Click the country to open the [countries menu](#countries-menu). A **footer** along the bottom holds the frame rate at the left, the keys in the middle (left out when the window is too narrow for them) and the overlays and options buttons at the right. While the mouse is over either, it doesn't move the camera, and a click there doesn't place a city. The newsreel and the save-failed notice sit below the header. A newsreel that is longer than about 45% of the window's height shows as many items as fit, with a note saying how many are above or below, and **the mouse wheel over it scrolls** through them an item at a time (it doesn't zoom the map).
+A **header** along the top of the window shows the player's country, once there is one, and the current day. At the right end of it is a **compass** whose red needle points to north as the camera sees it; **click it (or press N) to reset the view**: the camera turns, smoothly and the short way round, to look **straight down with north at the top of the screen**. It keeps its place and its distance, so only the view turns. North is the top edge of the map as the map file lays it out (z runs from north to south), which is not the way the game used to start: it looked towards the south edge, so the map began upside down to north. Turning or tilting by hand (Q/E, right-drag) stops the reset turn partway. Click the country to open the [countries menu](#countries-menu). A **footer** along the bottom holds the frame rate at the left, the keys in the middle (left out when the window is too narrow for them) and the overlays and options buttons at the right. While the mouse is over either, it doesn't move the camera, and a click there doesn't place a city. The newsreel and the save-failed notice sit below the header. A newsreel that is longer than about 45% of the window's height shows as many items as fit, with a note saying how many are above or below, and **the mouse wheel over it scrolls** through them an item at a time (it doesn't zoom the map).
 
 ## Countries menu
 
@@ -79,11 +80,19 @@ Paths are dirt paths laid over the map, a segment at a time. A **segment** is on
 - **Look.** Each segment is drawn as a ribbon of packed dirt laid on the ground, about 7 m wide with soft edges and a little variation in its brown (`path_view.rs`, which is the game's own drawing, not part of the map's).
 - **Never through water.** A segment is a straight line, and where that line would cross a lake, a river, or the sea (the shore of a concave coast), the path is drawn **going round it** instead: the shortest way over dry ground that keeps a few meters off the water, so the path's width stays on land (an A* search over a 6 m grid, pulled tight). Segments are only built when there is a way round (see above), so a new path is always one unbroken line. If there is no way round, which can only happen to a segment saved before this rule, it is drawn up to the water on each side and not over it. What it costs and what is saved don't change: it is still one segment, from the same two points, and the detour is only how it is drawn. Each segment's route is worked out once, when it first shows or when the map loads, not every frame.
 
+## Roads
+
+A **road** is a path made of packed stone. It is built, drawn and saved like a path (the same two kinds of segment, the same water rule, and the same links to the ends of bridges), but it costs **100 coins** a segment, charged to the country you are playing, and it looks different: **wider, in gray stone, with a darker curb along each side and blocks of slightly different shade one after another**, and it lies a little above a path so that it hides one under it.
+
+- **The tool.** The **Roads** button in the footer (between Bridge and Paths) is the same tool as Paths, building roads. Every rule in [Paths](#paths) applies: clicking the ends, Esc, the red line and the message for a segment that would cross water, the markers for bridge ends, and being switched off, dimmed with the reason, when the country you are playing can't pay (here, with less than 100 coins). Only one of the Roads, Paths and Bridge tools is on at a time.
+- **Paving a path.** Building a road on a segment that is already a path **replaces the path** (the road is paid for in full, and the path is removed from the data: it is no longer in the day's `paths` or `bridge_links`, so it isn't saved or carried forward). A path can't be built where there is a road ("There is already a road there."), and a road can't be built twice.
+- **Saved.** Roads are saved with the day as `roads`, and the roads that start at a bridge's end as `road_links`, in the same form as `paths` and `bridge_links`. They belong to no country and carry forward. Days saved before roads load with none.
+
 ## Bridges
 
 A **bridge** is a stone arch that carries a path across a river, which paths can't cross on their own. It costs **1,000 coins**, charged to the country you are playing, and belongs to no country. It is saved with the day as `bridges` (an id and the two ends) and carries forward.
 
-- **The tool.** The **Bridge** button in the footer, left of Paths, turns the bridge tool on. Click dry ground by the water on one side of a river, then dry ground on the other side. A line from the first end to the mouse shows the bridge: **gold** if it can be built there, **red** if it can't, with the reason in the prompt. Esc lets go of the first end, and then turns the tool off. Only one of the Bridge and Paths tools is on at a time.
+- **The tool.** The **Bridge** button in the footer, left of Paths, turns the bridge tool on. Click dry ground by the water on one side of a river, then dry ground on the other side. A line from the first end to the mouse shows the bridge: **gold** if it can be built there, **red** if it can't, with the reason in the prompt. Esc lets go of the first end, and then turns the tool off. Only one of the Bridge, Roads and Paths tools is on at a time.
 - **Where it can go.** Both ends have to be on dry ground (an end clicked on the bank is moved up to 10 m inland, a few meters from the water, so that a path can reach it); the ends can be at most **80 meters** apart; the line between them has to cross at least 3 m of **river or lake**, and **not the sea**; and it can't be a bridge that is already there.
 - **Not enough coin.** With less than 1,000 coins the Bridge button is dimmed and off, with the reason in red beside the footer's buttons ("Bridges need 1,000 coins (has 250)") and the whole sentence over the button. If the money runs out while the tool is on, it switches itself off.
 - **Look.** A stone arch (`bridge_view.rs`): the roadway rises from the ground at one end to a crown that clears the water by a couple of meters, and comes down at the other, with a low wall along each side and a slab under it, in gray stone with a little variation from block to block.

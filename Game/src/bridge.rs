@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::day::DaySave;
 use crate::ground;
 use crate::ids::BridgeId;
+use crate::path::Kind;
 
 /// What a bridge costs, in coins.
 pub const BRIDGE_COST: i64 = 1_000;
@@ -132,22 +133,40 @@ impl DaySave {
 
     /// Builds a segment of path from the end of a bridge, which costs what a segment of path does. The caller has
     /// checked that it is a real one, and that it doesn't cross water. An error says why it can't be done.
+    // The short way to say it for a path, which the tests use; the game builds either kind with `build_piece`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn build_link(&mut self, link: BridgeLink) -> Result<(), String> {
+        self.build_link_of(Kind::Path, link)
+    }
+
+    /// Builds a segment of path or of road from the end of a bridge, costing what a segment of that kind does. A road
+    /// where there is a path replaces it, and a path can't go where there is a road. The caller has checked that it
+    /// is a real one, and that it doesn't cross water. An error says why it can't be done.
+    pub fn build_link_of(&mut self, kind: Kind, link: BridgeLink) -> Result<(), String> {
         if self.bridge(link.bridge).is_none() {
             return Err("There is no such bridge.".to_owned());
         }
         if link.to == Some(link.region) {
-            return Err("A path goes from a bridge to a region's center or its edge.".to_owned());
+            return Err(format!("A {} goes from a bridge to a region's center or its edge.", kind.noun()));
         }
-        if self.bridge_links.contains(&link) {
+        if self.road_links.contains(&link) {
+            return Err("There is already a road there.".to_owned());
+        }
+        if kind == Kind::Path && self.bridge_links.contains(&link) {
             return Err("There is already a path there.".to_owned());
         }
-        if let Some(problem) = self.path_problem() {
+        if let Some(problem) = self.problem(kind) {
             return Err(problem.long());
         }
-        let country = self.player_country().ok_or("There is no country yet to pay for a path.")?.id;
-        self.add_money(country, -crate::path::PATH_COST)?;
-        self.bridge_links.push(link);
+        let country = self.player_country().ok_or_else(|| format!("There is no country yet to pay for a {}.", kind.noun()))?.id;
+        self.add_money(country, -kind.cost())?;
+        match kind {
+            Kind::Path => self.bridge_links.push(link),
+            Kind::Road => {
+                self.bridge_links.retain(|l| *l != link);
+                self.road_links.push(link);
+            }
+        }
         Ok(())
     }
 }
@@ -265,6 +284,28 @@ mod tests {
         assert_eq!(json["bridge_links"].as_array().unwrap().len(), 2);
         assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
         assert_eq!(day.following(Date { year: 1, month: 1, day: 2 }).bridge_links, day.bridge_links);
+    }
+
+    #[test]
+    fn a_road_from_a_bridge_replaces_the_path_there_and_is_removed_from_the_saved_data() {
+        let mut day = day_with_money(2_000);
+        day.build_bridge(A, B).unwrap();
+        let id = day.bridges[0].id;
+        let over = BridgeLink { bridge: id, end: End::First, region: 0xC001, to: None };
+        let other = BridgeLink { bridge: id, end: End::Second, region: 0xC002, to: None };
+        day.build_link_of(Kind::Path, over).unwrap();
+        day.build_link_of(Kind::Path, other).unwrap();
+        day.build_link_of(Kind::Road, over).unwrap();
+        // The path link that was paved is gone from the day, and so from what is saved; the other is untouched.
+        assert_eq!(day.bridge_links, [other]);
+        assert_eq!(day.road_links, [over]);
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(json["bridge_links"].as_array().unwrap().len(), 1);
+        assert_eq!(json["road_links"].as_array().unwrap().len(), 1);
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
+        // It cost the 100 of a road in full, and a path link can't go back over it.
+        assert_eq!(day.countries[0].money, 2_000 - 1_000 - 10 - 10 - 100);
+        assert!(day.build_link_of(Kind::Path, over).unwrap_err().contains("already a road"));
     }
 
     #[test]

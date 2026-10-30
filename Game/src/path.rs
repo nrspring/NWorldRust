@@ -1,8 +1,9 @@
-//! Paths: dirt paths laid over the map, built a segment at a time. A segment is one of two kinds: from the
+//! Paths and roads: laid over the map, built a segment at a time. A road is a path that costs more and is made of
+//! packed stone, and it is built, drawn and saved in the same way. A segment is one of two kinds: from the
 //! center of a region to the middle of one of its edges (the border it shares with a neighbor), or straight
 //! across a region from the middle of one of its edges to the middle of another, which doesn't go through the
-//! center. Paths belong to no country, but a segment costs coins, which come from the country the player is
-//! playing.
+//! center. Paths and roads belong to no country, but a segment costs coins, which come from the country the player
+//! is playing.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,42 @@ use crate::day::DaySave;
 
 /// What a segment of path costs, in coins.
 pub const PATH_COST: i64 = 10;
+/// What a segment of road costs, in coins.
+pub const ROAD_COST: i64 = 100;
+
+/// Which of the two a segment is part of: a dirt path or a stone road.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Kind {
+    #[default]
+    Path,
+    Road,
+}
+
+impl Kind {
+    /// What a segment of it costs, in coins.
+    pub const fn cost(self) -> i64 {
+        match self {
+            Self::Path => PATH_COST,
+            Self::Road => ROAD_COST,
+        }
+    }
+
+    /// What to call one of it: "path" or "road".
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::Road => "road",
+        }
+    }
+
+    /// What to call several of them.
+    pub const fn plural(self) -> &'static str {
+        match self {
+            Self::Path => "paths",
+            Self::Road => "roads",
+        }
+    }
+}
 
 /// One segment of path, in the region numbered `region`.
 ///
@@ -48,74 +85,118 @@ pub enum PathPiece {
     Link(BridgeLink),
 }
 
-/// Why no path can be built now.
+/// Why no path or road can be built now.
 #[derive(Debug, PartialEq)]
 pub enum PathProblem {
     /// There is no country to pay for it.
-    NoCountry,
+    NoCountry(Kind),
     /// The country being played can't afford a segment.
-    NotEnoughCoin { country: String, money: i64 },
+    NotEnoughCoin { country: String, money: i64, kind: Kind },
 }
 
 impl PathProblem {
     /// A few words, for beside the button.
     pub fn short(&self) -> String {
         match self {
-            Self::NoCountry => "No country to pay for paths".to_owned(),
-            Self::NotEnoughCoin { money, .. } => format!("Not enough coin (needs {PATH_COST}, has {money})"),
+            Self::NoCountry(kind) => format!("No country to pay for {}", kind.plural()),
+            Self::NotEnoughCoin { money, kind, .. } => format!("Not enough coin (needs {}, has {money})", kind.cost()),
         }
     }
 
     /// The whole reason, as a sentence.
     pub fn long(&self) -> String {
         match self {
-            Self::NoCountry => "There is no country yet to pay for a path.".to_owned(),
-            Self::NotEnoughCoin { country, money } => {
-                format!("Not enough coin: a path segment costs {PATH_COST} coins, and {country} has {money}.")
+            Self::NoCountry(kind) => format!("There is no country yet to pay for a {}.", kind.noun()),
+            Self::NotEnoughCoin { country, money, kind } => {
+                format!("Not enough coin: a {} segment costs {} coins, and {country} has {money}.", kind.noun(), kind.cost())
             }
         }
     }
 }
 
 impl DaySave {
-    /// Why a path can't be built, or `None` if one can: the country being played has to be able to pay for a
-    /// segment.
+    /// Why a segment of `kind` can't be built, or `None` if one can: the country being played has to be able to pay
+    /// for it.
+    pub fn problem(&self, kind: Kind) -> Option<PathProblem> {
+        match self.player_country() {
+            None => Some(PathProblem::NoCountry(kind)),
+            Some(country) if country.money < kind.cost() => Some(PathProblem::NotEnoughCoin { country: country.name.clone(), money: country.money, kind }),
+            Some(_) => None,
+        }
+    }
+
+    /// Why a path can't be built, or `None` if one can.
     pub fn path_problem(&self) -> Option<PathProblem> {
-        let country = self.player_country().map_or(Err(PathProblem::NoCountry), Ok);
-        match country {
-            Err(problem) => Some(problem),
-            Ok(country) if country.money < PATH_COST => Some(PathProblem::NotEnoughCoin { country: country.name.clone(), money: country.money }),
-            Ok(_) => None,
+        self.problem(Kind::Path)
+    }
+
+    /// Why a road can't be built, or `None` if one can.
+    pub fn road_problem(&self) -> Option<PathProblem> {
+        self.problem(Kind::Road)
+    }
+
+    /// The segments of `kind` that have been built.
+    pub fn segments(&self, kind: Kind) -> &[PathSegment] {
+        match kind {
+            Kind::Path => &self.paths,
+            Kind::Road => &self.roads,
         }
     }
 
-    /// Builds a piece of path of either kind (see [`build_path`](Self::build_path) and
-    /// [`build_link`](Self::build_link)).
-    pub fn build_piece(&mut self, piece: PathPiece) -> Result<(), String> {
+    /// The segments of `kind` that start at the end of a bridge.
+    pub fn links(&self, kind: Kind) -> &[BridgeLink] {
+        match kind {
+            Kind::Path => &self.bridge_links,
+            Kind::Road => &self.road_links,
+        }
+    }
+
+    /// Builds a piece of `kind` of either sort (see [`build_segment`](Self::build_segment) and
+    /// [`build_link_of`](Self::build_link_of)).
+    pub fn build_piece(&mut self, kind: Kind, piece: PathPiece) -> Result<(), String> {
         match piece {
-            PathPiece::Segment(segment) => self.build_path(segment),
-            PathPiece::Link(link) => self.build_link(link),
+            PathPiece::Segment(segment) => self.build_segment(kind, segment),
+            PathPiece::Link(link) => self.build_link_of(kind, link),
         }
     }
 
-    /// Builds `segment`, which the caller has checked is a real one (that the regions touch, and are land), and
-    /// charges its cost to the country being played. An error says why it can't be done.
+    /// Builds a segment of path, which the caller has checked is a real one (that the regions touch, and are land),
+    /// and charges its cost to the country being played. An error says why it can't be done.
+    // The short way to say it for a path, which the tests use; the game builds either kind with `build_piece`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn build_path(&mut self, segment: PathSegment) -> Result<(), String> {
+        self.build_segment(Kind::Path, segment)
+    }
+
+    /// Builds `segment` as a path or a road, charging the cost of it to the country being played. A road built where
+    /// there is a path replaces the path, and a path can't be built where there is a road. An error says why it
+    /// can't be done.
+    pub fn build_segment(&mut self, kind: Kind, segment: PathSegment) -> Result<(), String> {
         if segment.region == segment.neighbor {
-            return Err("A path goes from a region to its edge.".to_owned());
+            return Err(format!("A {} goes from a region to its edge.", kind.noun()));
         }
         if segment.other.is_some_and(|other| other == segment.region || other == segment.neighbor) {
-            return Err("A path across a region goes from one of its edges to another.".to_owned());
+            return Err(format!("A {} across a region goes from one of its edges to another.", kind.noun()));
         }
-        if self.paths.contains(&segment) {
+        if self.roads.contains(&segment) {
+            return Err("There is already a road there.".to_owned());
+        }
+        if kind == Kind::Path && self.paths.contains(&segment) {
             return Err("There is already a path there.".to_owned());
         }
-        if let Some(problem) = self.path_problem() {
+        if let Some(problem) = self.problem(kind) {
             return Err(problem.long());
         }
-        let country = self.player_country().ok_or("There is no country yet to pay for a path.")?.id;
-        self.add_money(country, -PATH_COST)?;
-        self.paths.push(segment);
+        let country = self.player_country().ok_or_else(|| format!("There is no country yet to pay for a {}.", kind.noun()))?.id;
+        self.add_money(country, -kind.cost())?;
+        match kind {
+            Kind::Path => self.paths.push(segment),
+            Kind::Road => {
+                // Paving a path: the road is there instead of it.
+                self.paths.retain(|p| *p != segment);
+                self.roads.push(segment);
+            }
+        }
         Ok(())
     }
 }
@@ -168,7 +249,7 @@ mod tests {
         let error = day.build_path(A).unwrap_err();
         assert!(error.contains("Not enough coin") && error.contains("10") && error.contains("Aldoria") && error.contains('9'), "{error}");
         assert_eq!(day, before);
-        assert_eq!(day.path_problem(), Some(PathProblem::NotEnoughCoin { country: "Aldoria".to_owned(), money: 9 }));
+        assert_eq!(day.path_problem(), Some(PathProblem::NotEnoughCoin { country: "Aldoria".to_owned(), money: 9, kind: Kind::Path }));
         // Exactly the cost is enough, and then there isn't enough for another.
         day.add_money(day.countries[0].id, 1).unwrap();
         assert_eq!(day.path_problem(), None);
@@ -180,7 +261,7 @@ mod tests {
     #[test]
     fn with_no_country_there_is_nobody_to_pay() {
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
-        assert_eq!(day.path_problem(), Some(PathProblem::NoCountry));
+        assert_eq!(day.path_problem(), Some(PathProblem::NoCountry(Kind::Path)));
         assert!(day.build_path(A).is_err());
         assert!(day.paths.is_empty());
     }
@@ -227,10 +308,10 @@ mod tests {
 
     #[test]
     fn the_reasons_read_well() {
-        let problem = PathProblem::NotEnoughCoin { country: "Aldoria".to_owned(), money: 3 };
+        let problem = PathProblem::NotEnoughCoin { country: "Aldoria".to_owned(), money: 3, kind: Kind::Path };
         assert_eq!(problem.short(), "Not enough coin (needs 10, has 3)");
         assert_eq!(problem.long(), "Not enough coin: a path segment costs 10 coins, and Aldoria has 3.");
-        assert!(!PathProblem::NoCountry.short().is_empty() && !PathProblem::NoCountry.long().is_empty());
+        assert!(!PathProblem::NoCountry(Kind::Path).short().is_empty() && !PathProblem::NoCountry(Kind::Path).long().is_empty());
     }
 
     #[test]
@@ -241,5 +322,73 @@ mod tests {
         assert_eq!(json["paths"][0], serde_json::json!({ "region": 0xC001, "neighbor": 0xC002 }));
         assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
         assert_eq!(day.following(Date { year: 1, month: 1, day: 2 }).paths, [A]);
+    }
+
+    #[test]
+    fn a_road_costs_100_coins_and_a_path_10() {
+        assert_eq!((Kind::Path.cost(), Kind::Road.cost()), (10, 100));
+        let mut day = day_with_money(250);
+        day.build_segment(Kind::Road, A).unwrap();
+        assert_eq!(day.roads, [A]);
+        assert!(day.paths.is_empty(), "a road isn't a path");
+        assert_eq!(day.countries[0].money, 150);
+        day.build_segment(Kind::Path, B).unwrap();
+        assert_eq!(day.countries[0].money, 140);
+        assert_eq!(day.segments(Kind::Road), [A]);
+        assert_eq!(day.segments(Kind::Path), [B]);
+    }
+
+    #[test]
+    fn a_road_cannot_be_built_without_the_coin_and_says_why() {
+        let mut day = day_with_money(99);
+        let before = day.clone();
+        let error = day.build_segment(Kind::Road, A).unwrap_err();
+        assert!(error.contains("Not enough coin") && error.contains("road") && error.contains("100") && error.contains("99"), "{error}");
+        assert_eq!(day, before);
+        assert_eq!(day.road_problem(), Some(PathProblem::NotEnoughCoin { country: "Aldoria".to_owned(), money: 99, kind: Kind::Road }));
+        assert_eq!(day.path_problem(), None, "enough for a path, not for a road");
+        day.add_money(day.countries[0].id, 1).unwrap();
+        assert_eq!(day.road_problem(), None);
+        let none = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        assert_eq!(none.road_problem(), Some(PathProblem::NoCountry(Kind::Road)));
+        assert!(none.road_problem().unwrap().long().contains("road"));
+        assert_eq!(PathProblem::NotEnoughCoin { country: "A".to_owned(), money: 3, kind: Kind::Road }.short(), "Not enough coin (needs 100, has 3)");
+    }
+
+    #[test]
+    fn a_road_built_over_a_path_replaces_it_and_a_path_cannot_be_built_over_a_road() {
+        let mut day = day_with_money(500);
+        day.build_segment(Kind::Path, A).unwrap();
+        day.build_segment(Kind::Path, B).unwrap();
+        day.build_segment(Kind::Road, A).unwrap();
+        assert_eq!((day.paths.as_slice(), day.roads.as_slice()), (&[B][..], &[A][..]), "the path that was paved is gone");
+        assert_eq!(day.countries[0].money, 500 - 10 - 10 - 100, "the road is paid for in full");
+        // A path where there is a road, and a second road, are refused for nothing.
+        let before = day.clone();
+        assert!(day.build_segment(Kind::Path, A).unwrap_err().contains("already a road"));
+        assert!(day.build_segment(Kind::Road, A).unwrap_err().contains("already a road"));
+        assert_eq!(day, before);
+    }
+
+    #[test]
+    fn roads_are_saved_belong_to_no_country_and_carry_forward() {
+        let mut day = day_with_money(500);
+        day.build_segment(Kind::Road, A).unwrap();
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(json["roads"][0], serde_json::json!({ "region": 0xC001, "neighbor": 0xC002 }));
+        assert_eq!(json["paths"].as_array().unwrap().len(), 0);
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
+        assert_eq!(day.following(Date { year: 1, month: 1, day: 2 }).roads, [A]);
+        // A day saved before there were roads has none.
+        let old = serde_json::json!({ "version": 2, "date": { "year": 1, "month": 1, "day": 1 }, "map": "Assets/map.nworld" });
+        assert!(serde_json::from_value::<DaySave>(old).unwrap().roads.is_empty());
+    }
+
+    #[test]
+    fn a_road_across_a_region_is_a_segment_like_a_path_across_one() {
+        let mut day = day_with_money(300);
+        day.build_segment(Kind::Road, PathSegment::across(0xC001, 0xC002, 0xC003)).unwrap();
+        assert!(day.build_segment(Kind::Road, PathSegment::across(0xC001, 0xC003, 0xC002)).is_err());
+        assert!(day.build_segment(Kind::Road, PathSegment::across(0xC001, 0xC002, 0xC002)).unwrap_err().contains("road"));
     }
 }

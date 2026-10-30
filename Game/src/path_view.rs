@@ -1,7 +1,8 @@
-//! Drawing the paths: each segment as a ribbon of packed dirt laid on the ground, soft at its edges. This is
-//! the game's own, and not part of drawing the map.
+//! Drawing the paths and the roads: each segment as a ribbon laid on the ground, soft at its edges. A path is packed
+//! dirt, narrow and brown. A road is packed stone: wider, in gray, with a darker curb along each side and blocks
+//! of slightly different shade one after another. This is the game's own, and not part of drawing the map.
 //!
-//! A path never crosses water. A segment is a straight line from the center of a region to the middle of one of
+//! A path or a road never crosses water. A segment is a straight line from the center of a region to the middle of one of
 //! its edges, and where that line would cross a lake or a river, the path goes round instead, by the shortest
 //! way over dry ground. If there is no way round, it is drawn as far as the water on each side and not over it.
 
@@ -17,23 +18,46 @@ use nworld_map::world::{World, CELL_SIZE};
 use crate::bridge::{Bridge, BridgeLink};
 use crate::day::DaySave;
 use crate::ground::{clear, dry, line_clear, CHECK_EVERY};
-use crate::path::{PathPiece, PathSegment};
+use crate::path::{Kind, PathPiece, PathSegment};
 
-/// How wide a path is, in meters, counting its soft edges.
-const WIDTH: f32 = 7.0;
-/// How far above the ground it lies, so that it isn't lost in it.
-const LIFT: f32 = 0.35;
-/// The dirt, and how much its brightness varies along a path.
-const DIRT: [f32; 3] = [0.56, 0.42, 0.27];
-const VARIATION: f32 = 0.10;
+/// What a kind of way looks like.
+struct Look {
+    /// How wide it is, in meters, counting its soft edges.
+    width: f32,
+    /// How far above the ground it lies, so that it isn't lost in it. A road lies a little above a path, so that it
+    /// hides any path under it.
+    lift: f32,
+    /// The color of the middle of it, and how much its brightness varies from place to place.
+    color: [f32; 3],
+    variation: f32,
+    /// How dark the curb along each side is (1 for none), and how far in from the edge it is as a fraction of half
+    /// the width, if it has one.
+    curb: Option<(f32, f32)>,
+    /// How much brighter and darker the blocks one after another are, and how long each is, in meters.
+    blocks: Option<(f32, f32)>,
+}
+
+impl Look {
+    /// Packed dirt.
+    const PATH: Look = Look { width: 7.0, lift: 0.35, color: [0.56, 0.42, 0.27], variation: 0.10, curb: None, blocks: None };
+    /// Packed stone.
+    const ROAD: Look = Look { width: 8.5, lift: 0.50, color: [0.60, 0.58, 0.54], variation: 0.06, curb: Some((0.70, 0.78)), blocks: Some((0.07, 2.0)) };
+
+    fn of(kind: Kind) -> &'static Look {
+        match kind {
+            Kind::Path => &Look::PATH,
+            Kind::Road => &Look::ROAD,
+        }
+    }
+}
 /// Most vertices in one mesh, which a mesh's 16 bit indices can't go past.
 const MAX_VERTICES: usize = 60_000;
 /// How far apart the points are that the way round is looked for among, in meters.
 const GRID: f32 = 6.0;
 
-/// The paths as meshes, made again when the paths change.
-#[derive(Default)]
+/// The paths, or the roads, as meshes, made again when they change.
 pub struct PathRenderer {
+    kind: Kind,
     built_paths: Vec<PathSegment>,
     built_links: Vec<BridgeLink>,
     /// Where each piece goes, as lines of points over dry ground, so that the way round a lake is only
@@ -43,11 +67,17 @@ pub struct PathRenderer {
 }
 
 impl PathRenderer {
-    /// Draws the paths of `day`, as seen by the camera that is set, which must still be the one the map was drawn
-    /// with.
+    /// A renderer of the paths or of the roads of a day.
+    pub fn new(kind: Kind) -> Self {
+        Self { kind, built_paths: Vec::new(), built_links: Vec::new(), routes: HashMap::new(), meshes: Vec::new() }
+    }
+
+    /// Draws the paths or roads of `day`, as seen by the camera that is set, which must still be the one the map was
+    /// drawn with.
     pub fn draw(&mut self, world: &World, map: &RegionMap, day: &DaySave) {
-        if self.built_paths != day.paths || self.built_links != day.bridge_links {
-            let pieces: Vec<PathPiece> = day.paths.iter().map(|s| PathPiece::Segment(*s)).chain(day.bridge_links.iter().map(|l| PathPiece::Link(*l))).collect();
+        let (segments, links) = (day.segments(self.kind), day.links(self.kind));
+        if self.built_paths != segments || self.built_links != links {
+            let pieces: Vec<PathPiece> = segments.iter().map(|s| PathPiece::Segment(*s)).chain(links.iter().map(|l| PathPiece::Link(*l))).collect();
             for piece in &pieces {
                 if !self.routes.contains_key(piece) {
                     let route = piece_ends(map, &day.bridges, *piece).map(|(from, to)| route(world, from, to)).unwrap_or_default();
@@ -56,9 +86,9 @@ impl PathRenderer {
             }
             self.routes.retain(|piece, _| pieces.contains(piece));
             let lines: Vec<&Vec<Vec2>> = pieces.iter().filter_map(|piece| self.routes.get(piece)).flatten().collect();
-            self.meshes = build(world, &lines);
-            self.built_paths = day.paths.clone();
-            self.built_links = day.bridge_links.clone();
+            self.meshes = build(world, &lines, Look::of(self.kind));
+            self.built_paths = segments.to_vec();
+            self.built_links = links.to_vec();
         }
         for mesh in &self.meshes {
             draw_mesh(mesh);
@@ -251,14 +281,14 @@ fn way_round(world: &World, from: Vec2, to: Vec2) -> Option<Vec<Vec2>> {
     Some(tight)
 }
 
-fn build(world: &World, lines: &[&Vec<Vec2>]) -> Vec<Mesh> {
+fn build(world: &World, lines: &[&Vec<Vec2>], look: &Look) -> Vec<Mesh> {
     let mut meshes = Vec::new();
     let (mut vertices, mut indices): (Vec<Vertex>, Vec<u16>) = (Vec::new(), Vec::new());
     for line in lines {
         if vertices.len() > MAX_VERTICES {
             meshes.push(Mesh { vertices: std::mem::take(&mut vertices), indices: std::mem::take(&mut indices), texture: None });
         }
-        ribbon(world, line, &mut vertices, &mut indices);
+        ribbon(world, line, look, &mut vertices, &mut indices);
     }
     if !vertices.is_empty() {
         meshes.push(Mesh { vertices, indices, texture: None });
@@ -266,12 +296,11 @@ fn build(world: &World, lines: &[&Vec<Vec2>]) -> Vec<Mesh> {
     meshes
 }
 
-/// `line` with points added so that none are farther apart than a heightmap cell, for the ribbon to follow the
-/// ground.
-fn resample(line: &[Vec2]) -> Vec<Vec2> {
+/// `line` with points added so that none are farther apart than `step`, for the ribbon to follow the ground.
+fn resample(line: &[Vec2], step: f32) -> Vec<Vec2> {
     let mut out: Vec<Vec2> = Vec::new();
     for pair in line.windows(2) {
-        let steps = (pair[0].distance(pair[1]) / CELL_SIZE).ceil().max(1.0) as usize;
+        let steps = (pair[0].distance(pair[1]) / step).ceil().max(1.0) as usize;
         for k in 0..steps {
             out.push(pair[0].lerp(pair[1], k as f32 / steps as f32));
         }
@@ -282,35 +311,55 @@ fn resample(line: &[Vec2]) -> Vec<Vec2> {
     out
 }
 
-/// Adds the ribbon along `line` to the mesh being made: three vertices across at each point of it, the middle one
-/// solid and the outer two clear, so that it fades out at its edges.
-fn ribbon(world: &World, line: &[Vec2], vertices: &mut Vec<Vertex>, indices: &mut Vec<u16>) {
-    let points = resample(line);
+/// Adds the ribbon along `line` to the mesh being made, looking as `look` says. Across it there are three vertices at
+/// each point (the middle one solid and the outer two clear, so that it fades out at its edges), or five if it has
+/// a curb: clear at the edge, the darker curb, the middle, the curb on the other side, and clear again.
+fn ribbon(world: &World, line: &[Vec2], look: &Look, vertices: &mut Vec<Vertex>, indices: &mut Vec<u16>) {
+    // Blocks of stone are told apart by rows of points as often as they change, and dirt only needs one for each cell.
+    let step = look.blocks.map_or(CELL_SIZE, |(_, length)| length.min(CELL_SIZE));
+    let points = resample(line, step);
     if points.len() < 2 {
         return;
     }
+    // Across the ribbon, as a fraction of half its width, how bright and how solid it is there.
+    let across_points: Vec<(f32, f32, u8)> = match look.curb {
+        None => vec![(1.0, 1.0, 0), (0.0, 1.0, 255), (-1.0, 1.0, 0)],
+        Some((dark, at)) => vec![(1.0, 1.0, 0), (at, dark, 255), (0.0, 1.0, 255), (-at, dark, 255), (-1.0, 1.0, 0)],
+    };
+    let width = across_points.len();
     let start = vertices.len();
+    let mut length_so_far = 0.0;
     for (k, &at) in points.iter().enumerate() {
-        // Which way the path runs here, from the points either side, so that a bend turns smoothly.
+        if k > 0 {
+            length_so_far += points[k - 1].distance(at);
+        }
+        // Which way the way runs here, from the points either side, so that a bend turns smoothly.
         let along = (points[(k + 1).min(points.len() - 1)] - points[k.saturating_sub(1)]).normalize_or_zero();
-        let across = vec2(-along.y, along.x) * (WIDTH * 0.5);
-        // A little different from place to place, like ground that has been walked on.
-        let shade = 1.0 + VARIATION * ((at.x * 0.37 + at.y * 0.23).sin() * 0.5 + (at.x * 0.11 - at.y * 0.17).cos() * 0.5);
-        let color = |alpha: u8| [(DIRT[0] * shade * 255.0).min(255.0) as u8, (DIRT[1] * shade * 255.0).min(255.0) as u8, (DIRT[2] * shade * 255.0).min(255.0) as u8, alpha];
-        for (offset, alpha) in [(across, 0), (Vec2::ZERO, 255), (-across, 0)] {
-            let point = at + offset;
+        let across = vec2(-along.y, along.x) * (look.width * 0.5);
+        // A little different from place to place, like ground that has been walked on or stone that was cut
+        // from different blocks, and for a road each block a little lighter or darker than the one before.
+        let mut shade = 1.0 + look.variation * ((at.x * 0.37 + at.y * 0.23).sin() * 0.5 + (at.x * 0.11 - at.y * 0.17).cos() * 0.5);
+        if let Some((contrast, length)) = look.blocks {
+            let block = (length_so_far / length).floor() as i64;
+            shade *= 1.0 + contrast * if block.rem_euclid(2) == 0 { 1.0 } else { -1.0 };
+        }
+        for &(fraction, dim, alpha) in &across_points {
+            let point = at + across * fraction;
+            let c = |k: usize| (look.color[k] * shade * dim * 255.0).clamp(0.0, 255.0) as u8;
             vertices.push(Vertex {
-                position: vec3(point.x, world.surface_height(point.x, point.y) + LIFT, point.y),
+                position: vec3(point.x, world.surface_height(point.x, point.y) + look.lift, point.y),
                 uv: Vec2::ZERO,
-                color: color(alpha),
+                color: [c(0), c(1), c(2), alpha],
                 normal: Vec4::ZERO,
             });
         }
     }
-    for step in 0..points.len() - 1 {
-        let row = (start + step * 3) as u16;
-        let (l0, m0, r0, l1, m1, r1) = (row, row + 1, row + 2, row + 3, row + 4, row + 5);
-        indices.extend([l0, m0, m1, l0, m1, l1, m0, r0, r1, m0, r1, m1]);
+    for row in 0..points.len() - 1 {
+        for column in 0..width - 1 {
+            let a = (start + row * width + column) as u16;
+            let (b, c, d) = (a + 1, a + width as u16, a + width as u16 + 1);
+            indices.extend([a, b, d, a, d, c]);
+        }
     }
 }
 
@@ -427,7 +476,7 @@ mod tests {
         let world = dry_world();
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
-        ribbon(&world, &[vec2(0.0, 0.0), vec2(40.0, 0.0), vec2(40.0, 40.0)], &mut vertices, &mut indices);
+        ribbon(&world, &[vec2(0.0, 0.0), vec2(40.0, 0.0), vec2(40.0, 40.0)], &Look::PATH, &mut vertices, &mut indices);
         // Three vertices across each point, and four triangles between each pair of points.
         let points = vertices.len() / 3;
         assert_eq!(vertices.len(), points * 3);
@@ -435,7 +484,50 @@ mod tests {
         assert!(indices.iter().all(|&i| (i as usize) < vertices.len()));
         // Nothing is made of a line with one point.
         let (mut v2, mut i2) = (Vec::new(), Vec::new());
-        ribbon(&world, &[vec2(5.0, 5.0)], &mut v2, &mut i2);
+        ribbon(&world, &[vec2(5.0, 5.0)], &Look::PATH, &mut v2, &mut i2);
         assert!(v2.is_empty() && i2.is_empty());
+    }
+
+    #[test]
+    fn a_road_is_wider_than_a_path_lies_above_it_and_is_gray_stone() {
+        assert!(Look::ROAD.width > Look::PATH.width && Look::ROAD.lift > Look::PATH.lift, "a road hides a path under it");
+        let world = dry_world();
+        let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+        ribbon(&world, &[vec2(-60.0, 0.0), vec2(60.0, 0.0)], &Look::ROAD, &mut vertices, &mut indices);
+        // Five vertices across, and every one an index in range.
+        assert_eq!(vertices.len() % 5, 0);
+        assert!(indices.iter().all(|&i| (i as usize) < vertices.len()) && indices.len() % 3 == 0);
+        let solid: Vec<&Vertex> = vertices.iter().filter(|v| v.color[3] == 255).collect();
+        assert!(!solid.is_empty() && solid.iter().all(|v| {
+            let [r, g, b, _] = v.color;
+            r.abs_diff(g) < 20 && g.abs_diff(b) < 20 && r > 70
+        }), "stone is gray, and not brown like dirt");
+        // The path next to it is brown: more red than blue.
+        let (mut dirt, mut i2) = (Vec::new(), Vec::new());
+        ribbon(&world, &[vec2(-60.0, 0.0), vec2(60.0, 0.0)], &Look::PATH, &mut dirt, &mut i2);
+        assert!(dirt.iter().filter(|v| v.color[3] == 255).all(|v| v.color[0] > v.color[2] + 40));
+    }
+
+    #[test]
+    fn a_road_has_a_darker_curb_along_each_side_and_blocks_that_alternate() {
+        let world = dry_world();
+        let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+        ribbon(&world, &[vec2(0.0, 0.0), vec2(40.0, 0.0)], &Look::ROAD, &mut vertices, &mut indices);
+        // At each point across: clear edge, curb, middle, curb, clear edge. The curb is darker than the middle.
+        for row in vertices.chunks(5) {
+            assert!(row[1].color[0] < row[2].color[0] && row[3].color[0] < row[2].color[0], "{:?}", row.iter().map(|v| v.color).collect::<Vec<_>>());
+            assert_eq!((row[0].color[3], row[1].color[3], row[2].color[3], row[3].color[3], row[4].color[3]), (0, 255, 255, 255, 0));
+        }
+        // Along the road the middle is lighter and darker in turn, a block at a time.
+        let middles: Vec<u8> = vertices.chunks(5).map(|row| row[2].color[0]).collect();
+        let distinct: std::collections::HashSet<u8> = middles.iter().copied().collect();
+        assert!(distinct.len() >= 2 && middles.windows(2).any(|w| w[0] != w[1]));
+    }
+
+    #[test]
+    fn each_kind_is_drawn_by_its_own_renderer() {
+        let paths = PathRenderer::new(Kind::Path);
+        let roads = PathRenderer::new(Kind::Road);
+        assert_eq!((paths.kind, roads.kind), (Kind::Path, Kind::Road));
     }
 }

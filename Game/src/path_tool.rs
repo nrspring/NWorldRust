@@ -1,4 +1,5 @@
-//! The path tool: a button in the footer that turns it on, and then the player clicks one end of a segment of
+//! The path tool, and the road tool, which is the same tool for the other kind of way: a button in the footer
+//! that turns it on, and then the player clicks one end of a segment of
 //! path, and then the other. An end is either the center of a region or the middle point of one of its edges.
 //! A segment joins a center to the middle of one of its region's edges, or the middle of one edge of a region to
 //! the middle of another of the same region, which doesn't go through the center. A path can also start at either
@@ -22,7 +23,7 @@ use crate::bridge::{Bridge, BridgeLink, End};
 use crate::day::DaySave;
 use crate::hud;
 use crate::ids::BridgeId;
-use crate::path::{PathPiece, PathProblem, PathSegment, PATH_COST};
+use crate::path::{Kind, PathPiece, PathProblem, PathSegment};
 use crate::path_view;
 
 /// Why a segment that crosses water is refused.
@@ -136,6 +137,8 @@ pub struct Scene<'a> {
 
 #[derive(Default)]
 pub struct PathTool {
+    /// Whether it builds paths or roads.
+    kind: Kind,
     active: bool,
     /// The end of the segment that has been chosen, if one has.
     first: Option<Point>,
@@ -150,12 +153,22 @@ pub struct PathTool {
 }
 
 impl PathTool {
+    /// A tool that builds paths or roads, off to begin with.
+    pub fn new(kind: Kind) -> Self {
+        Self { kind, ..Self::default() }
+    }
+
+    /// Whether it builds paths or roads.
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
     pub fn is_active(&self) -> bool {
         self.active
     }
 
     pub fn deactivate(&mut self) {
-        *self = Self::default();
+        *self = Self::new(self.kind);
     }
 
     /// What Esc does: lets go of the end that was chosen, and then turns the tool off.
@@ -261,9 +274,13 @@ impl PathTool {
         let first_at = self.first.and_then(|f| points.iter().find(|(p, _)| *p == f).map(|(_, at)| *at).or_else(|| f.position(scene.regions, &day.bridges).map(|a| vec3(a.x, scene.world.surface_height(a.x, a.y) + HOLD, a.y))));
         if let (Some(from), Some(point)) = (first_at, under_mouse) {
             if let Some((_, to)) = points.iter().find(|(p, _)| *p == point) {
-                let exists = hover_piece.is_some_and(|piece| match piece {
-                    PathPiece::Segment(s) => day.paths.contains(&s),
-                    PathPiece::Link(l) => day.bridge_links.contains(&l),
+                // A road is not drawn again over a road, and a path over a road or a path.
+                let exists = hover_piece.is_some_and(|piece| {
+                    let there = |kind| match piece {
+                        PathPiece::Segment(s) => day.segments(kind).contains(&s),
+                        PathPiece::Link(l) => day.links(kind).contains(&l),
+                    };
+                    there(Kind::Road) || (self.kind == Kind::Path && there(Kind::Path))
                 });
                 draw_line_3d(from, *to, if exists || wet { RED } else { Color::new(1.0, 0.85, 0.35, 1.0) });
             }
@@ -318,7 +335,10 @@ impl PathTool {
     /// shows when the mouse is over it. Returns where the button is.
     pub fn show_button(&mut self, style: &Style, footer: Rect, right: f32, problem: Option<&PathProblem>, no_regions: bool) -> Rect {
         let mouse = Vec2::from(mouse_position());
-        let label = "Paths";
+        let label = match self.kind {
+            Kind::Path => "Paths",
+            Kind::Road => "Roads",
+        };
         let label_width = style.measure(label, 13, Weight::Semibold).width;
         let width = 12.0 + 14.0 + 8.0 + label_width + 14.0;
         let button = Rect::new(right - width, footer.center().y - BUTTON_HEIGHT * 0.5, width, BUTTON_HEIGHT);
@@ -328,7 +348,7 @@ impl PathTool {
             if self.active {
                 self.deactivate();
             } else {
-                *self = Self { active: true, ..Self::default() };
+                *self = Self { active: true, ..Self::new(self.kind) };
             }
         }
         if self.active {
@@ -341,17 +361,28 @@ impl PathTool {
             (false, true) => style::ACCENT_HOVER,
             (false, false) => style::TEXT,
         };
-        // A little path: two dots joined by a line that bends.
         let icon = vec2(button.x + 12.0 + 7.0, button.center().y);
-        draw_line(icon.x - 6.0, icon.y + 4.0, icon.x, icon.y - 1.0, 1.8, color);
-        draw_line(icon.x, icon.y - 1.0, icon.x + 6.0, icon.y - 4.0, 1.8, color);
-        draw_circle(icon.x - 6.0, icon.y + 4.0, 2.2, color);
-        draw_circle(icon.x + 6.0, icon.y - 4.0, 2.2, color);
+        match self.kind {
+            // A little path: two dots joined by a line that bends.
+            Kind::Path => {
+                draw_line(icon.x - 6.0, icon.y + 4.0, icon.x, icon.y - 1.0, 1.8, color);
+                draw_line(icon.x, icon.y - 1.0, icon.x + 6.0, icon.y - 4.0, 1.8, color);
+                draw_circle(icon.x - 6.0, icon.y + 4.0, 2.2, color);
+                draw_circle(icon.x + 6.0, icon.y - 4.0, 2.2, color);
+            }
+            // A little road: two lines that come together in the distance, with a dash between them.
+            Kind::Road => {
+                draw_line(icon.x - 7.0, icon.y + 6.0, icon.x - 2.0, icon.y - 6.0, 1.8, color);
+                draw_line(icon.x + 7.0, icon.y + 6.0, icon.x + 2.0, icon.y - 6.0, 1.8, color);
+                draw_line(icon.x, icon.y + 4.0, icon.x, icon.y + 1.0, 1.6, color);
+                draw_line(icon.x, icon.y - 2.0, icon.x, icon.y - 5.0, 1.6, color);
+            }
+        }
         style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
 
         // Why it can't be used, in full over it. (The short reason goes beside the leftmost of the footer's tool
         // buttons: see `BridgeTool::show_button`.)
-        let reason = if no_regions { Some(("This map has no regions".to_owned(), "Paths join the regions of the map, and this map has none.".to_owned())) } else { problem.map(|p| (p.short(), p.long())) };
+        let reason = if no_regions { Some(("This map has no regions".to_owned(), format!("{label} join the regions of the map, and this map has none."))) } else { problem.map(|p| (p.short(), p.long())) };
         if let Some((_, long)) = reason {
             if hovered {
                 let lines = hud::wrap(style, &long, 12, 260.0);
@@ -376,7 +407,7 @@ impl PathTool {
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 88.0, width, 88.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
-        style.text_mid("Build a path", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+        style.text_mid(&format!("Build a {}", self.kind.noun()), panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
         match (&self.notice, self.first) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(_)) if self.hover_blocked => style.text_mid(CROSSES_WATER, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
@@ -386,7 +417,7 @@ impl PathTool {
             (None, Some(Point::BridgeEnd(..))) => style.text_mid("Now click the center of its region, or the middle of one of its edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         let paying = day.player_country().map_or_else(|| "No country".to_owned(), |c| format!("{} has {}", c.name, crate::format::money(c.money)));
-        style.text_mid(&format!("{PATH_COST} coins a segment. {paying} coins."), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&format!("{} coins a segment. {paying} coins.", self.kind.cost()), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
     }
 }
 

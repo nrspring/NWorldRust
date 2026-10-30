@@ -15,6 +15,7 @@ const NEWSREEL_WIDTH: f32 = 280.0;
 const HELP: &[(&str, &str)] = &[
     ("W A S D", "pan"),
     ("Q E", "turn"),
+    ("N", "north up"),
     ("Wheel", "zoom"),
     ("Right-drag", "look"),
     ("Left-drag", "grab"),
@@ -27,7 +28,7 @@ pub const FOOTER_HEIGHT: f32 = 48.0;
 /// Distance of what is in the footer from its left edge. The options button keeps the same from the right.
 pub const FOOTER_PADDING: f32 = 12.0;
 /// Room kept at the right end of the footer for its buttons, before any reason that one of them is off.
-pub const BUTTONS_ROOM: f32 = 340.0;
+pub const BUTTONS_ROOM: f32 = 430.0;
 
 /// The size of the text in the header and the footer.
 const BAR_TEXT_SIZE: u16 = 13;
@@ -45,12 +46,16 @@ pub struct HeaderButtons {
     pub country: Option<Rect>,
     /// The day, for ending it.
     pub day: Rect,
+    /// The compass at the right, for turning the map to look straight down with north up.
+    pub compass: Rect,
 }
 
 /// The header along the top of the window: the player's country, once there is one, which is a button
 /// for the countries menu, and the day, which is a button for ending it (each lit when the mouse is over
-/// it, if `interactive`), and the money of the country. Returns where the buttons are.
-pub fn header(style: &Style, day: &DaySave, interactive: bool) -> HeaderButtons {
+/// it, if `interactive`), and the money of the country. At the right is a compass, whose needle points to north as
+/// the camera (looking in the direction `yaw`) sees it, which is a button for turning the map north up. Returns
+/// where the buttons are.
+pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> HeaderButtons {
     let bar = header_rect();
     draw_rectangle(bar.x, bar.y, bar.w, bar.h, style::GLASS);
     draw_line(bar.x, bar.bottom(), bar.right(), bar.bottom(), 1.0, style::BORDER);
@@ -90,12 +95,30 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool) -> HeaderButtons 
         let color = if country.money < 0 { style::ERROR } else { style::TEXT };
         style.text_mid(&money(country.money), x + 43.0, y, BAR_TEXT_SIZE, Weight::Semibold, color);
     }
-    HeaderButtons { country: button, day: day_button }
+    let compass = Rect::new(bar.right() - FOOTER_PADDING - 32.0, y - 14.0, 32.0, 28.0);
+    draw_compass(compass, yaw, interactive && compass.contains(Vec2::from(mouse_position())));
+    HeaderButtons { country: button, day: day_button, compass }
+}
+
+/// A compass in `rect`: a ring with a needle whose red end points to north on the screen, as seen by a camera
+/// looking in the direction `yaw`. North is towards -z, so looking in the direction of [`crate::camera::NORTH`]
+/// has it straight up.
+fn draw_compass(rect: Rect, yaw: f32, hovered: bool) {
+    if hovered {
+        style::rounded_rect(rect, 8.0, style::HOVER);
+    }
+    let c = rect.center();
+    draw_circle_lines(c.x, c.y, 11.0, 1.5, if hovered { style::TEXT } else { style::TEXT_MUTED });
+    let north = vec2(-yaw.sin(), yaw.cos());
+    let across = vec2(-north.y, north.x);
+    draw_triangle(c + north * 10.0, c + across * 3.5, c - across * 3.5, Color::new(0.93, 0.30, 0.30, 1.0));
+    draw_triangle(c - north * 9.0, c + across * 3.5, c - across * 3.5, Color::new(0.80, 0.82, 0.88, 0.85));
 }
 
 /// The footer along the bottom of the window: the frame rate at the left and, when `keys` is set and
 /// there is room for them (the right `buttons_room` pixels are kept for the buttons), the keys in the middle.
-/// The bridge, path, overlays and options buttons go at the right, which `BridgeTool`, `PathTool`, `OverlaysUi` and
+/// The bridge, road, path, overlays and options buttons go at the right, which `BridgeTool`, `PathTool` (for paths
+/// and roads), `OverlaysUi` and
 /// `OptionsUi` draw.
 /// Returns where the footer is.
 pub fn footer(style: &Style, keys: bool, buttons_room: f32) -> Rect {

@@ -51,12 +51,19 @@ pub struct DaySave {
     /// The segments of path that have been built, which belong to no country. Carried forward from day to day.
     #[serde(default)]
     pub paths: Vec<PathSegment>,
+    /// The segments of road that have been built, which belong to no country either. A road is a path of stone, and
+    /// costs more. Carried forward from day to day.
+    #[serde(default)]
+    pub roads: Vec<PathSegment>,
     /// The bridges that have been built, which belong to no country. Carried forward from day to day.
     #[serde(default)]
     pub bridges: Vec<Bridge>,
     /// The segments of path that start at one end of a bridge. Carried forward from day to day.
     #[serde(default)]
     pub bridge_links: Vec<BridgeLink>,
+    /// The segments of road that start at one end of a bridge. Carried forward from day to day.
+    #[serde(default)]
+    pub road_links: Vec<BridgeLink>,
     /// What happened today. Not carried forward.
     #[serde(default)]
     pub newsreel: Vec<News>,
@@ -64,7 +71,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.

@@ -63,6 +63,7 @@ use options::{Options, OptionsUi};
 use bridge::BRIDGE_COST;
 use bridge_tool::BridgeTool;
 use bridge_view::BridgeRenderer;
+use path::Kind;
 use path_tool::{PathTool, Scene};
 use path_view::PathRenderer;
 use overlays::OverlaysUi;
@@ -187,8 +188,10 @@ async fn main() {
     let mut overlays_ui = OverlaysUi::default();
     let mut alerts_ui = AlertsUi::default();
     let mut newsreel_panel = hud::NewsreelPanel::default();
-    let mut path_tool = PathTool::default();
-    let mut paths = PathRenderer::default();
+    let mut path_tool = PathTool::new(Kind::Path);
+    let mut paths = PathRenderer::new(Kind::Path);
+    let mut road_tool = PathTool::new(Kind::Road);
+    let mut roads = PathRenderer::new(Kind::Road);
     let mut bridge_tool = BridgeTool::default();
     let mut bridges = BridgeRenderer::default();
     // The popup that asks whether to end the day.
@@ -224,6 +227,8 @@ async fn main() {
                 naming_city = None;
             } else if path_tool.is_active() {
                 path_tool.escape();
+            } else if road_tool.is_active() {
+                road_tool.escape();
             } else if bridge_tool.is_active() {
                 bridge_tool.escape();
             } else {
@@ -245,7 +250,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse);
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse);
         if modal {
             camera.skip_frame();
         } else {
@@ -266,15 +271,19 @@ async fn main() {
         // Once there is a country and a person, the first city has to be placed.
         // Why no path can be built, which switches the tool off.
         let path_problem = day.path_problem();
+        let road_problem = day.road_problem();
         let no_regions = region_map.is_empty();
         if path_problem.is_some() || no_regions {
             path_tool.deactivate();
+        }
+        if road_problem.is_some() || no_regions {
+            road_tool.deactivate();
         }
         let bridge_problem = day.bridge_problem();
         if bridge_problem.is_some() {
             bridge_tool.deactivate();
         }
-        let placing = !modal && day.cities.is_empty() && !path_tool.is_active() && !bridge_tool.is_active();
+        let placing = !modal && day.cities.is_empty() && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active();
         let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
         // Why the city can't go there: the ground, or the region belonging to another country.
         let problem = site.and_then(|at| {
@@ -285,28 +294,31 @@ async fn main() {
         });
         cities.draw(&world, &day.cities, &eye);
         paths.draw(&world, &region_map, &day);
+        roads.draw(&world, &region_map, &day);
         bridges.draw(&world, &day.bridges);
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
         // The city under the mouse, if there is one, which the tooltip tells about.
-        let hovered = if modal || naming_city.is_some() || over_interface || path_tool.is_active() || bridge_tool.is_active() { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
+        let hovered = if modal || naming_city.is_some() || over_interface || path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
 
         // A click on the map (a drag is for the camera) places the first city, and after that opens the
         // popup of the city clicked.
         let clicked = clicks.update(!modal && !over_interface);
-        // With the path tool on, clicks are for choosing the ends of a segment of path.
-        if !modal && path_tool.is_active() {
+        // With the path tool or the road tool on, clicks are for choosing the ends of a segment of it.
+        if !modal && (path_tool.is_active() || road_tool.is_active()) {
+            let tool = if path_tool.is_active() { &mut path_tool } else { &mut road_tool };
+            let kind = tool.kind();
             let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
-            if let Some(piece) = path_tool.update(&scene, &day, clicked) {
-                // Only keep the path if it is saved too.
+            if let Some(piece) = tool.update(&scene, &day, clicked) {
+                // Only keep it if it is saved too.
                 let mut updated = day.clone();
-                match updated.build_piece(piece).and_then(|()| autosave.save_now(&saves, &updated)) {
+                match updated.build_piece(kind, piece).and_then(|()| autosave.save_now(&saves, &updated)) {
                     Ok(()) => {
                         day = updated;
-                        path_tool.built();
+                        tool.built();
                     }
-                    Err(message) => path_tool.fail(message),
+                    Err(message) => tool.fail(message),
                 }
             }
         } else if !modal && bridge_tool.is_active() {
@@ -338,12 +350,15 @@ async fn main() {
 
         set_default_camera();
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
-        let header = hud::header(&style, &day, !modal);
+        let header = hud::header(&style, &day, !modal, camera.yaw());
         if !modal && is_mouse_button_pressed(MouseButton::Left) {
             if header.country.is_some_and(|b| b.contains(mouse)) {
                 options_ui.close();
                 overlays_ui.close();
                 country_menu.open(&day);
+            } else if header.compass.contains(mouse) {
+                // Turns the map to look straight down with north at the top.
+                camera.reset_view();
             } else if header.day.contains(mouse) {
                 // Ending the day is asked about first.
                 options_ui.close();
@@ -352,15 +367,15 @@ async fn main() {
             }
         }
         // The room the footer keeps for its buttons grows by the reason the paths button is off, when it is.
-        // Why a tool button is off, for beside the leftmost of them: paths need less than bridges, so when paths
-        // can't be built, neither can bridges.
-        let tool_reason: Option<String> = match (&path_problem, &bridge_problem) {
-            (Some(problem), _) if no_regions => Some(format!("No regions for paths. {}", problem.short())),
-            (Some(path::PathProblem::NoCountry), _) => Some("No country to pay for paths or bridges".to_owned()),
-            (Some(path::PathProblem::NotEnoughCoin { money, .. }), _) => Some(format!("Not enough coin (paths {}, bridges {}; has {money})", path::PATH_COST, format::money(BRIDGE_COST))),
-            (None, _) if no_regions => Some("This map has no regions for paths".to_owned()),
-            (None, Some(problem)) => Some(problem.short()),
-            (None, None) => None,
+        // Why a tool button is off, for beside the leftmost of them. Paths cost the least, then roads, then
+        // bridges, so each one that can't be built means the ones after it can't be either.
+        let coins = day.player_country().map(|c| c.money);
+        let tool_reason: Option<String> = match coins {
+            None => Some("No country to pay for paths, roads or bridges".to_owned()),
+            _ if no_regions => Some("This map has no regions for paths or roads".to_owned()),
+            Some(coins) if coins < path::PATH_COST => Some(format!("Not enough coin (paths {}, roads {}, bridges {}; has {coins})", path::PATH_COST, path::ROAD_COST, format::money(BRIDGE_COST))),
+            Some(coins) if coins < path::ROAD_COST => Some(format!("Not enough coin for roads or bridges ({}, {}; has {coins})", path::ROAD_COST, format::money(BRIDGE_COST))),
+            Some(_) => bridge_problem.as_ref().map(|problem| problem.short()),
         };
         let buttons_room = hud::BUTTONS_ROOM + if tool_reason.is_some() { 300.0 } else { 0.0 };
         let footer = hud::footer(&style, !modal, buttons_room);
@@ -386,14 +401,26 @@ async fn main() {
             let (options_was_open, overlays_was_open) = (options_ui.is_open(), overlays_ui.is_open());
             options_ui.show(&style, footer, &mut options, view.has_regions());
             overlays_ui.show(&style, footer, &mut options, view.has_regions());
-            // Only one of the two tools is on at a time: the one that was just turned on wins.
-            let path_was_on = path_tool.is_active();
+            // Only one of the tools is on at a time: the one that was just turned on wins.
+            let was_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active()];
             let path_button = path_tool.show_button(&style, footer, overlays_ui.button().x - 8.0, path_problem.as_ref(), no_regions);
-            bridge_tool.show_button(&style, footer, path_button.x - 8.0, bridge_problem.as_ref(), tool_reason.as_deref());
-            if path_tool.is_active() && bridge_tool.is_active() {
-                if path_was_on { path_tool.deactivate() } else { bridge_tool.deactivate() }
+            let road_button = road_tool.show_button(&style, footer, path_button.x - 8.0, road_problem.as_ref(), no_regions);
+            bridge_tool.show_button(&style, footer, road_button.x - 8.0, bridge_problem.as_ref(), tool_reason.as_deref());
+            let now_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active()];
+            if now_on.iter().filter(|on| **on).count() > 1 {
+                // The one that was already on gives way.
+                if was_on[0] && now_on[0] {
+                    path_tool.deactivate();
+                }
+                if was_on[1] && now_on[1] {
+                    road_tool.deactivate();
+                }
+                if was_on[2] && now_on[2] {
+                    bridge_tool.deactivate();
+                }
             }
             path_tool.show_prompt(&style, &day);
+            road_tool.show_prompt(&style, &day);
             bridge_tool.show_prompt(&style, &day);
             if overlays_ui.is_open() && !overlays_was_open {
                 options_ui.close();
