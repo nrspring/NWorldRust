@@ -14,6 +14,7 @@ use crate::city::{self, City, INITIAL_POPULATION};
 use crate::country::{self, Country, RegionOwner, STARTING_MONEY};
 use crate::ids::{CityId, CountryId, Guid, PersonId, TitleTypeId};
 use crate::newsreel::{Event, News};
+use crate::path::PathSegment;
 use crate::person::{self, Person};
 use crate::rgb::Rgb;
 use crate::saves::DAY_VERSION;
@@ -46,6 +47,9 @@ pub struct DaySave {
     /// here is unowned, as they all are to begin with. A region with a city in it belongs to the city's country.
     #[serde(default)]
     pub region_owners: Vec<RegionOwner>,
+    /// The segments of path that have been built, which belong to no country. Carried forward from day to day.
+    #[serde(default)]
+    pub paths: Vec<PathSegment>,
     /// What happened today. Not carried forward.
     #[serde(default)]
     pub newsreel: Vec<News>,
@@ -53,7 +57,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.

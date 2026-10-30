@@ -26,8 +26,8 @@ const HELP: &[(&str, &str)] = &[
 pub const FOOTER_HEIGHT: f32 = 48.0;
 /// Distance of what is in the footer from its left edge. The options button keeps the same from the right.
 pub const FOOTER_PADDING: f32 = 12.0;
-/// Room kept at the right end of the footer for the overlays button and the options button.
-const BUTTONS_ROOM: f32 = 160.0;
+/// Room kept at the right end of the footer for its buttons, before any reason that one of them is off.
+pub const BUTTONS_ROOM: f32 = 250.0;
 
 /// The size of the text in the header and the footer.
 const BAR_TEXT_SIZE: u16 = 13;
@@ -94,9 +94,10 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool) -> HeaderButtons 
 }
 
 /// The footer along the bottom of the window: the frame rate at the left and, when `keys` is set and
-/// there is room for them, the keys in the middle. The overlays and options buttons go at the right,
-/// which `OverlaysUi` and `OptionsUi` draw. Returns where the footer is.
-pub fn footer(style: &Style, keys: bool) -> Rect {
+/// there is room for them (the right `buttons_room` pixels are kept for the buttons), the keys in the middle.
+/// The path, overlays and options buttons go at the right, which `PathTool`, `OverlaysUi` and `OptionsUi` draw.
+/// Returns where the footer is.
+pub fn footer(style: &Style, keys: bool, buttons_room: f32) -> Rect {
     let bar = Rect::new(0.0, screen_height() - FOOTER_HEIGHT, screen_width(), FOOTER_HEIGHT);
     draw_rectangle(bar.x, bar.y, bar.w, bar.h, style::GLASS);
     draw_line(bar.x, bar.y, bar.right(), bar.y, 1.0, style::BORDER);
@@ -108,7 +109,7 @@ pub fn footer(style: &Style, keys: bool) -> Rect {
     let fps_width = style.measure("8888 fps", BAR_TEXT_SIZE, Weight::Regular).width;
 
     if keys {
-        help(style, bar, fps_x + fps_width + 24.0, bar.right() - BUTTONS_ROOM);
+        help(style, bar, fps_x + fps_width + 24.0, bar.right() - buttons_room);
     }
     bar
 }

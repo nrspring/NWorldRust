@@ -21,6 +21,8 @@ pub struct OverlaysUi {
     /// Where the footer and the panel were drawn last, so the mouse can be told it is over them.
     footer: Rect,
     panel: Option<Rect>,
+    /// Where the button was drawn last.
+    button: Rect,
 }
 
 impl OverlaysUi {
@@ -30,6 +32,11 @@ impl OverlaysUi {
 
     pub fn close(&mut self) {
         self.open = false;
+    }
+
+    /// Where the button is, so that another can be put beside it.
+    pub fn button(&self) -> Rect {
+        self.button
     }
 
     /// Whether the mouse is over the footer or the panel, and so is not for the map.
@@ -50,6 +57,7 @@ impl OverlaysUi {
         let width = label_width + 14.0 + 12.0 + 8.0 + 8.0;
         let right = footer.right() - FOOTER_PADDING - options::BUTTON_SIZE - GAP;
         let button = Rect::new(right - width, footer.center().y - BUTTON_HEIGHT * 0.5, width, BUTTON_HEIGHT);
+        self.button = button;
         let hovered = button.contains(mouse);
         if hovered && clicked {
             self.open = !self.open;

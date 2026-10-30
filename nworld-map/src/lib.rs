@@ -11,6 +11,8 @@
 //! * [`continents`], [`islands`], [`hills`], [`rivers`], [`shallows`], [`passes`], [`regions`] and
 //!   [`density`]: what those steps are made of, which works on the plain arrays of a world, and
 //!   the brushes an editor paints with. A program that only reads maps never needs them.
+//! * [`region_map`]: where the regions are (a center for each) and how they meet (the middle of each border),
+//!   for a game that lays paths or borders over them.
 //! * [`noise`] and [`gen_common`]: what the generators share.
 //!
 //! The editor draws maps; other applications are free to draw them their own way, and to lay
@@ -24,6 +26,7 @@ pub mod hills;
 pub mod islands;
 pub mod noise;
 pub mod passes;
+pub mod region_map;
 pub mod regions;
 pub mod rivers;
 pub mod shallows;

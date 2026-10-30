@@ -22,6 +22,9 @@ mod hud;
 mod ids;
 mod newsreel;
 mod options;
+mod path;
+mod path_tool;
+mod path_view;
 mod overlays;
 mod person;
 mod placement;
@@ -37,6 +40,7 @@ mod title_type;
 use std::path::{Path, PathBuf};
 
 use macroquad::prelude::*;
+use nworld_map::region_map::RegionMap;
 use nworld_map::regions::RegionId;
 use nworld_map::storage;
 use nworld_map::world::World;
@@ -52,6 +56,8 @@ use city_view::CityRenderer;
 use day::DaySave;
 use country_menu::CountryMenu;
 use options::{Options, OptionsUi};
+use path_tool::{PathTool, Scene};
+use path_view::PathRenderer;
 use overlays::OverlaysUi;
 use placement::ClickTracker;
 use popup::Popup;
@@ -158,6 +164,8 @@ async fn main() {
         }
     };
 
+    // Where the regions are and how they meet, for the paths.
+    let region_map = RegionMap::build(&world);
     let mut camera = GameCamera::new(&world);
     let mut view = MapView::new(&world, camera.camera(&world).position);
     let mut time = 0.0f32;
@@ -172,6 +180,8 @@ async fn main() {
     let mut overlays_ui = OverlaysUi::default();
     let mut alerts_ui = AlertsUi::default();
     let mut newsreel_panel = hud::NewsreelPanel::default();
+    let mut path_tool = PathTool::default();
+    let mut paths = PathRenderer::default();
     // The popup that asks whether to end the day.
     let mut advance_popup = AdvancePopup::default();
     let mut country_menu = CountryMenu::default();
@@ -203,6 +213,8 @@ async fn main() {
                 // A drop-down list was open, and is closed.
             } else if naming_city.is_some() {
                 naming_city = None;
+            } else if path_tool.is_active() {
+                path_tool.escape();
             } else {
                 break;
             }
@@ -222,7 +234,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse);
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse);
         if modal {
             camera.skip_frame();
         } else {
@@ -241,7 +253,13 @@ async fn main() {
         view.draw(&world, &eye, time);
 
         // Once there is a country and a person, the first city has to be placed.
-        let placing = !modal && day.cities.is_empty();
+        // Why no path can be built, which switches the tool off.
+        let path_problem = day.path_problem();
+        let no_regions = region_map.is_empty();
+        if path_problem.is_some() || no_regions {
+            path_tool.deactivate();
+        }
+        let placing = !modal && day.cities.is_empty() && !path_tool.is_active();
         let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
         // Why the city can't go there: the ground, or the region belonging to another country.
         let problem = site.and_then(|at| {
@@ -251,15 +269,31 @@ async fn main() {
             })
         });
         cities.draw(&world, &day.cities, &eye);
+        paths.draw(&world, &region_map, &day.paths);
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
         // The city under the mouse, if there is one, which the tooltip tells about.
-        let hovered = if modal || naming_city.is_some() || over_interface { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
+        let hovered = if modal || naming_city.is_some() || over_interface || path_tool.is_active() { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
 
         // A click on the map (a drag is for the camera) places the first city, and after that opens the
         // popup of the city clicked.
-        if clicks.update(!modal && !over_interface) {
+        let clicked = clicks.update(!modal && !over_interface);
+        // With the path tool on, clicks are for choosing the ends of a segment of path.
+        if !modal && path_tool.is_active() {
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            if let Some(segment) = path_tool.update(&scene, &day.paths, clicked) {
+                // Only keep the path if it is saved too.
+                let mut updated = day.clone();
+                match updated.build_path(segment).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        path_tool.built();
+                    }
+                    Err(message) => path_tool.fail(message),
+                }
+            }
+        } else if clicked {
             if placing {
                 if let (Some(at), None) = (site, &problem) {
                     // The city is founded once it has a name.
@@ -287,7 +321,9 @@ async fn main() {
                 advance_popup.open(day.date);
             }
         }
-        let footer = hud::footer(&style, !modal);
+        // The room the footer keeps for its buttons grows by the reason the paths button is off, when it is.
+        let buttons_room = hud::BUTTONS_ROOM + if path_problem.is_some() || no_regions { 240.0 } else { 0.0 };
+        let footer = hud::footer(&style, !modal, buttons_room);
         autosave.update(&saves, &day, get_time());
         if let Some(message) = autosave.error() {
             hud::save_failed(&style, message);
@@ -310,6 +346,8 @@ async fn main() {
             let (options_was_open, overlays_was_open) = (options_ui.is_open(), overlays_ui.is_open());
             options_ui.show(&style, footer, &mut options, view.has_regions());
             overlays_ui.show(&style, footer, &mut options, view.has_regions());
+            path_tool.show_button(&style, footer, overlays_ui.button().x - 8.0, path_problem.as_ref(), no_regions);
+            path_tool.show_prompt(&style, &day);
             if overlays_ui.is_open() && !overlays_was_open {
                 options_ui.close();
             } else if options_ui.is_open() && !options_was_open {
