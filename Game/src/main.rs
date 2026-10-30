@@ -23,6 +23,7 @@ mod saves;
 #[cfg(test)]
 mod test_support;
 mod text;
+mod title_type;
 
 use std::path::{Path, PathBuf};
 
@@ -116,7 +117,7 @@ impl Asking {
         match self {
             Self::Country => Popup::country(),
             // The first country is the player's, and the person belongs to it.
-            Self::Person => Popup::person(&day.countries[0].name),
+            Self::Person => Popup::person(&day.countries[0].name, day.title_types.iter().map(|t| t.name.clone()).collect()),
         }
     }
 
@@ -124,7 +125,7 @@ impl Asking {
     fn answer(&self, day: &mut DaySave, typed: &[String]) -> Result<(), String> {
         match self {
             Self::Country => day.found_country(&typed[0]),
-            Self::Person => day.found_person(&typed[0], &typed[1]),
+            Self::Person => day.found_person(&typed[0], &typed[1], &typed[2]),
         }
     }
 }
@@ -164,6 +165,8 @@ async fn main() {
             // Esc first closes the options, or gives up on naming a city, and only then quits.
             if options_ui.is_open() {
                 options_ui.close();
+            } else if asking.as_mut().is_some_and(|(_, popup)| popup.close_dropdown()) {
+                // A drop-down list was open, and is closed.
             } else if naming_city.is_some() {
                 naming_city = None;
             } else {

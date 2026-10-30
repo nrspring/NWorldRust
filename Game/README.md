@@ -21,7 +21,7 @@ Everything the game adds to the map, such as roads, cities and units, belongs to
 
 The gear button beside the day opens the options panel. Click it again, or press Esc, to close it. While the mouse is over the button or the panel, it doesn't move the camera.
 
-- **Show regions**: draws thin lines between the map's regions, and leaves the ground as it is. It is greyed out, with a note, for a map that has no regions. The setting lasts until the game closes; it isn't saved.
+- **Show regions**: draws thin lines between the map's regions, and leaves the ground as it is. It is **on** when the game starts. It is greyed out, with a note, for a map that has no regions. Turning it off lasts until the game closes; it isn't saved, so it is on again next time.
 
 ## Cities
 
@@ -58,8 +58,10 @@ With no `game.json`, the game starts a new game: the day is set to 1-1-1 and `ga
 A day's file also holds the countries, the people and that day's newsreel:
 
 ```json
+"title_types": [ { "id": "5c76242a-e7a0-4751-aa52-0d295a219590", "name": "Head of State" } ],
 "countries": [ { "id": "3f2b8c1e-5a47-4d0e-9b6a-7c1d2e8f4a90", "name": "Aldoria" } ],
 "people": [ { "id": "9a1c0d52-7be3-4f68-a2c4-1d5e8b3f6a07", "name": "Mara Voss", "title": "President",
+              "title_type": "5c76242a-e7a0-4751-aa52-0d295a219590",
               "country": "3f2b8c1e-5a47-4d0e-9b6a-7c1d2e8f4a90" } ],
 "newsreel": [
   { "subject": "3f2b8c1e-5a47-4d0e-9b6a-7c1d2e8f4a90", "type": "country_founded" },
@@ -74,7 +76,11 @@ A day's file also holds the countries, the people and that day's newsreel:
 
 If the saved game has no country, a popup asks for the name of a new one when the game starts. Type the name and press Enter (or click **Found country**). The country is saved, and the day's newsreel reports it.
 
-If there is a country but no people, a second popup asks for the name and title of a person, and the person is added to the first country. Tab (or the arrow keys, or a click) moves between the two fields, and Enter in the name field moves on to the title.
+If there is a country but no people, a second popup asks for the name, the title and the **title type** of a person, and the person is added to the first country. Tab (or the arrow keys, or a click) moves between the fields, and Enter moves on to the next one.
+
+**Title types.** A person's title is what they are called ("President", "Sea Mother"); the title type is what kind of title it is, such as Monarch, Nobility or Clergy. There are none to begin with. The title type field is a drop-down: **type a kind to make it** (a "New" tag shows that it isn't known yet), and it is added when the person is. After that it is in the list, so later people can pick it: click the field, or press Down, to see the list, and type to narrow it. Pick one with the mouse, or with Down and Enter. Esc closes an open list.
+
+Title types are saved in each day's file (`title_types`) and carry forward, in the order they were added. A person refers to theirs by id (`title_type`); a kind gets a random GUID when it is first typed.
 
 ## Autosave
 

@@ -108,6 +108,10 @@ id_type!(
     /// The id of a city.
     CityId
 );
+id_type!(
+    /// The id of a kind of title, like "Monarch".
+    TitleTypeId
+);
 
 impl CityId {
     /// A number made from the id, for anything that should come out the same for the same city every

@@ -63,7 +63,7 @@ mod tests {
     fn day() -> DaySave {
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         day.found_country("Aldoria").unwrap();
-        day.found_person("Mara Voss", "President").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
         day.found_city("Port Aldor", 0.0, 0.0).unwrap();
         day
     }

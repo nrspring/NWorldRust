@@ -4,10 +4,16 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
 /// The settings. They are for how the game looks and feels, and are not part of the saved game.
-#[derive(Default)]
 pub struct Options {
     /// Show the map's regions on the ground.
     pub show_regions: bool,
+}
+
+impl Default for Options {
+    /// How the game starts: with the regions showing.
+    fn default() -> Self {
+        Self { show_regions: true }
+    }
 }
 
 const BUTTON_SIZE: f32 = 40.0;
@@ -120,5 +126,15 @@ fn draw_gear(center: Vec2, color: Color) {
             5.0,
             DrawRectangleParams { offset: vec2(0.5, 0.5), rotation: angle + std::f32::consts::FRAC_PI_2, color },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_regions_show_when_the_game_starts() {
+        assert!(Options::default().show_regions);
     }
 }

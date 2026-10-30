@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{CountryId, PersonId};
+use crate::ids::{CountryId, PersonId, TitleTypeId};
 use crate::text;
 
 /// The longest a person's name or title can be, in characters.
@@ -15,6 +15,8 @@ pub struct Person {
     pub name: String,
     /// What they are called, like "President" or "General".
     pub title: String,
+    /// The id of the kind of title it is, like "Head of State" or "Military".
+    pub title_type: TitleTypeId,
     /// The id of the country they belong to.
     pub country: CountryId,
 }
