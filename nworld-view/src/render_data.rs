@@ -2,7 +2,7 @@
 //! sample. Which numbers go in which channel is a matter between these functions and the shaders in
 //! `render.rs`; the map itself has no part in it.
 
-use crate::world::{Region, Resource, World, SEA_LEVEL};
+use nworld_map::world::{Region, Resource, World, SEA_LEVEL};
 
 /// How many textures hold the resources for the terrain shader, four to a texture.
 pub const RESOURCE_TEXTURES: usize = Resource::COUNT.div_ceil(4);
@@ -101,7 +101,7 @@ pub fn region_texels(world: &World) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{DEEP_OCEAN, SHALLOW_LIMIT};
+    use nworld_map::world::{DEEP_OCEAN, SHALLOW_LIMIT};
 
 
     #[test]

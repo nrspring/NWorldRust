@@ -1,18 +1,8 @@
 mod camera;
-mod copper;
 mod dialogs;
-mod forest;
 mod history;
-mod iron;
-mod oil;
 mod open_map;
-mod props;
-mod render;
-mod render_data;
-mod stone;
 mod style;
-mod sulphur;
-mod terrain_mesh;
 mod toast;
 mod topo;
 mod ui;
@@ -20,6 +10,8 @@ mod ui;
 // The map itself, and everything that makes it, lives in `nworld-map`, which knows nothing of
 // drawing. The editor reaches it by the same names it always had.
 use nworld_map::{continents, hills, islands, noise, passes, shallows, storage, world};
+// The drawing of the map is shared with the game. These keep `crate::render::` and friends working.
+use nworld_view::{copper, forest, iron, oil, props, render, render_data, stone, sulphur, terrain_mesh};
 
 use std::time::Duration;
 
@@ -34,8 +26,6 @@ use style::{Style, Weight};
 use toast::Toasts;
 use ui::{Brush, EditorUi, UiAction, TOOLBAR_WIDTH};
 
-/// Fog distance at sea level; it grows with altitude so the overview shows the whole world.
-const BASE_VIEW_DISTANCE: f32 = 4000.0;
 
 const HELP: &[(&[&str], &str)] = &[
     (&["W", "A", "S", "D"], "Move"),
@@ -511,7 +501,7 @@ fn draw_world(
     pass: Option<PassPreview>,
 ) {
     let pos = map.cam.position();
-    let view_distance = BASE_VIEW_DISTANCE + pos.y.max(0.0) * 1.5;
+    let view_distance = nworld_view::view_distance(pos.y);
     let camera = map.cam.camera(&map.world, view_distance * 1.5);
     set_default_camera();
     clear_background(render::background_color());

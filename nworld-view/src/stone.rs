@@ -8,7 +8,7 @@
 use macroquad::prelude::*;
 
 use crate::props::{density_at, randoms, value_noise, MeshBuilder, Prop, PropKind, PropVertex};
-use crate::world::{Resource, World, CELL_SIZE, CHUNK_SIZE};
+use nworld_map::world::{Resource, World, CELL_SIZE, CHUNK_SIZE};
 
 /// Meters between the spots a rock can lie on.
 const ROCK_SPACING: f32 = 4.0;

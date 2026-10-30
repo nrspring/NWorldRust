@@ -8,7 +8,7 @@ use macroquad::miniquad::{BufferId, BufferSource, BufferType, BufferUsage, Rende
 use macroquad::prelude::*;
 
 use crate::render::TerrainVertex;
-use crate::world::{World, CELL_SIZE, CHUNK_CELLS, CHUNK_SIZE, SEA_LEVEL};
+use nworld_map::world::{World, CELL_SIZE, CHUNK_CELLS, CHUNK_SIZE, SEA_LEVEL};
 
 /// Chunks along a side of a block, the group of chunks that is kept on the GPU and drawn together.
 /// Bigger blocks mean fewer draw calls; smaller ones less to re-upload when a chunk changes. An

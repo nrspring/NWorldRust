@@ -22,7 +22,7 @@ use macroquad::prelude::*;
 
 pub use nworld_map::density::{density_at, randoms, value_noise, DensityStroke};
 use crate::terrain_mesh::Frustum;
-use crate::world::{Resource, World, CHUNK_SIZE};
+use nworld_map::world::{Resource, World, CHUNK_SIZE};
 
 /// Props are drawn in tiles this many chunks across, which are culled one at a time.
 const TILE_CHUNKS: usize = 2;

@@ -53,21 +53,23 @@ Movement speed scales with height above the surface, so it suits both close-up w
 
 The on-screen overlays are kept to a minimum so the world fills the view: the toolbar, an FPS counter, the Top-down button, and a small hint for the controls list.
 
-## Two crates: the map, and the editor
+## Crates: the map, the view, and the editor
 
-The repository is a Cargo workspace of two crates, each in its own folder, and the line between them is deliberate.
+The repository is a Cargo workspace of four crates, each in its own folder, and the lines between them are deliberate.
 
 - **`nworld-map`** (the `nworld-map` folder, next to this one) is the map: the terrain, the water standing on it, the resources and regions laid over it, the steps that build them, saving and loading, and the questions a game can ask (what water is here, how much stone is nearby, which region is this). It draws nothing and depends on no graphics library, so another application can use it on its own. See [nworld-map/README.md](../nworld-map/README.md).
-- **`nworld`** (this folder, `WorldGeneration`) is the editor: the window, the toolbar, the camera, the terrain and prop renderers, undo, and the file dialogs. It reads the map and draws it; it also holds what only an editor needs.
+- **`nworld-view`** (the `nworld-view` folder) draws a map with macroquad: the terrain meshes and textures, the sky, the water and the resource props. The editor and the game both use it, so a map looks the same in both. It never changes the map.
+- **`nworld`** (this folder, `WorldGeneration`) is the editor: the window, the toolbar, the camera, undo, and the file dialogs. It reads the map and draws it with `nworld-view`; it also holds what only an editor needs.
+- **`nworld-game`** (the `Game` folder) is the game. It loads `Assets/map.nworld` and draws it with `nworld-view`.
 
 Roads, cities, armies and whatever else another application puts on a map belong to that application, not to either crate.
 
-Anything that is about *what the map is* goes in `nworld-map`. Anything about *how it looks or how it is edited by hand* goes in the editor. A test in `nworld-map` fails if display code or a graphics dependency finds its way in.
+Anything that is about *what the map is* goes in `nworld-map`. Anything about *how it looks* goes in `nworld-view`, and anything about *how it is edited by hand* in the editor. A test in `nworld-map` fails if display code or a graphics dependency finds its way in.
 
 ## How it works
 
 - `../nworld-map/src/world.rs`: the world: a heightmap (samples 4 m apart) with the water on it, the resources and the regions, and the queries over them. It also counts changes, per chunk, so a display knows what to redraw.
-- `src/terrain_mesh.rs`: the terrain as meshes. The map is drawn as a grid of 64 m chunks with 4 levels of detail, skirts to hide LOD cracks, and frustum and distance culling. `src/render_data.rs` encodes the map as the textures the shaders read, so land and water are decided per pixel: coastlines stay sharp at every distance, however coarse the mesh.
+- `../nworld-view/src/terrain_mesh.rs`: the terrain as meshes. The map is drawn as a grid of 64 m chunks with 4 levels of detail, skirts to hide LOD cracks, and frustum and distance culling. `../nworld-view/src/render_data.rs` encodes the map as the textures the shaders read, so land and water are decided per pixel: coastlines stay sharp at every distance, however coarse the mesh.
 - `src/camera.rs`: the free editor camera and the animated overview toggle, which frames the whole map clear of the toolbar.
 - `../nworld-map/src/continents.rs`: the continent generator. It spreads continent centers over the open water and shapes each one with simplex noise: a low-frequency, two-layer domain warp bends the outlines, large-scale noise adds lobes, peninsulas and inland seas, and fractal noise sets the coastline roughness. The shape-regularity setting stretches continents along random axes, adds noise at the scale of a whole continent, and softens the land's fall-off from the middle, so irregular shapes aren't pulled back toward a circle. Water channels between continents, around existing land (found with a distance transform) and along the edge buffer are kept free of land; a meandering keep-out line just inside the buffer stops coasts running along it straight. Continents are sized first, biggest first, then each is placed where it has the most clearance from the others, from existing land and from the buffer, so they spread over the whole map. Sea level is set at the percentile that gives the requested amount of new land, and the result is merged with the old heights keeping the higher of the two. It runs on all CPU cores and takes tens of milliseconds for a 4 km map.
 - `../nworld-map/src/storage.rs`: the `.nworld` file format: encoding, decoding with validation, and saving through a temporary file. It has unit tests for round trips, truncated, corrupt and wrong-version files, and invalid sizes.
@@ -79,6 +81,6 @@ Anything that is about *what the map is* goes in `nworld-map`. Anything about *h
 - `../nworld-map/src/gen_common.rs`: pieces shared by the continent and island generators: the random number generator, the distance-to-existing-land map, and gentle seeded lowland relief that fades into the coast.
 - `src/ui.rs`: the icon toolbar and its tool panels.
 - `src/style.rs`: the dark UI theme: colors, rounded shapes, shadows, keycaps and fonts. Fonts load from the system at startup: Inter if it's installed, then Segoe UI, then macroquad's built-in font.
-- `src/render.rs`: fixed lighting, the backdrop around the world (black at the world's edge, fading to grey farther away), and the shaders: per-pixel land and water from the surface texture with an anti-aliased coastline, terrain lighting, gentle water ripples, and fog that scales with altitude.
+- `../nworld-view/src/render.rs`: fixed lighting, the backdrop around the world (black at the world's edge, fading to grey farther away), and the shaders: per-pixel land and water from the surface texture with an anti-aliased coastline, terrain lighting, gentle water ripples, and fog that scales with altitude.
 - `../nworld-map/src/noise.rs`: seeded 2D simplex noise and fractal (fBm) sums of it.
-- `build.rs`: generates `libimm32.a` for Rust's self-contained `windows-gnu` toolchain, whose bundled MinGW doesn't include it. It does nothing on other targets.
+- `../nworld-view/build.rs`: generates `libimm32.a` for Rust's self-contained `windows-gnu` toolchain, whose bundled MinGW doesn't include it. It does nothing on other targets.

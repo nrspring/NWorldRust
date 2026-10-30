@@ -1,5 +1,5 @@
 [workspace]
-members = ["WorldGeneration", "nworld-map"]
+members = ["WorldGeneration", "Game", "nworld-map", "nworld-view"]
 # Plain `cargo run` and `cargo build` at the top level use the editor.
 default-members = ["WorldGeneration"]
 resolver = "3"

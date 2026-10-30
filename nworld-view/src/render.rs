@@ -7,10 +7,10 @@ use macroquad::miniquad::{
 use macroquad::models::{Mesh, Vertex};
 use macroquad::prelude::*;
 
-use crate::camera::FOV_DEGREES;
+use crate::FOV_DEGREES;
 use crate::render_data::{self, RESOURCE_TEXTURES};
 use crate::terrain_mesh::{Frustum, TerrainMesh};
-use crate::world::{Region, Resource, World, CELL_SIZE, SEA_LEVEL};
+use nworld_map::world::{Region, Resource, World, CELL_SIZE, SEA_LEVEL};
 
 /// The pale haze of the sky at the horizon. Distant terrain and sea fog to it, so they fade
 /// into the sky.
