@@ -10,6 +10,7 @@ use macroquad::prelude::*;
 use crate::FOV_DEGREES;
 use crate::render_data::{self, RESOURCE_TEXTURES};
 use crate::terrain_mesh::{Frustum, TerrainMesh};
+use nworld_map::regions::RegionId;
 use nworld_map::world::{Region, Resource, World, CELL_SIZE, SEA_LEVEL};
 
 /// The pale haze of the sky at the horizon. Distant terrain and sea fog to it, so they fade
@@ -112,13 +113,22 @@ pub enum RegionOverlay {
     /// Each region tinted by its kind of ground, a little differently from its neighbours, with lines
     /// between them. For seeing the regions clearly, as the editor does.
     Tinted,
-    /// Only the thin lines between regions, so the ground looks as it always does.
+    /// Only the thin lines between regions, so the ground looks as it always does. The regions given a
+    /// color (see [`TerrainRenderer::set_region_tints`]) are tinted in it, with lines in it round them.
     Borders,
+    /// Only the regions given a color, tinted in it with lines in it round them, and the rest of the
+    /// ground as it always looks.
+    Colors,
 }
 
 pub struct TerrainRenderer {
     pipeline: Pipeline,
     noise: Texture2D,
+    /// The colors regions are tinted with, which is nothing until [`Self::set_region_tints`].
+    region_tints: Texture2D,
+    /// A texture with no tints in it, for when they are hidden.
+    no_tints: Texture2D,
+    tints_visible: bool,
 }
 
 impl TerrainRenderer {
@@ -132,7 +142,7 @@ impl TerrainRenderer {
                 },
                 ShaderMeta {
                     uniforms: terrain_uniform_layout(),
-                    images: vec!["surface".to_owned(), "noise".to_owned(), "resources".to_owned(), "resources2".to_owned(), "regions".to_owned()],
+                    images: vec!["surface".to_owned(), "noise".to_owned(), "resources".to_owned(), "resources2".to_owned(), "regions".to_owned(), "region_tints".to_owned()],
                 },
             )
             .expect("terrain shader failed to compile");
@@ -145,10 +155,30 @@ impl TerrainRenderer {
             shader,
             opaque_pipeline(),
         );
+        // One texel with no tint in it, which is also what is shown while there are none to show.
+        let empty = || {
+            let texture = Texture2D::from_rgba8(1, 1, &[0, 0, 0, 0]);
+            texture.set_filter(FilterMode::Nearest);
+            texture
+        };
         Self {
             pipeline,
             noise: noise_texture(),
+            no_tints: empty(),
+            region_tints: empty(),
+            tints_visible: true,
         }
+    }
+
+    /// Tints regions with the colors in `texture`, made by [`region_tints_texture`], while the regions are
+    /// drawn as lines (the tint is added to the lines and the ground inside them).
+    pub fn set_region_tints(&mut self, texture: Texture2D) {
+        self.region_tints = texture;
+    }
+
+    /// Whether the tints show at all. They are kept while hidden.
+    pub fn set_region_tints_visible(&mut self, visible: bool) {
+        self.tints_visible = visible;
     }
 
     /// Draws the terrain of `world`, colored from its `surface` texture, as seen by `camera`
@@ -184,6 +214,7 @@ impl TerrainRenderer {
                 RegionOverlay::Off => 0.0,
                 RegionOverlay::Tinted => 1.0,
                 RegionOverlay::Borders => 2.0,
+                RegionOverlay::Colors => 3.0,
             },
             region_highlight: region_highlight.map_or(vec2(-1.0, -1.0), |id| vec2((id & 0xFF) as f32, (id >> 8) as f32) / 255.0),
         };
@@ -199,6 +230,7 @@ impl TerrainRenderer {
             resources[0].raw_miniquad_id(),
             resources[1].raw_miniquad_id(),
             regions.raw_miniquad_id(),
+            if self.tints_visible { &self.region_tints } else { &self.no_tints }.raw_miniquad_id(),
         ];
         for block in blocks {
             ctx.apply_bindings(&miniquad::Bindings {
@@ -261,6 +293,15 @@ pub fn regions_texture(world: &World) -> Texture2D {
     let (nx, nz) = world.samples();
     let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &render_data::region_texels(world));
     // Regions are told apart by their exact numbers, so they must not blend.
+    texture.set_filter(FilterMode::Nearest);
+    texture
+}
+
+/// Uploads the colors to tint regions with, for the terrain shader: one color for each of the given
+/// regions. The regions not given are left as they are.
+pub fn region_tints_texture(world: &World, colors: &[(RegionId, [u8; 3])]) -> Texture2D {
+    let (nx, nz) = world.samples();
+    let texture = Texture2D::from_rgba8(nx as u16, nz as u16, &render_data::region_tint_texels(world, colors));
     texture.set_filter(FilterMode::Nearest);
     texture
 }
@@ -614,6 +655,9 @@ uniform sampler2D resources2;
 // The region of each sample, by number: the low byte in red and the high byte, which starts with
 // the kind of ground, in green. Drawn over the terrain while `region_overlay` is 1.
 uniform sampler2D regions;
+// The color to tint each sample's region with, in red, green and blue, and 1 in alpha where there is one.
+// Drawn over the terrain while `region_overlay` is 2 or 3.
+uniform sampler2D region_tints;
 // Repeating random values, for noise.
 uniform sampler2D noise;
 const float NOISE_SIZE = 512.0;
@@ -934,7 +978,7 @@ void main() {
 
     // The regions. With `region_overlay` 1 each is tinted by its kind of ground, a little differently
     // from its neighbours, and outlined where one meets another, in a faint line about as wide on screen
-    // at any distance. With 2 only the lines are drawn. The region picked by `region_highlight` is
+    // at any distance. With 2 only the lines are drawn, and with 3 only the lines round tinted regions. The region picked by `region_highlight` is
     // lit up and outlined in gold.
     bool show_regions = region_overlay > 0.5;
     bool show_pick = region_highlight.x >= 0.0;
@@ -950,7 +994,20 @@ void main() {
                 || texture2D(regions, uv + step_z).rg != here.rg
                 || texture2D(regions, uv - step_z).rg != here.rg;
             if (region_overlay > 1.5) {
-                col = edge ? mix(col, vec3(1.0), 0.5) : col;
+                vec4 owner = texture2D(region_tints, uv);
+                bool tinted = owner.a > 0.5;
+                // The farther away, the more solid the tint, so far off areas can still be made out.
+                float solid = smoothstep(150.0, 3500.0, dist);
+                if (tinted) {
+                    col = mix(col, owner.rgb, mix(0.4, 0.9, solid));
+                }
+                if (edge) {
+                    if (tinted) {
+                        col = mix(col, owner.rgb, mix(0.75, 1.0, solid));
+                    } else if (region_overlay < 2.5) {
+                        col = mix(col, vec3(1.0), 0.5);
+                    }
+                }
             } else if (show_regions) {
                 float kind = floor(here.g * 255.0 / 64.0 + 0.5);
                 vec3 tint = kind < 0.5 ? vec3(0.10, 0.22, 0.85)

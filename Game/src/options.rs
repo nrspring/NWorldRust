@@ -9,16 +9,18 @@ use crate::hud::FOOTER_PADDING;
 pub struct Options {
     /// Show the map's regions on the ground.
     pub show_regions: bool,
+    /// Show the regions that countries own in their colors. Set in the overlays menu.
+    pub show_country_areas: bool,
 }
 
 impl Default for Options {
-    /// How the game starts: with the regions showing.
+    /// How the game starts: with the regions showing, and the countries' areas.
     fn default() -> Self {
-        Self { show_regions: true }
+        Self { show_regions: true, show_country_areas: true }
     }
 }
 
-const BUTTON_SIZE: f32 = 36.0;
+pub const BUTTON_SIZE: f32 = 36.0;
 const PANEL_WIDTH: f32 = 320.0;
 const HEADER_HEIGHT: f32 = 48.0;
 const ROW_HEIGHT: f32 = 56.0;
@@ -87,7 +89,7 @@ impl OptionsUi {
 
 /// One setting that is on or off: its label, a note under it, and a switch at the right. Clicking
 /// the row flips `value` when it is `enabled`.
-fn toggle(style: &Style, row: Rect, label: &str, note: Option<&str>, value: &mut bool, enabled: bool) {
+pub fn toggle(style: &Style, row: Rect, label: &str, note: Option<&str>, value: &mut bool, enabled: bool) {
     let hovered = enabled && row.contains(Vec2::from(mouse_position()));
     if hovered {
         style::rounded_rect(row, 8.0, style::HOVER);
@@ -139,7 +141,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_regions_show_when_the_game_starts() {
+    fn the_regions_and_the_countries_areas_show_when_the_game_starts() {
         assert!(Options::default().show_regions);
+        assert!(Options::default().show_country_areas);
     }
 }

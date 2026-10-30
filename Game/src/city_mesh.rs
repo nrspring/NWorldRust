@@ -289,7 +289,7 @@ mod tests {
         use crate::test_support;
         let world = test_support::small_continent();
         let at = test_support::inland_spot(&world, 270.0);
-        let city = City { id: CityId::from_u128(1), country: CountryId::from_u128(1), name: "Test".to_owned(), x: at.x, z: at.y, population: MAX_POPULATION };
+        let city = City { id: CityId::from_u128(1), country: CountryId::from_u128(1), name: "Test".to_owned(), x: at.x, z: at.y, region: None, population: MAX_POPULATION };
         let buildings = crate::city_layout::buildings(&city, &world);
         let meshes = build(&buildings);
         assert!(meshes.iter().all(|m| !m.vertices.is_empty() && m.vertices.len() < MAX_VERTICES));

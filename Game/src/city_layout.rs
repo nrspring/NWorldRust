@@ -342,7 +342,7 @@ mod tests {
     use crate::test_support;
 
     fn city_at(at: Vec2, population: u32) -> City {
-        City { id: CityId::from_u128(7), country: CountryId::from_u128(1), name: "Test".to_owned(), x: at.x, z: at.y, population }
+        City { id: CityId::from_u128(7), country: CountryId::from_u128(1), name: "Test".to_owned(), x: at.x, z: at.y, region: None, population }
     }
 
     /// The middle of the map's one continent, where there is room for the biggest city. The map has

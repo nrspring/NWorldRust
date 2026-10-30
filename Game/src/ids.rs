@@ -31,6 +31,12 @@ fn random_uuid() -> Uuid {
     Builder::from_random_bytes(bytes).into_uuid()
 }
 
+/// A random number, from the same source as the ids.
+pub fn random_u64() -> u64 {
+    let (a, b) = random_uuid().as_u64_pair();
+    a.rotate_left(17) ^ b
+}
+
 /// The id of any thing, whichever kind it is. The typed ids below turn into one and back, for the places
 /// that have to hold the id of any kind of thing, like the subject of a news item.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

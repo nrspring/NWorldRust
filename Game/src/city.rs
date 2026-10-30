@@ -29,6 +29,10 @@ pub struct City {
     /// Where it stands on the map, in meters.
     pub x: f32,
     pub z: f32,
+    /// The number of the map region it stands in, which has to belong to its country. `None` on a map that
+    /// has no regions.
+    #[serde(default)]
+    pub region: Option<u16>,
     pub population: u32,
 }
 

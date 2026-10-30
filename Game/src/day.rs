@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::calendar::Date;
 use crate::city::{self, City, INITIAL_POPULATION};
-use crate::country::{self, Country};
+use crate::country::{self, Country, RegionOwner};
 use crate::ids::{CityId, CountryId, PersonId, TitleTypeId};
 use crate::newsreel::{Event, News};
 use crate::person::{self, Person};
+use crate::rgb::Rgb;
 use crate::saves::DAY_VERSION;
 use crate::title_type::{self, TitleType};
 
@@ -41,6 +42,10 @@ pub struct DaySave {
     /// Carried forward from day to day. Each belongs to one of the countries.
     #[serde(default)]
     pub cities: Vec<City>,
+    /// Which country owns which regions of the map, carried forward from day to day. A region that is not
+    /// here is unowned, as they all are to begin with. A region with a city in it belongs to the city's country.
+    #[serde(default)]
+    pub region_owners: Vec<RegionOwner>,
     /// What happened today. Not carried forward.
     #[serde(default)]
     pub newsreel: Vec<News>,
@@ -48,7 +53,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.
@@ -98,7 +103,8 @@ impl DaySave {
     pub fn found_country(&mut self, typed: &str) -> Result<(), String> {
         let name = self.free_country_name(typed, None)?;
         let id = CountryId::new();
-        self.countries.push(Country { id, name });
+        let color = Rgb::random_distinct_from(&self.countries.iter().map(|c| c.color).collect::<Vec<_>>());
+        self.countries.push(Country { id, name, color });
         self.player.get_or_insert(id);
         self.newsreel.push(News::about(id, Event::CountryFounded));
         Ok(())
@@ -120,6 +126,13 @@ impl DaySave {
         if let Some(country) = self.countries.iter_mut().find(|c| c.id == id) {
             country.name = name;
         }
+        Ok(())
+    }
+
+    /// Gives the country with this id this color. An error says why it can't be done.
+    pub fn recolor_country(&mut self, id: CountryId, color: Rgb) -> Result<(), String> {
+        let country = self.countries.iter_mut().find(|c| c.id == id).ok_or("There is no such country.")?;
+        country.color = color;
         Ok(())
     }
 
@@ -153,11 +166,51 @@ impl DaySave {
         Ok(())
     }
 
-    /// Founds a city called `typed` at (`x`, `z`) with the starting population, for the player's country,
-    /// and reports it in the newsreel. Whether the ground is fit for a city is for the caller to say.
-    /// An error says why it can't be done.
-    pub fn found_city(&mut self, typed: &str, x: f32, z: f32) -> Result<(), String> {
+    /// The country that owns the map region numbered `region`, if any does.
+    pub fn region_owner(&self, region: u16) -> Option<CountryId> {
+        self.region_owners.iter().find(|o| o.region == region).map(|o| o.country)
+    }
+
+    /// The color of the owner of each owned region, as the number of the region and the color, for showing
+    /// who owns what.
+    pub fn region_colors(&self) -> Vec<(u16, Rgb)> {
+        self.region_owners.iter().filter_map(|o| Some((o.region, self.country(o.country)?.color))).collect()
+    }
+
+    /// Why a city of `country` can't stand in `region` (`None` for a map with no regions): a region that
+    /// belongs to another country is that country's.
+    pub fn city_region_problem(&self, country: CountryId, region: Option<u16>) -> Option<String> {
+        let owner = self.region_owner(region?).filter(|&o| o != country)?;
+        Some(format!("That region belongs to {}.", self.country_name(owner)))
+    }
+
+    /// Makes `owner` the owner of the region numbered `region`, or leaves it unowned if `owner` is `None`.
+    /// A region with a city in it can only belong to the city's country. An error says why it can't be
+    /// done.
+    #[allow(dead_code)] // For assigning regions by hand, which nothing does yet.
+    pub fn set_region_owner(&mut self, region: u16, owner: Option<CountryId>) -> Result<(), String> {
+        if let Some(owner) = owner {
+            self.country(owner).ok_or("There is no such country.")?;
+        }
+        if let Some(city) = self.cities.iter().find(|c| c.region == Some(region) && Some(c.country) != owner) {
+            return Err(format!("{} stands in that region, so it has to belong to {}.", city.name, self.country_name(city.country)));
+        }
+        self.region_owners.retain(|o| o.region != region);
+        if let Some(country) = owner {
+            self.region_owners.push(RegionOwner { region, country });
+        }
+        Ok(())
+    }
+
+    /// Founds a city called `typed` at (`x`, `z`) in the map region numbered `region` (`None` if the map has
+    /// none) with the starting population, for the player's country, and reports it in the newsreel. The
+    /// region becomes the country's, unless another country owns it, which is an error. Whether the ground
+    /// is fit for a city is for the caller to say. An error says why it can't be done.
+    pub fn found_city(&mut self, typed: &str, x: f32, z: f32, region: Option<u16>) -> Result<(), String> {
         let country = self.player_country().ok_or("There is no country yet for the city to belong to.")?.id;
+        if let Some(problem) = self.city_region_problem(country, region) {
+            return Err(problem);
+        }
         if !x.is_finite() || !z.is_finite() {
             return Err("That is not a place on the map.".to_owned());
         }
@@ -166,7 +219,11 @@ impl DaySave {
             return Err(format!("There is already a city called {name}."));
         }
         let id = CityId::new();
-        self.cities.push(City { id, country, name, x, z, population: INITIAL_POPULATION });
+        self.cities.push(City { id, country, name, x, z, region, population: INITIAL_POPULATION });
+        if let Some(region) = region {
+            self.region_owners.retain(|o| o.region != region);
+            self.region_owners.push(RegionOwner { region, country });
+        }
         self.newsreel.push(News::about(id, Event::CityFounded { population: INITIAL_POPULATION }));
         Ok(())
     }
@@ -284,7 +341,7 @@ mod tests {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
         day.found_country("Brevon").unwrap();
-        day.found_city("Port Aldor", 120.0, -45.5).unwrap();
+        day.found_city("Port Aldor", 120.0, -45.5, None).unwrap();
 
         let city = &day.cities[0];
         assert_eq!((city.country, city.name.as_str(), city.x, city.z, city.population), (day.countries[0].id, "Port Aldor", 120.0, -45.5, 100));
@@ -295,11 +352,11 @@ mod tests {
     #[test]
     fn a_city_needs_a_country_and_a_place() {
         let mut day = day();
-        assert!(day.found_city("Port Aldor", 0.0, 0.0).unwrap_err().contains("no country"));
+        assert!(day.found_city("Port Aldor", 0.0, 0.0, None).unwrap_err().contains("no country"));
         day.found_country("Aldoria").unwrap();
         let before = day.clone();
-        assert!(day.found_city("Port Aldor", f32::NAN, 0.0).is_err());
-        assert!(day.found_city("  ", 0.0, 0.0).is_err());
+        assert!(day.found_city("Port Aldor", f32::NAN, 0.0, None).is_err());
+        assert!(day.found_city("  ", 0.0, 0.0, None).is_err());
         assert_eq!(day, before);
     }
 
@@ -307,8 +364,8 @@ mod tests {
     fn each_city_gets_its_own_id() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
-        day.found_city("Port Aldor", 0.0, 0.0).unwrap();
-        day.found_city("Highmark", 100.0, 0.0).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.found_city("Highmark", 100.0, 0.0, None).unwrap();
         assert_ne!(day.cities[0].id, day.cities[1].id);
     }
 
@@ -316,9 +373,9 @@ mod tests {
     fn two_cities_cannot_share_a_name() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
-        day.found_city("Port Aldor", 0.0, 0.0).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
         let before = day.clone();
-        assert!(day.found_city("port aldor", 100.0, 0.0).unwrap_err().contains("already"));
+        assert!(day.found_city("port aldor", 100.0, 0.0, None).unwrap_err().contains("already"));
         assert_eq!(day, before);
     }
 
@@ -356,7 +413,7 @@ mod tests {
         let brevon = day.countries[1].id;
         day.select_country(brevon).unwrap();
         day.found_person("Mara Voss", "President", "Head of State").unwrap();
-        day.found_city("Port Aldor", 0.0, 0.0).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
         assert_eq!(day.people[0].country, brevon);
         assert_eq!(day.cities[0].country, brevon);
     }
@@ -386,6 +443,118 @@ mod tests {
     }
 
     #[test]
+    fn every_country_starts_with_a_color_and_it_can_be_changed() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        assert_ne!(day.countries[0].color, day.countries[1].color);
+
+        let id = day.countries[0].id;
+        let green = Rgb { r: 10, g: 200, b: 60 };
+        day.recolor_country(id, green).unwrap();
+        assert_eq!(day.country(id).unwrap().color, green);
+        assert_ne!(day.countries[1].color, green);
+        // The new color is saved, and read back.
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(json["countries"][0]["color"], "#0ac83c");
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
+    }
+
+    #[test]
+    fn only_a_country_that_there_is_can_be_recolored() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let before = day.clone();
+        assert!(day.recolor_country(CountryId::new(), Rgb { r: 1, g: 2, b: 3 }).is_err());
+        assert_eq!(day, before);
+    }
+
+    #[test]
+    fn every_region_is_unowned_to_begin_with() {
+        let mut day = day();
+        assert!(day.region_owners.is_empty());
+        day.found_country("Aldoria").unwrap();
+        assert_eq!(day.region_owner(0x4005), None);
+    }
+
+    #[test]
+    fn a_city_makes_its_region_belong_to_its_country() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
+        let aldoria = day.countries[0].id;
+        assert_eq!(day.cities[0].region, Some(0x4005));
+        assert_eq!(day.region_owner(0x4005), Some(aldoria));
+        assert_eq!(day.region_owner(0x4006), None, "other regions stay as they were");
+        // A second city of the same country in that region is fine, and doesn't own it twice.
+        day.found_city("Highmark", 10.0, 0.0, Some(0x4005)).unwrap();
+        assert_eq!(day.region_owners.len(), 1);
+    }
+
+    #[test]
+    fn a_city_cannot_be_founded_in_a_region_that_belongs_to_another_country() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let brevon = day.countries[1].id;
+        day.set_region_owner(0x4005, Some(brevon)).unwrap();
+        let before = day.clone();
+        // The player is Aldoria.
+        assert!(day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap_err().contains("belongs to Brevon"));
+        assert_eq!(day.city_region_problem(day.countries[0].id, Some(0x4005)).unwrap(), "That region belongs to Brevon.");
+        assert_eq!(day, before);
+        // Brevon's own region, and any unowned one, are fine.
+        assert_eq!(day.city_region_problem(brevon, Some(0x4005)), None);
+        assert_eq!(day.city_region_problem(day.countries[0].id, Some(0x4006)), None);
+        assert_eq!(day.city_region_problem(day.countries[0].id, None), None);
+    }
+
+    #[test]
+    fn a_region_with_a_city_in_it_must_belong_to_the_citys_country() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
+
+        let before = day.clone();
+        assert!(day.set_region_owner(0x4005, Some(brevon)).unwrap_err().contains("Port Aldor"));
+        assert!(day.set_region_owner(0x4005, None).is_err());
+        assert_eq!(day, before);
+        // It can be set to its own country again, and other regions can go to anyone or to no one.
+        day.set_region_owner(0x4005, Some(aldoria)).unwrap();
+        day.set_region_owner(0x4006, Some(brevon)).unwrap();
+        assert_eq!(day.region_owner(0x4006), Some(brevon));
+        day.set_region_owner(0x4006, None).unwrap();
+        assert_eq!(day.region_owner(0x4006), None);
+        assert!(day.set_region_owner(0x4007, Some(CountryId::new())).is_err());
+    }
+
+    #[test]
+    fn owned_regions_are_shown_in_their_owners_colors() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        assert!(day.region_colors().is_empty());
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
+        let green = Rgb { r: 10, g: 200, b: 60 };
+        let id = day.countries[0].id;
+        day.recolor_country(id, green).unwrap();
+        assert_eq!(day.region_colors(), [(0x4005, green)]);
+    }
+
+    #[test]
+    fn who_owns_what_is_saved_and_carries_forward() {
+        let mut today = day();
+        today.found_country("Aldoria").unwrap();
+        today.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
+        let json = serde_json::to_value(&today).unwrap();
+        assert_eq!(json["region_owners"][0]["region"], 0x4005);
+        assert_eq!(json["region_owners"][0]["country"], json["countries"][0]["id"]);
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), today);
+        assert_eq!(today.following(Date { year: 1, month: 1, day: 2 }).region_owners, today.region_owners);
+    }
+
+    #[test]
     fn a_country_cannot_be_renamed_to_a_bad_or_taken_name() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
@@ -403,7 +572,7 @@ mod tests {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
         day.found_person("Mara Voss", "President", "Head of State").unwrap();
-        day.found_city("Port Aldor", 0.0, 0.0).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
 
         // Rename the country: the person, the city and the news still find it.
         let id = day.countries[0].id;
@@ -418,7 +587,7 @@ mod tests {
         let mut today = day();
         today.found_country("Aldoria").unwrap();
         today.found_person("Mara Voss", "President", "Head of State").unwrap();
-        today.found_city("Port Aldor", 10.0, 20.0).unwrap();
+        today.found_city("Port Aldor", 10.0, 20.0, None).unwrap();
 
         let tomorrow = today.following(Date { year: 1, month: 1, day: 2 });
         assert_eq!(tomorrow.date, Date { year: 1, month: 1, day: 2 });

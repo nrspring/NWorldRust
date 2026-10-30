@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use macroquad::models::{draw_mesh, Mesh};
 use macroquad::prelude::*;
+use nworld_map::regions::RegionId;
 use nworld_map::world::World;
 
 use crate::props::{PropKind, PropRenderer};
@@ -41,6 +42,7 @@ pub struct MapView {
     regions: Texture2D,
     has_regions: bool,
     show_regions: bool,
+    show_region_colors: bool,
 }
 
 impl MapView {
@@ -62,6 +64,7 @@ impl MapView {
             regions: render::regions_texture(world),
             has_regions: world.regions().iter().any(|&r| r != 0),
             show_regions: false,
+            show_region_colors: true,
         }
     }
 
@@ -74,6 +77,20 @@ impl MapView {
     /// looks otherwise, or hides them again. A map with no regions shows nothing either way.
     pub fn set_show_regions(&mut self, show: bool) {
         self.show_regions = show;
+    }
+
+    /// Tints regions with colors, red, green and blue, which show on the map unless they are hidden (see
+    /// [`set_show_region_colors`](Self::set_show_region_colors)). Replaces any colors given before; regions not given
+    /// have none. Uploads the whole map's worth of colors, so call it when they change, not every frame.
+    pub fn set_region_colors(&mut self, world: &World, colors: &[(RegionId, [u8; 3])]) {
+        self.terrain.set_region_tints(render::region_tints_texture(world, colors));
+    }
+
+    /// Shows the colors given by [`set_region_colors`](Self::set_region_colors), whether or not the lines of
+    /// the regions are shown, or hides them. They show to begin with.
+    pub fn set_show_region_colors(&mut self, show: bool) {
+        self.show_region_colors = show;
+        self.terrain.set_region_tints_visible(show);
     }
 
     /// The camera for looking at the map from `position` towards `target`, with the field of view
@@ -107,7 +124,7 @@ impl MapView {
         gl_use_material(&self.backdrop_material);
         draw_mesh(&self.backdrop);
 
-        self.terrain.draw(&mut self.mesh, world, &self.surface, &self.resources, &self.regions, if self.show_regions { RegionOverlay::Borders } else { RegionOverlay::Off }, None, camera, pos, view_distance, time, false);
+        self.terrain.draw(&mut self.mesh, world, &self.surface, &self.resources, &self.regions, if self.show_regions { RegionOverlay::Borders } else if self.show_region_colors { RegionOverlay::Colors } else { RegionOverlay::Off }, None, camera, pos, view_distance, time, false);
         for kind in &mut self.props {
             kind.draw(world, camera, pos, view_distance, time);
         }

@@ -1,13 +1,15 @@
 //! The countries menu, opened by clicking the country in the header: choose the country to play,
-//! edit a country's name, or add a new country. Editing and adding ask for a name in a popup of
-//! their own, and come back to the list when they are done.
+//! edit a country's name, change its color, or add a new country. Each of those asks in a popup of
+//! its own, and comes back to the list when it is done.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
+use crate::color_picker::{ColorPicker, Outcome};
 use crate::day::DaySave;
 use crate::ids::CountryId;
 use crate::popup::{self, Icon, Popup};
+use crate::rgb::Rgb;
 
 const CARD_WIDTH: f32 = 420.0;
 const PADDING: f32 = 24.0;
@@ -30,6 +32,8 @@ pub enum Choice {
     Add(String),
     /// Give this country this name.
     Rename(CountryId, String),
+    /// Give this country this color.
+    Recolor(CountryId, Rgb),
 }
 
 impl Choice {
@@ -39,6 +43,7 @@ impl Choice {
             Self::Select(id) => day.select_country(*id),
             Self::Add(name) => day.found_country(name),
             Self::Rename(id, name) => day.rename_country(*id, name),
+            Self::Recolor(id, color) => day.recolor_country(*id, *color),
         }
     }
 }
@@ -50,6 +55,7 @@ enum Screen {
     List,
     Adding(Popup),
     Renaming(CountryId, Popup),
+    Coloring(ColorPicker),
 }
 
 #[derive(Default)]
@@ -88,7 +94,7 @@ impl CountryMenu {
     /// What Esc does: back from a popup to the list, and from the list to the game.
     pub fn escape(&mut self) {
         match self.screen {
-            Screen::Adding(_) | Screen::Renaming(..) => self.show_list(self.highlight),
+            Screen::Adding(_) | Screen::Renaming(..) | Screen::Coloring(_) => self.show_list(self.highlight),
             Screen::List | Screen::Closed => self.screen = Screen::Closed,
         }
     }
@@ -97,6 +103,10 @@ impl CountryMenu {
     pub fn fail(&mut self, message: String) {
         match &mut self.screen {
             Screen::Adding(popup) | Screen::Renaming(_, popup) => popup.fail(message),
+            Screen::Coloring(_) => {
+                self.show_list(self.highlight);
+                self.error = Some(message);
+            }
             _ => self.error = Some(message),
         }
     }
@@ -107,7 +117,7 @@ impl CountryMenu {
         match choice {
             Choice::Select(_) => self.screen = Screen::Closed,
             Choice::Add(_) => self.show_list(day.countries.len().saturating_sub(1)),
-            Choice::Rename(id, _) => self.show_list(day.countries.iter().position(|c| c.id == *id).unwrap_or(0)),
+            Choice::Rename(id, _) | Choice::Recolor(id, _) => self.show_list(day.countries.iter().position(|c| c.id == *id).unwrap_or(0)),
         }
     }
 
@@ -121,6 +131,14 @@ impl CountryMenu {
                 let id = *id;
                 popup.show(style).map(|typed| Choice::Rename(id, typed.into_iter().next().unwrap_or_default()))
             }
+            Screen::Coloring(picker) => match picker.show(style) {
+                Some(Outcome::Save(color)) => Some(Choice::Recolor(picker.country(), color)),
+                Some(Outcome::Cancel) => {
+                    self.show_list(self.highlight);
+                    None
+                }
+                None => None,
+            },
             Screen::List => self.list(style, day),
         }
     }
@@ -174,6 +192,7 @@ impl CountryMenu {
 
         let mut chosen = None;
         let mut renaming = None;
+        let mut coloring = None;
         for row in 0..rows {
             let place = self.scroll + row;
             let country = &day.countries[place];
@@ -195,14 +214,21 @@ impl CountryMenu {
             } else {
                 draw_circle_lines(mark.x, mark.y, 6.5, 1.5, style::BORDER_STRONG);
             }
+            // The country's color, which opens the color picker.
+            let swatch = Rect::new(rect.x + 34.0, rect.center().y - 8.0, 16.0, 16.0);
+            let over_swatch = swatch.contains(mouse);
+            style::rounded_rect(swatch, 4.0, country.color.color());
+            style::rounded_rect_lines(swatch, 4.0, if over_swatch { 2.0 } else { 1.0 }, if over_swatch { WHITE } else { style::BORDER_STRONG });
             let weight = if current == Some(country.id) { Weight::Semibold } else { Weight::Regular };
-            style.text_mid(&country.name, rect.x + 36.0, rect.center().y, 15, weight, style::TEXT);
+            style.text_mid(&country.name, rect.x + 62.0, rect.center().y, 15, weight, style::TEXT);
 
             let over_edit = edit.contains(mouse);
             style::rounded_rect(edit, 6.0, if over_edit { style::BORDER_STRONG } else { style::HOVER });
             style.text_centered("Edit", edit, 12, Weight::Semibold, if over_edit { style::TEXT } else { style::TEXT_MUTED });
             if clicked && over_edit {
                 renaming = Some((country.id, country.name.clone(), place));
+            } else if clicked && over_swatch {
+                coloring = Some((country.id, country.name.clone(), country.color, place));
             } else if clicked && over_row {
                 chosen = Some(country.id);
             }
@@ -235,6 +261,11 @@ impl CountryMenu {
         if let Some((id, name, place)) = renaming {
             self.highlight = place;
             self.screen = Screen::Renaming(id, Popup::rename_country(&name));
+            return None;
+        }
+        if let Some((id, name, color, place)) = coloring {
+            self.highlight = place;
+            self.screen = Screen::Coloring(ColorPicker::new(id, &name, color));
             return None;
         }
         if let Some(id) = chosen {

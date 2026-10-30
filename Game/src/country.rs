@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::CountryId;
+use crate::rgb::Rgb;
 use crate::text;
 
 /// The longest a country's name can be, in characters.
@@ -14,6 +15,16 @@ pub struct Country {
     /// the country refers to it by this.
     pub id: CountryId,
     pub name: String,
+    /// What the country is shown in. Random when it is founded, and the player can change it.
+    pub color: Rgb,
+}
+
+/// A region of the map that a country owns. A region nobody owns has none of these.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct RegionOwner {
+    /// The number of the region, as the map knows it.
+    pub region: u16,
+    pub country: CountryId,
 }
 
 /// A country name as typed, tidied up. An error says what is wrong with it.

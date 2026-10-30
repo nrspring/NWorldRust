@@ -10,6 +10,7 @@ mod city_layout;
 mod city_mesh;
 mod city_pick;
 mod city_view;
+mod color_picker;
 mod country;
 mod country_menu;
 mod day;
@@ -17,9 +18,11 @@ mod hud;
 mod ids;
 mod newsreel;
 mod options;
+mod overlays;
 mod person;
 mod placement;
 mod popup;
+mod rgb;
 mod saves;
 #[cfg(test)]
 mod test_support;
@@ -29,6 +32,7 @@ mod title_type;
 use std::path::{Path, PathBuf};
 
 use macroquad::prelude::*;
+use nworld_map::regions::RegionId;
 use nworld_map::storage;
 use nworld_map::world::World;
 use nworld_view::style::{Style, Weight};
@@ -40,8 +44,10 @@ use city_view::CityRenderer;
 use day::DaySave;
 use country_menu::CountryMenu;
 use options::{Options, OptionsUi};
+use overlays::OverlaysUi;
 use placement::ClickTracker;
 use popup::Popup;
+use rgb::Rgb;
 use saves::Saves;
 
 /// How far from a new city the camera flies to look at it, in meters.
@@ -155,7 +161,10 @@ async fn main() {
     let mut naming_city: Option<(Vec2, Popup)> = None;
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
+    let mut overlays_ui = OverlaysUi::default();
     let mut country_menu = CountryMenu::default();
+    // The owned regions the map is showing, as (region, color), to know when they change.
+    let mut shown_owners: Vec<(u16, Rgb)> = Vec::new();
     let mut autosave = Autosave::new(&day, get_time());
     // Closing the window is a request, so the game can save before it goes.
     prevent_quit();
@@ -169,8 +178,9 @@ async fn main() {
             // city, and only then quits.
             if country_menu.is_open() {
                 country_menu.escape();
-            } else if options_ui.is_open() {
+            } else if options_ui.is_open() || overlays_ui.is_open() {
                 options_ui.close();
+                overlays_ui.close();
             } else if asking.as_mut().is_some_and(|(_, popup)| popup.close_dropdown()) {
                 // A drop-down list was open, and is closed.
             } else if naming_city.is_some() {
@@ -194,7 +204,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse);
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse);
         if modal {
             camera.skip_frame();
         } else {
@@ -202,18 +212,32 @@ async fn main() {
         }
         let eye = camera.camera(&world);
         view.set_show_regions(options.show_regions);
+        view.set_show_region_colors(options.show_country_areas);
+        // Owned regions are tinted in their owners' colors, which is only uploaded when it changes.
+        let owned = day.region_colors();
+        if owned != shown_owners {
+            let colors: Vec<(RegionId, [u8; 3])> = owned.iter().filter_map(|(region, c)| Some((RegionId::from_raw(*region)?, [c.r, c.g, c.b]))).collect();
+            view.set_region_colors(&world, &colors);
+            shown_owners = owned;
+        }
         view.draw(&world, &eye, time);
 
         // Once there is a country and a person, the first city has to be placed.
         let placing = !modal && day.cities.is_empty();
         let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
-        let problem = site.and_then(|at| city::site_problem(&world, at.x, at.y));
+        // Why the city can't go there: the ground, or the region belonging to another country.
+        let problem = site.and_then(|at| {
+            city::site_problem(&world, at.x, at.y).map(str::to_owned).or_else(|| {
+                let country = day.player_country()?.id;
+                day.city_region_problem(country, world.region_at(at.x, at.y).map(|r| r.raw()))
+            })
+        });
         cities.draw(&world, &day.cities, &eye);
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
         if clicks.update(placing && !over_interface) {
-            if let (Some(at), None) = (site, problem) {
+            if let (Some(at), None) = (site, &problem) {
                 // The city is founded once it has a name.
                 naming_city = Some((at, Popup::city()));
             }
@@ -227,6 +251,7 @@ async fn main() {
         let country_button = hud::header(&style, &day, !modal);
         if !modal && is_mouse_button_pressed(MouseButton::Left) && country_button.is_some_and(|b| b.contains(mouse)) {
             options_ui.close();
+            overlays_ui.close();
             country_menu.open(&day);
         }
         let footer = hud::footer(&style, !modal);
@@ -237,12 +262,20 @@ async fn main() {
         if !modal {
             hud::newsreel(&style, &day);
             if placing {
-                hud::placing_prompt(&style, problem);
+                hud::placing_prompt(&style, problem.as_deref());
             }
             if let Some(city) = hovered.and_then(|id| day.city(id)) {
                 hud::city_tooltip(&style, &day, city);
             }
+            // Only one of the two menus is open at a time: the one that was just opened wins.
+            let (options_was_open, overlays_was_open) = (options_ui.is_open(), overlays_ui.is_open());
             options_ui.show(&style, footer, &mut options, view.has_regions());
+            overlays_ui.show(&style, footer, &mut options, view.has_regions());
+            if overlays_ui.is_open() && !overlays_was_open {
+                options_ui.close();
+            } else if options_ui.is_open() && !options_was_open {
+                overlays_ui.close();
+            }
         }
 
         let mut answered = false;
@@ -280,7 +313,7 @@ async fn main() {
             if let Some(typed) = popup.show(&style) {
                 // Only keep the city if it is saved too.
                 let mut updated = day.clone();
-                match updated.found_city(&typed[0], at.x, at.y).and_then(|()| autosave.save_now(&saves, &updated)) {
+                match updated.found_city(&typed[0], at.x, at.y, world.region_at(at.x, at.y).map(|r| r.raw())).and_then(|()| autosave.save_now(&saves, &updated)) {
                     Ok(()) => {
                         day = updated;
                         camera.fly_to(*at, NEW_CITY_VIEW_DISTANCE);

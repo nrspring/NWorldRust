@@ -25,8 +25,8 @@ const HELP: &[(&str, &str)] = &[
 pub const FOOTER_HEIGHT: f32 = 48.0;
 /// Distance of what is in the footer from its left edge. The options button keeps the same from the right.
 pub const FOOTER_PADDING: f32 = 12.0;
-/// Room kept at the right end of the footer for the options button.
-const OPTIONS_ROOM: f32 = 64.0;
+/// Room kept at the right end of the footer for the overlays button and the options button.
+const BUTTONS_ROOM: f32 = 160.0;
 
 /// The size of the text in the header and the footer.
 const BAR_TEXT_SIZE: u16 = 13;
@@ -51,11 +51,12 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool) -> Option<Rect> {
     let mut button = None;
     if let Some(country) = day.player_country() {
         let name_width = style.measure(&country.name, BAR_TEXT_SIZE, Weight::Semibold).width;
-        let pill = Rect::new(x, y - 14.0, name_width + 36.0, 28.0);
+        let pill = Rect::new(x, y - 14.0, name_width + 52.0, 28.0);
         if interactive && pill.contains(Vec2::from(mouse_position())) {
             style::rounded_rect(pill, 8.0, style::HOVER);
         }
-        style.text_mid(&country.name, pill.x + 10.0, y, BAR_TEXT_SIZE, Weight::Semibold, style::TEXT);
+        draw_circle(pill.x + 16.0, y, 5.0, country.color.color());
+        style.text_mid(&country.name, pill.x + 28.0, y, BAR_TEXT_SIZE, Weight::Semibold, style::TEXT);
         // A small arrow, to say there is more to choose.
         let arrow = pill.right() - 13.0;
         draw_triangle(vec2(arrow - 4.0, y - 1.5), vec2(arrow + 4.0, y - 1.5), vec2(arrow, y + 2.5), style::TEXT_MUTED);
@@ -69,8 +70,8 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool) -> Option<Rect> {
 }
 
 /// The footer along the bottom of the window: the frame rate at the left and, when `keys` is set and
-/// there is room for them, the keys in the middle. The options button goes at the right, which
-/// `OptionsUi` draws. Returns where the footer is.
+/// there is room for them, the keys in the middle. The overlays and options buttons go at the right,
+/// which `OverlaysUi` and `OptionsUi` draw. Returns where the footer is.
 pub fn footer(style: &Style, keys: bool) -> Rect {
     let bar = Rect::new(0.0, screen_height() - FOOTER_HEIGHT, screen_width(), FOOTER_HEIGHT);
     draw_rectangle(bar.x, bar.y, bar.w, bar.h, style::GLASS);
@@ -83,7 +84,7 @@ pub fn footer(style: &Style, keys: bool) -> Rect {
     let fps_width = style.measure("8888 fps", BAR_TEXT_SIZE, Weight::Regular).width;
 
     if keys {
-        help(style, bar, fps_x + fps_width + 24.0, bar.right() - OPTIONS_ROOM);
+        help(style, bar, fps_x + fps_width + 24.0, bar.right() - BUTTONS_ROOM);
     }
     bar
 }

@@ -2,6 +2,9 @@
 //! sample. Which numbers go in which channel is a matter between these functions and the shaders in
 //! `render.rs`; the map itself has no part in it.
 
+use std::collections::HashMap;
+
+use nworld_map::regions::RegionId;
 use nworld_map::world::{Region, Resource, World, SEA_LEVEL};
 
 /// How many textures hold the resources for the terrain shader, four to a texture.
@@ -98,10 +101,40 @@ pub fn region_texels(world: &World) -> Vec<u8> {
     world.regions().iter().flat_map(|&r| [r as u8, (r >> 8) as u8, 0, 255]).collect()
 }
 
+/// The color each sample's region is tinted with: red, green and blue, and alpha 255 where it is in one of
+/// `colors`' regions, and all zero where it isn't. Laid out like [`region_texels`].
+pub fn region_tint_texels(world: &World, colors: &[(RegionId, [u8; 3])]) -> Vec<u8> {
+    let tint_of: HashMap<u16, [u8; 3]> = colors.iter().map(|(id, color)| (id.raw(), *color)).collect();
+    world
+        .regions()
+        .iter()
+        .flat_map(|r| match tint_of.get(r) {
+            Some([red, green, blue]) => [*red, *green, *blue, 255],
+            None => [0, 0, 0, 0],
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nworld_map::world::{DEEP_OCEAN, SHALLOW_LIMIT};
+
+    #[test]
+    fn region_tints_cover_only_the_regions_given() {
+        let mut world = World::new(256.0, 256.0);
+        let mut regions = vec![0u16; world.heights().len()];
+        regions[0] = 0x4005;
+        regions[1] = 0x4006;
+        regions[2] = 0x4005;
+        world.set_regions(regions);
+        let texels = region_tint_texels(&world, &[(RegionId::from_raw(0x4005).unwrap(), [10, 20, 30])]);
+        assert_eq!(texels.len(), world.heights().len() * 4);
+        assert_eq!(&texels[0..4], [10, 20, 30, 255]);
+        assert_eq!(&texels[4..8], [0, 0, 0, 0], "another region");
+        assert_eq!(&texels[8..12], [10, 20, 30, 255]);
+        assert_eq!(&texels[12..16], [0, 0, 0, 0], "no region");
+    }
 
 
     #[test]

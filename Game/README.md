@@ -19,7 +19,7 @@ Everything the game adds to the map, such as roads, cities and units, belongs to
 
 ## Header and footer
 
-A **header** along the top of the window shows the player's country, once there is one, and the current day. Click the country to open the [countries menu](#countries-menu). A **footer** along the bottom holds the frame rate at the left, the keys in the middle (left out when the window is too narrow for them) and the options button at the right. While the mouse is over either, it doesn't move the camera, and a click there doesn't place a city. The newsreel and the save-failed notice sit below the header.
+A **header** along the top of the window shows the player's country, once there is one, and the current day. Click the country to open the [countries menu](#countries-menu). A **footer** along the bottom holds the frame rate at the left, the keys in the middle (left out when the window is too narrow for them) and the overlays and options buttons at the right. While the mouse is over either, it doesn't move the camera, and a click there doesn't place a city. The newsreel and the save-failed notice sit below the header.
 
 ## Countries menu
 
@@ -27,13 +27,30 @@ Clicking the country in the header opens a popup listing every country, with a f
 
 - **Choose** a country by clicking its row (or the arrow keys and Enter). It becomes the player's: new people and cities belong to it, and the header shows it.
 - **Edit** (the button on a row) asks for a new name. Everything that belongs to the country, and the newsreel, follows the rename, because they hold its id. Two countries can't share a name (capitals don't count).
+- **The color square** beside a name is the country's color. Every country gets a random one when it is founded (picked to be unlike the others' colors), and clicking the square opens a color picker: a square for how rich and bright, a bar for the hue, and ten ready-made colors. Save color (or Enter) keeps it. The player's color also shows in the header. Colors are saved with the country as a hex code like `"#4f8cff"`.
 - **Add a new country** asks for a name and adds it to the list, and to the newsreel. It doesn't become the player's until it is chosen.
 
 Esc backs out of a rename or add to the list, and then closes the menu; so does a click outside it. Each change is saved as it is made. The country being played is kept in the day's file (`player`) and carries forward; a file without one plays the first country.
 
+## Region ownership
+
+Every region of the map can be owned by a country. They all start unowned. The day's file lists the owned ones (`region_owners`: the region's number and the owner's country id), which carries forward with the countries and cities.
+
+- **A city makes its region its country's.** Founding a city claims the region it stands in for the city's country. Each city saves the number of its region.
+- **A region with a city in it can't belong to anyone else.** You can't found a city in a region that another country owns (the placing prompt says "That region belongs to Brevon." and the click does nothing), and a region with a city in it can't be handed to another country or made unowned.
+- **Owned regions are drawn** in their owner's color (a tint over the ground and a line in that color round them). The tint is see-through up close, so the ground shows, and gets more solid the farther away it is, from about 150 m to 3.5 km, so areas are easy to make out zoomed out. This is the **Country areas** overlay, on at the start and turned off in the [overlays menu](#overlays-menu). It works with or without the thin region lines of **Show regions**.
+
+There is not yet a way to give regions to a country by hand; `DaySave::set_region_owner` does it, with those rules, for when there is.
+
+## Overlays menu
+
+The **Overlays** button in the footer, just left of the gear, opens a panel of layers drawn over the map, each with a switch. Click the button again, or press Esc, to close it. Only one of this and the options panel is open at a time.
+
+- **Country areas**: the regions that countries own, in their colors (see [Region ownership](#region-ownership)). **On** when the game starts; greyed out, with a note, for a map that has no regions. Like the options, it isn't saved.
+
 ## Options
 
-The gear button at the right of the footer opens the options panel above it. Click it again, or press Esc, to close it. While the mouse is over the panel, it doesn't move the camera.
+The gear button at the right end of the footer opens the options panel above it. Click it again, or press Esc, to close it. While the mouse is over the panel, it doesn't move the camera.
 
 - **Show regions**: draws thin lines between the map's regions, and leaves the ground as it is. It is **on** when the game starts. It is greyed out, with a note, for a map that has no regions. Turning it off lasts until the game closes; it isn't saved, so it is on again next time.
 
