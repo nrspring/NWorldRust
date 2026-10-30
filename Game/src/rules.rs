@@ -33,6 +33,10 @@ pub const DAY_RULES: &[Rule] = &[
         description: "A city that is not under siege grows by 1 to 3 percent, and one under siege shrinks by 5 to 10 percent, each by a random amount. No city has fewer than 100 people or more than 100,000.",
         apply: population,
     },
+    Rule {
+        description: "A path has a 2% chance of failing, a road 0.1% and a bridge 0.05%. What fails is ruined and is listed in the alerts until it is built again.",
+        apply: failures,
+    },
 ];
 
 /// Runs every rule, in order, on `day`, which has just started.
@@ -52,6 +56,22 @@ fn income(day: &mut DaySave) {
         let earned = country.money - before;
         if earned > 0 {
             day.newsreel.push(News::about(country.id, Event::Income { amount: earned }));
+        }
+    }
+}
+
+/// Each path, road and bridge that hasn't failed already has a chance of failing: 2%, 0.1% and 0.05%. What fails is
+/// marked as failed, which the alerts report, and it stays so until it is built again.
+fn failures(day: &mut DaySave) {
+    fail_things(day, ids::random_unit);
+}
+
+/// [`failures`], with `unit` giving the random numbers (each from 0 up to 1, one for each thing that could fail), so
+/// that tests can choose them. A thing that has failed already doesn't use one.
+fn fail_things(day: &mut DaySave, mut unit: impl FnMut() -> f32) {
+    for thing in day.things() {
+        if !day.is_failed(thing) && unit() < thing.chance() {
+            day.fail(thing);
         }
     }
 }
@@ -93,6 +113,9 @@ fn next_population(population: u32, under_siege: bool, unit: f32) -> u32 {
 mod tests {
     use super::*;
     use crate::calendar::Date;
+    use crate::bridge::Spot;
+    use crate::failure::Thing;
+    use crate::path::{Kind, PathSegment};
 
     #[test]
     fn a_city_that_is_free_grows_by_one_to_three_percent() {
@@ -152,6 +175,109 @@ mod tests {
         let mut numbers = [0.0, 1.0, 0.5].into_iter();
         change_populations(&mut day, || numbers.next().unwrap());
         assert_eq!(day.cities.iter().map(|c| c.population).collect::<Vec<_>>(), [1_010, 900, 1_020]);
+    }
+
+    /// A day with a path, a road and a bridge, and a country with the money for them.
+    fn day_with_one_of_each() -> DaySave {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let id = day.countries[0].id;
+        day.add_money(id, 5_000).unwrap();
+        day.build_segment(Kind::Path, PathSegment::to_edge(1, 2)).unwrap();
+        day.build_segment(Kind::Road, PathSegment::to_edge(3, 4)).unwrap();
+        day.build_bridge(Spot { x: -30.0, z: 0.0 }, Spot { x: 30.0, z: 0.0 }).unwrap();
+        day
+    }
+
+    #[test]
+    fn a_thing_fails_if_the_number_drawn_is_below_its_chance() {
+        let (path, road) = (Thing::Path(PathSegment::to_edge(1, 2)), Thing::Road(PathSegment::to_edge(3, 4)));
+        let fails_with = |number: f32| {
+            let mut day = day_with_one_of_each();
+            let bridge = Thing::Bridge(day.bridges[0].id);
+            fail_things(&mut day, || number);
+            (day.is_failed(path), day.is_failed(road), day.is_failed(bridge))
+        };
+        assert_eq!(fails_with(0.5), (false, false, false), "nothing fails on most draws");
+        assert_eq!(fails_with(0.019), (true, false, false), "just under 2%: only a path");
+        assert_eq!(fails_with(0.021), (false, false, false), "just over 2%");
+        assert_eq!(fails_with(0.0009), (true, true, false), "under 0.1%: a path and a road");
+        assert_eq!(fails_with(0.0004), (true, true, true), "under 0.05%: all three");
+        assert_eq!(fails_with(0.0), (true, true, true));
+    }
+
+    #[test]
+    fn something_that_has_failed_does_not_fail_again_or_use_up_a_draw() {
+        let mut day = day_with_one_of_each();
+        day.fail(Thing::Path(PathSegment::to_edge(1, 2)));
+        let mut draws = 0;
+        fail_things(&mut day, || {
+            draws += 1;
+            0.5
+        });
+        assert_eq!(draws, 2, "only the road and the bridge are drawn for");
+        assert_eq!(day.failed.len(), 1);
+    }
+
+    #[test]
+    fn the_failures_come_out_in_the_right_proportions() {
+        // A lot of each, so that the chances show: 5,000 paths, 20,000 roads and 20,000 bridges, drawn for once.
+        let mut day = day();
+        for n in 0..5_000u16 {
+            day.paths.push(PathSegment::to_edge(n, n + 1));
+        }
+        for n in 0..20_000u16 {
+            day.roads.push(PathSegment::to_edge(n, n + 1));
+        }
+        for _ in 0..20_000 {
+            day.bridges.push(crate::bridge::Bridge { id: crate::ids::BridgeId::new(), first: Spot { x: 0.0, z: 0.0 }, second: Spot { x: 1.0, z: 1.0 } });
+        }
+        failures(&mut day);
+        let count = |f: fn(&Thing) -> bool| day.failed.iter().filter(|t| f(t)).count();
+        let (paths, roads, bridges) = (count(|t| matches!(t, Thing::Path(_))), count(|t| matches!(t, Thing::Road(_))), count(|t| matches!(t, Thing::Bridge(_))));
+        assert!((50..=160).contains(&paths), "about 100 of 5,000 paths: {paths}");
+        assert!((3..=45).contains(&roads), "about 20 of 20,000 roads: {roads}");
+        assert!(bridges <= 40, "about 10 of 20,000 bridges: {bridges}");
+    }
+
+    #[test]
+    fn a_failed_thing_is_mended_by_building_it_again_for_the_usual_cost() {
+        let mut day = day_with_one_of_each();
+        let (path, road) = (PathSegment::to_edge(1, 2), PathSegment::to_edge(3, 4));
+        let bridge = day.bridges[0].id;
+        day.fail(Thing::Path(path));
+        day.fail(Thing::Road(road));
+        day.fail(Thing::Bridge(bridge));
+        let money = day.countries[0].money;
+
+        day.build_segment(Kind::Path, path).unwrap();
+        assert_eq!(day.countries[0].money, money - 10);
+        day.build_segment(Kind::Road, road).unwrap();
+        assert_eq!(day.countries[0].money, money - 10 - 100);
+        day.build_bridge(Spot { x: 31.0, z: 1.0 }, Spot { x: -29.0, z: 0.0 }).unwrap();
+        assert_eq!(day.countries[0].money, money - 10 - 100 - 1_000);
+        assert!(day.failed.is_empty(), "all three are mended");
+        assert_eq!((day.paths.len(), day.roads.len(), day.bridges.len()), (1, 1, 1), "mended, not built a second time");
+        // One that hasn't failed can't be built again.
+        assert!(day.build_segment(Kind::Path, path).unwrap_err().contains("already"));
+    }
+
+    #[test]
+    fn paving_a_failed_path_leaves_nothing_of_it_in_the_failed_list() {
+        let mut day = day_with_one_of_each();
+        let path = PathSegment::to_edge(1, 2);
+        day.fail(Thing::Path(path));
+        day.build_segment(Kind::Road, path).unwrap();
+        assert!(day.paths.is_empty() && day.failed.is_empty());
+        assert_eq!(day.roads.len(), 2);
+    }
+
+    #[test]
+    fn a_failed_road_cannot_be_replaced_by_a_path() {
+        let mut day = day_with_one_of_each();
+        let road = PathSegment::to_edge(3, 4);
+        day.fail(Thing::Road(road));
+        assert!(day.build_segment(Kind::Path, road).unwrap_err().contains("already a road"));
     }
 
     #[test]

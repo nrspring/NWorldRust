@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bridge::BridgeLink;
 use crate::day::DaySave;
+use crate::failure::Thing;
 
 /// What a segment of path costs, in coins.
 pub const PATH_COST: i64 = 10;
@@ -178,10 +179,14 @@ impl DaySave {
         if segment.other.is_some_and(|other| other == segment.region || other == segment.neighbor) {
             return Err(format!("A {} across a region goes from one of its edges to another.", kind.noun()));
         }
-        if self.roads.contains(&segment) {
+        let (in_roads, in_paths) = (self.roads.contains(&segment), self.paths.contains(&segment));
+        // One that has failed is built again, which mends it for what building it costs.
+        let thing = Thing::of(kind, PathPiece::Segment(segment));
+        let repairing = self.is_failed(thing) && if kind == Kind::Road { in_roads } else { in_paths };
+        if in_roads && !repairing {
             return Err("There is already a road there.".to_owned());
         }
-        if kind == Kind::Path && self.paths.contains(&segment) {
+        if kind == Kind::Path && in_paths && !repairing {
             return Err("There is already a path there.".to_owned());
         }
         if let Some(problem) = self.problem(kind) {
@@ -189,11 +194,16 @@ impl DaySave {
         }
         let country = self.player_country().ok_or_else(|| format!("There is no country yet to pay for a {}.", kind.noun()))?.id;
         self.add_money(country, -kind.cost())?;
+        if repairing {
+            self.repair(thing);
+            return Ok(());
+        }
         match kind {
             Kind::Path => self.paths.push(segment),
             Kind::Road => {
-                // Paving a path: the road is there instead of it.
+                // Paving a path: the road is there instead of it, and the path, failed or not, is gone.
                 self.paths.retain(|p| *p != segment);
+                self.repair(Thing::Path(segment));
                 self.roads.push(segment);
             }
         }

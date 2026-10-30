@@ -21,6 +21,7 @@ use nworld_view::style::{self, Style, Weight};
 
 use crate::bridge::{Bridge, BridgeLink, End};
 use crate::day::DaySave;
+use crate::failure::Thing;
 use crate::hud;
 use crate::ids::BridgeId;
 use crate::path::{Kind, PathPiece, PathProblem, PathSegment};
@@ -150,6 +151,8 @@ pub struct PathTool {
     crossing: HashMap<PathPiece, bool>,
     /// Whether the segment the mouse is on would cross water, for the prompt to say so.
     hover_blocked: bool,
+    /// Whether the segment the mouse is on has failed, so that building it mends it, for the prompt to say so.
+    hover_repair: bool,
 }
 
 impl PathTool {
@@ -269,16 +272,21 @@ impl PathTool {
         let hover_piece = self.first.zip(under_mouse).and_then(|(first, point)| piece_between(scene.world, &day.bridges, first, point));
         let wet = hover_piece.is_some_and(|piece| *self.crossing.entry(piece).or_insert_with(|| crosses_water(scene.world, scene.regions, &day.bridges, piece)));
         self.hover_blocked = wet;
+        self.hover_repair = hover_piece.is_some_and(|piece| day.is_failed(Thing::of(self.kind, piece)));
 
         // The markers, and a line from the chosen end to the one the mouse is on.
         let first_at = self.first.and_then(|f| points.iter().find(|(p, _)| *p == f).map(|(_, at)| *at).or_else(|| f.position(scene.regions, &day.bridges).map(|a| vec3(a.x, scene.world.surface_height(a.x, a.y) + HOLD, a.y))));
         if let (Some(from), Some(point)) = (first_at, under_mouse) {
             if let Some((_, to)) = points.iter().find(|(p, _)| *p == point) {
                 // A road is not drawn again over a road, and a path over a road or a path.
+                // Something of the kind being built that has failed is not in the way: building it again mends it.
                 let exists = hover_piece.is_some_and(|piece| {
-                    let there = |kind| match piece {
-                        PathPiece::Segment(s) => day.segments(kind).contains(&s),
-                        PathPiece::Link(l) => day.links(kind).contains(&l),
+                    let there = |kind: Kind| {
+                        let built = match piece {
+                            PathPiece::Segment(s) => day.segments(kind).contains(&s),
+                            PathPiece::Link(l) => day.links(kind).contains(&l),
+                        };
+                        built && !(kind == self.kind && day.is_failed(Thing::of(kind, piece)))
                     };
                     there(Kind::Road) || (self.kind == Kind::Path && there(Kind::Path))
                 });
@@ -411,6 +419,7 @@ impl PathTool {
         match (&self.notice, self.first) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(_)) if self.hover_blocked => style.text_mid(CROSSES_WATER, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
+            (None, Some(_)) if self.hover_repair => style.text_mid(&format!("This {} has failed. Click to build it again and mend it.", self.kind.noun()), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ACCENT_HOVER),
             (None, None) => style.text_mid("Click the center of a region, or the middle of one of its edges.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
             (None, Some(Point::Center(_))) => style.text_mid("Now click the middle of one of its edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
             (None, Some(Point::Edge(..))) => style.text_mid("Now click the center of one of the two regions, or another of their edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),

@@ -54,7 +54,7 @@ Going ahead saves the day that ended exactly as it was, writes the next day's fi
 
 When a day ends, the next day starts as a copy of it and then a series of **rules** runs on the new day, one after another in the order they are listed, so a later rule sees what the earlier ones did. The rules are in `Game/src/rules.rs` (`DAY_RULES`); each is a function with a sentence saying what it does (only for people reading the rules: the game doesn't show it). The day that ended is saved before they run and isn't changed by them.
 
-The rules so far:
+The rules so far (the third, failures, is described under [Failures](#failures)):
 
 1. **Income:** each country earns 1 coin for each person living in its cities, the total population of the cities it owns, which is added to its money.
 2. **Population:** each city's population changes by a random amount. A city that is **not under siege grows by 1 to 3 percent**, and one that **is under siege shrinks by 5 to 10 percent** (each city gets its own random percent, anywhere in the range, not just whole numbers). The result is rounded to a whole number of people and kept between **100 and 100,000**: a city at 100 stays there under siege, and one at 100,000 stops growing. Because this comes after income, a country earns on the people its cities had at the end of the day, not the new ones. A city's size on the map follows its population, so cities that grow or shrink enough are redrawn.
@@ -97,6 +97,14 @@ A **bridge** is a stone arch that carries a path across a river, which paths can
 - **Not enough coin.** With less than 1,000 coins the Bridge button is dimmed and off, with the reason in red beside the footer's buttons ("Bridges need 1,000 coins (has 250)") and the whole sentence over the button. If the money runs out while the tool is on, it switches itself off.
 - **Look.** A stone arch (`bridge_view.rs`): the roadway rises from the ground at one end to a crown that clears the water by a couple of meters, and comes down at the other, with a low wall along each side and a slab under it, in gray stone with a little variation from block to block.
 - **Paths connect to either end.** With the Paths tool on, the end of a bridge is a point you can click, shown as a gray block (it is offered in the region it stands in, with that region's other points). It joins to **the center of the region it is in** or **the middle of one of that region's edges**, as a segment of path that costs the usual **10 coins**. Such a segment can't cross water either. They are saved as `bridge_links` (the bridge, which end, the region and the neighbor). Bridge ends can be linked more than once, one for each place they join to.
+
+## Failures
+
+When a day ends, a rule lets **paths, roads and bridges fail**: each one that hasn't failed already has a random chance of failing on that day, **2% for a path, 0.1% for a road and 0.05% for a bridge** (a path or road that starts at the end of a bridge counts as a path or a road). A segment that goes both ways, or across a region, is one thing and fails once.
+
+- **What failing means.** The thing stays where it is, but it is **ruined**: a path or road is drawn dark and broken into pieces with gaps between them, and a bridge is darker and has **fallen in at the middle**. It is saved in the day as `failed` (the kind of thing and which one, or the bridge's id) and carries forward, so a ruin stays a ruin from day to day. Nothing uses paths, roads or bridges yet, so nothing else changes.
+- **Alerts.** Each thing that has failed is an alert ("A path has failed", "A road has failed", "A bridge has failed"), after the alerts about countries with no cities, in the order they failed. **Click one to go to the region where it failed**: the camera flies to the middle of that region (for a bridge, the region it stands in). With more alerts than fit under the newsreel, the mouse wheel over the alerts scrolls through them.
+- **Mending.** Build the same thing again and it is mended instead of there being a second one: the Paths and Roads tools take a click on a ruined segment (the prompt says "This path has failed. Click to build it again and mend it."), and the Bridge tool takes the same two places, for the usual cost (10, 100 or 1,000 coins). A bridge that has failed doesn't count as "already there" when planning a new one. A road built over a ruined path replaces it, and the ruin is removed with the path.
 
 ## Region ownership
 

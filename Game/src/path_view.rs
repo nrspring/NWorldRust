@@ -1,6 +1,7 @@
 //! Drawing the paths and the roads: each segment as a ribbon laid on the ground, soft at its edges. A path is packed
 //! dirt, narrow and brown. A road is packed stone: wider, in gray, with a darker curb along each side and blocks
-//! of slightly different shade one after another. This is the game's own, and not part of drawing the map.
+//! of slightly different shade one after another. One that has failed is drawn ruined: dark, and broken into pieces
+//! with gaps between them. This is the game's own, and not part of drawing the map.
 //!
 //! A path or a road never crosses water. A segment is a straight line from the center of a region to the middle of one of
 //! its edges, and where that line would cross a lake or a river, the path goes round instead, by the shortest
@@ -17,10 +18,12 @@ use nworld_map::world::{World, CELL_SIZE};
 
 use crate::bridge::{Bridge, BridgeLink};
 use crate::day::DaySave;
+use crate::failure::Thing;
 use crate::ground::{clear, dry, line_clear, CHECK_EVERY};
 use crate::path::{Kind, PathPiece, PathSegment};
 
 /// What a kind of way looks like.
+#[derive(Clone, Copy)]
 struct Look {
     /// How wide it is, in meters, counting its soft edges.
     width: f32,
@@ -35,19 +38,26 @@ struct Look {
     curb: Option<(f32, f32)>,
     /// How much brighter and darker the blocks one after another are, and how long each is, in meters.
     blocks: Option<(f32, f32)>,
+    /// If it is broken into pieces, how long each piece is and how long the gap after it is, in meters.
+    dashes: Option<(f32, f32)>,
 }
 
 impl Look {
     /// Packed dirt.
-    const PATH: Look = Look { width: 7.0, lift: 0.35, color: [0.56, 0.42, 0.27], variation: 0.10, curb: None, blocks: None };
+    const PATH: Look = Look { width: 7.0, lift: 0.35, color: [0.56, 0.42, 0.27], variation: 0.10, curb: None, blocks: None, dashes: None };
     /// Packed stone.
-    const ROAD: Look = Look { width: 8.5, lift: 0.50, color: [0.60, 0.58, 0.54], variation: 0.06, curb: Some((0.70, 0.78)), blocks: Some((0.07, 2.0)) };
+    const ROAD: Look = Look { width: 8.5, lift: 0.50, color: [0.60, 0.58, 0.54], variation: 0.06, curb: Some((0.70, 0.78)), blocks: Some((0.07, 2.0)), dashes: None };
 
     fn of(kind: Kind) -> &'static Look {
         match kind {
             Kind::Path => &Look::PATH,
             Kind::Road => &Look::ROAD,
         }
+    }
+
+    /// The same, ruined: darker, with the blocks gone, and broken into pieces.
+    fn ruined(&self) -> Look {
+        Look { color: [self.color[0] * 0.55, self.color[1] * 0.52, self.color[2] * 0.50], blocks: None, dashes: Some((5.0, 3.5)), ..*self }
     }
 }
 /// Most vertices in one mesh, which a mesh's 16 bit indices can't go past.
@@ -60,6 +70,7 @@ pub struct PathRenderer {
     kind: Kind,
     built_paths: Vec<PathSegment>,
     built_links: Vec<BridgeLink>,
+    built_failed: Vec<Thing>,
     /// Where each piece goes, as lines of points over dry ground, so that the way round a lake is only
     /// worked out once.
     routes: HashMap<PathPiece, Vec<Vec<Vec2>>>,
@@ -69,14 +80,14 @@ pub struct PathRenderer {
 impl PathRenderer {
     /// A renderer of the paths or of the roads of a day.
     pub fn new(kind: Kind) -> Self {
-        Self { kind, built_paths: Vec::new(), built_links: Vec::new(), routes: HashMap::new(), meshes: Vec::new() }
+        Self { kind, built_paths: Vec::new(), built_links: Vec::new(), built_failed: Vec::new(), routes: HashMap::new(), meshes: Vec::new() }
     }
 
     /// Draws the paths or roads of `day`, as seen by the camera that is set, which must still be the one the map was
     /// drawn with.
     pub fn draw(&mut self, world: &World, map: &RegionMap, day: &DaySave) {
         let (segments, links) = (day.segments(self.kind), day.links(self.kind));
-        if self.built_paths != segments || self.built_links != links {
+        if self.built_paths != segments || self.built_links != links || self.built_failed != day.failed {
             let pieces: Vec<PathPiece> = segments.iter().map(|s| PathPiece::Segment(*s)).chain(links.iter().map(|l| PathPiece::Link(*l))).collect();
             for piece in &pieces {
                 if !self.routes.contains_key(piece) {
@@ -85,10 +96,16 @@ impl PathRenderer {
                 }
             }
             self.routes.retain(|piece, _| pieces.contains(piece));
-            let lines: Vec<&Vec<Vec2>> = pieces.iter().filter_map(|piece| self.routes.get(piece)).flatten().collect();
-            self.meshes = build(world, &lines, Look::of(self.kind));
+            // The ones that are all right, and the ones that have failed, which are drawn ruined.
+            let (ruined, sound): (Vec<PathPiece>, Vec<PathPiece>) = pieces.iter().partition(|piece| day.is_failed(Thing::of(self.kind, **piece)));
+            let lines_of = |of: &[PathPiece]| -> Vec<&Vec<Vec2>> { of.iter().filter_map(|piece| self.routes.get(piece)).flatten().collect() };
+            let look = Look::of(self.kind);
+            let mut meshes = build(world, &lines_of(&sound), look);
+            meshes.extend(build(world, &lines_of(&ruined), &look.ruined()));
+            self.meshes = meshes;
             self.built_paths = segments.to_vec();
             self.built_links = links.to_vec();
+            self.built_failed = day.failed.clone();
         }
         for mesh in &self.meshes {
             draw_mesh(mesh);
@@ -315,8 +332,9 @@ fn resample(line: &[Vec2], step: f32) -> Vec<Vec2> {
 /// each point (the middle one solid and the outer two clear, so that it fades out at its edges), or five if it has
 /// a curb: clear at the edge, the darker curb, the middle, the curb on the other side, and clear again.
 fn ribbon(world: &World, line: &[Vec2], look: &Look, vertices: &mut Vec<Vertex>, indices: &mut Vec<u16>) {
-    // Blocks of stone are told apart by rows of points as often as they change, and dirt only needs one for each cell.
-    let step = look.blocks.map_or(CELL_SIZE, |(_, length)| length.min(CELL_SIZE));
+    // Blocks of stone and gaps are told apart by rows of points as often as they change, and dirt only needs one for
+    // each cell.
+    let step = look.blocks.map_or(CELL_SIZE, |(_, length)| length.min(CELL_SIZE)).min(if look.dashes.is_some() { 2.0 } else { CELL_SIZE });
     let points = resample(line, step);
     if points.len() < 2 {
         return;
@@ -343,7 +361,10 @@ fn ribbon(world: &World, line: &[Vec2], look: &Look, vertices: &mut Vec<Vertex>,
             let block = (length_so_far / length).floor() as i64;
             shade *= 1.0 + contrast * if block.rem_euclid(2) == 0 { 1.0 } else { -1.0 };
         }
+        // In the gap between two pieces of a broken way, it is clear.
+        let gap = look.dashes.is_some_and(|(piece, gap)| length_so_far % (piece + gap) >= piece);
         for &(fraction, dim, alpha) in &across_points {
+            let alpha = if gap { 0 } else { alpha };
             let point = at + across * fraction;
             let c = |k: usize| (look.color[k] * shade * dim * 255.0).clamp(0.0, 255.0) as u8;
             vertices.push(Vertex {

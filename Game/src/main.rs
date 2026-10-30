@@ -20,6 +20,7 @@ mod color_picker;
 mod country;
 mod country_menu;
 mod day;
+mod failure;
 mod format;
 mod ground;
 mod hud;
@@ -52,7 +53,7 @@ use nworld_view::style::{Style, Weight};
 use nworld_view::{mouse_ray, pick_terrain, MapView};
 
 use advance_popup::AdvancePopup;
-use alerts::AlertsUi;
+use alerts::{AlertTarget, AlertsUi};
 use autosave::Autosave;
 use camera::GameCamera;
 use city_popup::CityPopup;
@@ -74,6 +75,8 @@ use saves::Saves;
 
 /// How far from a new city the camera flies to look at it, in meters.
 const NEW_CITY_VIEW_DISTANCE: f32 = 190.0;
+/// How far from a region the camera is taken to look at it, in meters.
+const REGION_VIEW_DISTANCE: f32 = 350.0;
 
 /// Where the game keeps its files, outside the repository: the maps under `Assets` and the saved
 /// game under `Saves`.
@@ -295,7 +298,7 @@ async fn main() {
         cities.draw(&world, &day.cities, &eye);
         paths.draw(&world, &region_map, &day);
         roads.draw(&world, &region_map, &day);
-        bridges.draw(&world, &day.bridges);
+        bridges.draw(&world, &day);
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
@@ -324,7 +327,9 @@ async fn main() {
         } else if !modal && bridge_tool.is_active() {
             // With the bridge tool on, clicks are for choosing the two ends of a bridge.
             let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
-            if let Some((first, second)) = bridge_tool.update(&scene, &day.bridges, clicked) {
+            // A bridge that has failed doesn't count as there, since building it again mends it.
+            let standing: Vec<bridge::Bridge> = day.bridges.iter().filter(|b| !day.is_failed(failure::Thing::Bridge(b.id))).copied().collect();
+            if let Some((first, second)) = bridge_tool.update(&scene, &standing, clicked) {
                 // Only keep the bridge if it is saved too.
                 let mut updated = day.clone();
                 match updated.build_bridge(first.into(), second.into()).and_then(|()| autosave.save_now(&saves, &updated)) {
@@ -385,11 +390,28 @@ async fn main() {
         }
         if !modal {
             let newsreel = newsreel_panel.show(&style, &day);
-            // An alert opens the countries menu at the country it is about.
-            if let Some(country) = alerts_ui.show(&style, &day, newsreel) {
-                options_ui.close();
-                overlays_ui.close();
-                country_menu.open_at(&day, Some(country));
+            // An alert shows what it is about: the countries menu at a country, or the region where something failed.
+            if let Some(target) = alerts_ui.show(&style, &day, newsreel) {
+                match target {
+                    AlertTarget::Country(country) => {
+                        options_ui.close();
+                        overlays_ui.close();
+                        country_menu.open_at(&day, Some(country));
+                    }
+                    AlertTarget::Region(number) => {
+                        if let Some(center) = RegionId::from_raw(number).and_then(|r| region_map.center(r)) {
+                            camera.fly_to(center, REGION_VIEW_DISTANCE);
+                        }
+                    }
+                    AlertTarget::Bridge(id) => {
+                        // To the center of the region the bridge stands in, or to the bridge if that isn't known.
+                        let bridge = day.bridge(id).map(|b| (b.end(bridge::End::First), b.end(bridge::End::Second)));
+                        let center = bridge.and_then(|(a, _)| world.region_at(a.x, a.y)).and_then(|r| region_map.center(r));
+                        if let Some(at) = center.or(bridge.map(|(a, b)| (a + b) * 0.5)) {
+                            camera.fly_to(at, REGION_VIEW_DISTANCE);
+                        }
+                    }
+                }
             }
             if placing {
                 hud::placing_prompt(&style, problem.as_deref());

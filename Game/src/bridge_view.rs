@@ -1,12 +1,14 @@
 //! Drawing the bridges: each as a stone arch, a slab that rises from the ground at one end to a crown over the
-//! water and comes down at the other, with a low wall along each side. This is the game's own drawing, and not
-//! part of drawing the map.
+//! water and comes down at the other, with a low wall along each side. One that has failed is darker, and has
+//! fallen in at the middle. This is the game's own drawing, and not part of drawing the map.
 
 use macroquad::models::{draw_mesh, Mesh, Vertex};
 use macroquad::prelude::*;
 use nworld_map::world::World;
 
-use crate::bridge::Bridge;
+use crate::bridge::{Bridge, End};
+use crate::day::DaySave;
+use crate::failure::Thing;
 
 /// Half the width of the roadway between the walls, plus the walls, in meters.
 const HALF_WIDTH: f32 = 2.7;
@@ -32,15 +34,19 @@ const LOOK_EVERY: f32 = 1.0;
 #[derive(Default)]
 pub struct BridgeRenderer {
     built: Vec<Bridge>,
+    built_failed: Vec<Thing>,
     mesh: Option<Mesh>,
 }
 
 impl BridgeRenderer {
-    /// Draws `bridges`, as seen by the camera that is set, which must still be the one the map was drawn with.
-    pub fn draw(&mut self, world: &World, bridges: &[Bridge]) {
-        if self.built != bridges {
-            self.mesh = build(world, bridges);
-            self.built = bridges.to_vec();
+    /// Draws the bridges of `day`, as seen by the camera that is set, which must still be the one the map was drawn
+    /// with.
+    pub fn draw(&mut self, world: &World, day: &DaySave) {
+        if self.built != day.bridges || self.built_failed != day.failed {
+            let bridges: Vec<(Bridge, bool)> = day.bridges.iter().map(|b| (*b, day.is_failed(Thing::Bridge(b.id)))).collect();
+            self.mesh = build(world, &bridges);
+            self.built = day.bridges.clone();
+            self.built_failed = day.failed.clone();
         }
         if let Some(mesh) = &self.mesh {
             draw_mesh(mesh);
@@ -48,15 +54,15 @@ impl BridgeRenderer {
     }
 }
 
-/// One mesh of every bridge, or none if there are none.
-fn build(world: &World, bridges: &[Bridge]) -> Option<Mesh> {
+/// One mesh of every bridge, each with whether it has failed, or none if there are none.
+fn build(world: &World, bridges: &[(Bridge, bool)]) -> Option<Mesh> {
     let (mut vertices, mut indices): (Vec<Vertex>, Vec<u16>) = (Vec::new(), Vec::new());
-    for bridge in bridges {
+    for (bridge, failed) in bridges {
         // A mesh's indices are 16 bits, so a bridge that would pass them is left out rather than broken.
         if vertices.len() + 8 * 4 * ((bridge.first.x - bridge.second.x).hypot(bridge.first.z - bridge.second.z) / STEP).ceil() as usize + 64 > u16::MAX as usize {
             break;
         }
-        add_bridge(world, bridge.end(crate::bridge::End::First), bridge.end(crate::bridge::End::Second), &mut vertices, &mut indices);
+        add_bridge(world, bridge.end(End::First), bridge.end(End::Second), *failed, &mut vertices, &mut indices);
     }
     (!vertices.is_empty()).then(|| Mesh { vertices, indices, texture: None })
 }
@@ -86,8 +92,13 @@ impl Arch {
     }
 }
 
-/// Adds the bridge from `first` to `second` to the mesh being made.
-fn add_bridge(world: &World, first: Vec2, second: Vec2, vertices: &mut Vec<Vertex>, indices: &mut Vec<u16>) {
+/// How much darker the stone of a bridge that has failed is, and the middle part of it, as the fractions of its
+/// length between which it has fallen in.
+const RUIN_SHADE: f32 = 0.6;
+const FALLEN_IN: (f32, f32) = (0.34, 0.66);
+
+/// Adds the bridge from `first` to `second` to the mesh being made, whole or, if it has `failed`, ruined.
+fn add_bridge(world: &World, first: Vec2, second: Vec2, failed: bool, vertices: &mut Vec<Vertex>, indices: &mut Vec<u16>) {
     let length = first.distance(second);
     if length < 1.0 {
         return;
@@ -105,10 +116,14 @@ fn add_bridge(world: &World, first: Vec2, second: Vec2, vertices: &mut Vec<Verte
     let inner = HALF_WIDTH - WALL_THICKNESS;
     for step in 0..steps {
         let (t0, t1) = (step as f32 / steps as f32, (step + 1) as f32 / steps as f32);
+        // A bridge that has failed has no middle: those blocks have fallen away.
+        if failed && (t0 + t1) * 0.5 > FALLEN_IN.0 && (t0 + t1) * 0.5 < FALLEN_IN.1 {
+            continue;
+        }
         let (top0, top1) = (arch.top(t0), arch.top(t1));
         let (under0, under1) = (top0 - SLAB, top1 - SLAB);
         // Each block of stone is a little different from the next.
-        let block = 1.0 + VARIATION * ((step as f32 * 12.9898).sin() * 43758.547).fract().mul_add(2.0, -1.0);
+        let block = (1.0 + VARIATION * ((step as f32 * 12.9898).sin() * 43758.547).fract().mul_add(2.0, -1.0)) * if failed { RUIN_SHADE } else { 1.0 };
         let shade = |light: f32| {
             let c = |k: usize| (STONE[k] * light * block * 255.0).clamp(0.0, 255.0) as u8;
             [c(0), c(1), c(2), 255]
@@ -165,7 +180,7 @@ mod tests {
 
     fn mesh_of(world: &World, first: Vec2, second: Vec2) -> (Vec<Vertex>, Vec<u16>) {
         let (mut vertices, mut indices) = (Vec::new(), Vec::new());
-        add_bridge(world, first, second, &mut vertices, &mut indices);
+        add_bridge(world, first, second, false, &mut vertices, &mut indices);
         (vertices, indices)
     }
 
@@ -218,7 +233,21 @@ mod tests {
         assert!(mesh_of(&world, vec2(5.0, 5.0), vec2(5.0, 5.0)).0.is_empty());
         assert!(build(&world, &[]).is_none());
         let bridge = Bridge { id: BridgeId::new(), first: vec2(-30.0, 0.0).into(), second: vec2(30.0, 0.0).into() };
-        let mesh = build(&world, &[bridge, bridge]).unwrap();
+        let mesh = build(&world, &[(bridge, false), (bridge, false)]).unwrap();
         assert_eq!(mesh.vertices.len(), 2 * mesh_of(&world, vec2(-30.0, 0.0), vec2(30.0, 0.0)).0.len(), "each bridge adds its own");
+    }
+
+    #[test]
+    fn a_bridge_that_has_failed_is_darker_and_has_fallen_in_at_the_middle() {
+        let world = river_world(10.0);
+        let whole = mesh_of(&world, vec2(-30.0, 0.0), vec2(30.0, 0.0)).0;
+        let (mut ruined, mut indices) = (Vec::new(), Vec::new());
+        add_bridge(&world, vec2(-30.0, 0.0), vec2(30.0, 0.0), true, &mut ruined, &mut indices);
+        assert!(indices.iter().all(|&i| (i as usize) < ruined.len()));
+        assert!(ruined.len() < whole.len(), "blocks from the middle are gone: {} of {}", ruined.len(), whole.len());
+        // None of what is left is in the middle third, over the water.
+        assert!(ruined.iter().all(|v| v.position.x.abs() > 30.0 * 0.3 || v.position.x.abs() < 0.0), "nothing near the middle");
+        let brightest = |vs: &[Vertex]| vs.iter().map(|v| v.color[0]).max().unwrap();
+        assert!(brightest(&ruined) < brightest(&whole), "darker");
     }
 }

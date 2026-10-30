@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
 use crate::ground;
+use crate::failure::Thing;
 use crate::ids::BridgeId;
 use crate::path::Kind;
 
@@ -126,8 +127,18 @@ impl DaySave {
             return Err(problem.long());
         }
         let country = self.player_country().ok_or("There is no country yet to pay for a bridge.")?.id;
+        // A bridge that has failed, built again in the same place, is mended instead of there being another.
+        let near = |p: Spot, q: Spot| Vec2::from(p).distance(Vec2::from(q)) <= SAME_PLACE;
+        let failed_here = self
+            .bridges
+            .iter()
+            .find(|b| self.is_failed(Thing::Bridge(b.id)) && ((near(b.first, first) && near(b.second, second)) || (near(b.first, second) && near(b.second, first))))
+            .map(|b| b.id);
         self.add_money(country, -BRIDGE_COST)?;
-        self.bridges.push(Bridge { id: BridgeId::new(), first, second });
+        match failed_here {
+            Some(id) => self.repair(Thing::Bridge(id)),
+            None => self.bridges.push(Bridge { id: BridgeId::new(), first, second }),
+        }
         Ok(())
     }
 
@@ -149,10 +160,14 @@ impl DaySave {
         if link.to == Some(link.region) {
             return Err(format!("A {} goes from a bridge to a region's center or its edge.", kind.noun()));
         }
-        if self.road_links.contains(&link) {
+        let (in_roads, in_paths) = (self.road_links.contains(&link), self.bridge_links.contains(&link));
+        // One that has failed is built again, which mends it for what building it costs.
+        let thing = Thing::of(kind, crate::path::PathPiece::Link(link));
+        let repairing = self.is_failed(thing) && if kind == Kind::Road { in_roads } else { in_paths };
+        if in_roads && !repairing {
             return Err("There is already a road there.".to_owned());
         }
-        if kind == Kind::Path && self.bridge_links.contains(&link) {
+        if kind == Kind::Path && in_paths && !repairing {
             return Err("There is already a path there.".to_owned());
         }
         if let Some(problem) = self.problem(kind) {
@@ -160,10 +175,15 @@ impl DaySave {
         }
         let country = self.player_country().ok_or_else(|| format!("There is no country yet to pay for a {}.", kind.noun()))?.id;
         self.add_money(country, -kind.cost())?;
+        if repairing {
+            self.repair(thing);
+            return Ok(());
+        }
         match kind {
             Kind::Path => self.bridge_links.push(link),
             Kind::Road => {
                 self.bridge_links.retain(|l| *l != link);
+                self.repair(Thing::PathLink(link));
                 self.road_links.push(link);
             }
         }

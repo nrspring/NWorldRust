@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bridge::{Bridge, BridgeLink};
 use crate::calendar::Date;
+use crate::failure::Thing;
 use crate::city::{self, City, INITIAL_POPULATION};
 use crate::country::{self, Country, RegionOwner, STARTING_MONEY};
 use crate::ids::{CityId, CountryId, Guid, PersonId, TitleTypeId};
@@ -55,6 +56,10 @@ pub struct DaySave {
     /// costs more. Carried forward from day to day.
     #[serde(default)]
     pub roads: Vec<PathSegment>,
+    /// The paths, roads and bridges that have failed, which are ruined until they are built again. Carried forward
+    /// from day to day.
+    #[serde(default)]
+    pub failed: Vec<Thing>,
     /// The bridges that have been built, which belong to no country. Carried forward from day to day.
     #[serde(default)]
     pub bridges: Vec<Bridge>,
@@ -71,7 +76,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.
