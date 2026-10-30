@@ -1,10 +1,13 @@
 //! The path tool: a button in the footer that turns it on, and then the player clicks one end of a segment of
-//! path, and then the other. An end is either the center of a region or the middle point of one of its edges,
-//! and a segment joins a center to the middle of an edge of the same region.
+//! path, and then the other. An end is either the center of a region or the middle point of one of its edges.
+//! A segment joins a center to the middle of one of its region's edges, or the middle of one edge of a region to
+//! the middle of another of the same region, which doesn't go through the center.
 //!
 //! With the tool on, the points that can be clicked are shown on the map as markers: round ones for centers
 //! and square ones for edges. At first those are the points of the region under the mouse. Once one end is
 //! chosen, the markers left are the ones that can be the other end.
+
+use std::collections::HashMap;
 
 use macroquad::prelude::*;
 use nworld_map::region_map::RegionMap;
@@ -16,7 +19,10 @@ use nworld_view::style::{self, Style, Weight};
 use crate::day::DaySave;
 use crate::hud;
 use crate::path::{PathProblem, PathSegment, PATH_COST};
+use crate::path_view;
 
+/// Why a segment that crosses water is refused.
+const CROSSES_WATER: &str = "A path can't cross a river or a lake.";
 /// How close to a marker, as a fraction of how far away it is, the mouse has to be to point at it.
 const POINT_TOLERANCE: f32 = 0.02;
 /// How big a marker is, as a fraction of how far away it is, and the least it is, in meters.
@@ -49,11 +55,17 @@ impl Point {
     }
 }
 
-/// The segment a center and an edge make, if they belong together: the edge is one of the center's region's.
+/// The segment two ends make, if they belong together: a center and an edge of its region, or two different edges
+/// of the same region (which share that region).
 fn segment(a: Point, b: Point) -> Option<PathSegment> {
     match (a, b) {
-        (Point::Center(region), Point::Edge(x, y)) | (Point::Edge(x, y), Point::Center(region)) if region == x => Some(PathSegment { region, neighbor: y }),
-        (Point::Center(region), Point::Edge(x, y)) | (Point::Edge(x, y), Point::Center(region)) if region == y => Some(PathSegment { region, neighbor: x }),
+        (Point::Center(region), Point::Edge(x, y)) | (Point::Edge(x, y), Point::Center(region)) if region == x => Some(PathSegment::to_edge(region, y)),
+        (Point::Center(region), Point::Edge(x, y)) | (Point::Edge(x, y), Point::Center(region)) if region == y => Some(PathSegment::to_edge(region, x)),
+        (Point::Edge(a1, a2), Point::Edge(b1, b2)) if (a1, a2) != (b1, b2) => {
+            let shared = [a1, a2].into_iter().find(|region| *region == b1 || *region == b2)?;
+            let (from, to) = (if a1 == shared { a2 } else { a1 }, if b1 == shared { b2 } else { b1 });
+            (from != to).then(|| PathSegment::across(shared, from, to))
+        }
         _ => None,
     }
 }
@@ -61,6 +73,12 @@ fn segment(a: Point, b: Point) -> Option<PathSegment> {
 /// Whether a path can go through the region: it is dry land, which includes the mountains.
 fn walkable(region: RegionId) -> bool {
     matches!(region.kind(), RegionKind::Land | RegionKind::Mountain)
+}
+
+/// Whether `segment` would have to cross water: a river or a lake with no way round it, or an end in the water.
+/// A segment that goes round a lake doesn't.
+fn crosses_water(world: &World, map: &RegionMap, segment: PathSegment) -> bool {
+    path_view::ends(map, segment).is_none_or(|(from, to)| !path_view::connects(world, from, to))
 }
 
 /// What the tool needs to know about the map and the mouse each frame.
@@ -82,6 +100,10 @@ pub struct PathTool {
     notice: Option<String>,
     /// Where the prompt was drawn last, so the mouse can be told it is over it.
     prompt: Rect,
+    /// Whether each segment looked at would cross water, so that it is only worked out once.
+    crossing: HashMap<PathSegment, bool>,
+    /// Whether the segment the mouse is on would cross water, for the prompt to say so.
+    hover_blocked: bool,
 }
 
 impl PathTool {
@@ -121,7 +143,8 @@ impl PathTool {
     }
 
     /// The points that can be clicked now: with none chosen, those of the region at `hovered`; with a center
-    /// chosen, the edges of its region; with an edge chosen, the centers of the two regions it divides.
+    /// chosen, the edges of its region; with an edge chosen, the centers of the two regions it divides and their
+    /// other edges.
     fn candidates(&self, map: &RegionMap, hovered: Option<RegionId>) -> Vec<Point> {
         let edges_of = |region: RegionId| map.neighbors(region).iter().filter(|n| walkable(n.region)).map(move |n| Point::edge(region, n.region)).collect::<Vec<_>>();
         match self.first {
@@ -131,7 +154,13 @@ impl PathTool {
                 points
             }),
             Some(Point::Center(region)) => RegionId::from_raw(region).map_or(Vec::new(), edges_of),
-            Some(Point::Edge(a, b)) => vec![Point::Center(a), Point::Center(b)],
+            Some(Point::Edge(a, b)) => {
+                let mut points = vec![Point::Center(a), Point::Center(b)];
+                for region in [a, b].into_iter().filter_map(RegionId::from_raw) {
+                    points.extend(edges_of(region).into_iter().filter(|p| *p != Point::Edge(a, b)));
+                }
+                points
+            }
         }
     }
 
@@ -165,12 +194,17 @@ impl PathTool {
             None
         };
 
+        // Whether the segment the mouse is on is one that can't be built.
+        let hover_segment = self.first.zip(under_mouse).and_then(|(first, point)| segment(first, point));
+        let wet = hover_segment.is_some_and(|s| *self.crossing.entry(s).or_insert_with(|| crosses_water(scene.world, scene.regions, s)));
+        self.hover_blocked = wet;
+
         // The markers, and a line from the chosen end to the one the mouse is on.
         let first_at = self.first.and_then(|f| points.iter().find(|(p, _)| *p == f).map(|(_, at)| *at).or_else(|| f.position(scene.regions).map(|a| vec3(a.x, scene.world.surface_height(a.x, a.y) + HOLD, a.y))));
         if let (Some(from), Some(point)) = (first_at, under_mouse) {
             if let Some((_, to)) = points.iter().find(|(p, _)| *p == point) {
                 let exists = self.first.and_then(|f| segment(f, point)).is_some_and(|s| existing.contains(&s));
-                draw_line_3d(from, *to, if exists { RED } else { Color::new(1.0, 0.85, 0.35, 1.0) });
+                draw_line_3d(from, *to, if exists || wet { RED } else { Color::new(1.0, 0.85, 0.35, 1.0) });
             }
         }
         for (point, at) in &points {
@@ -200,7 +234,12 @@ impl PathTool {
             }
             (Some(first), Some(point)) => {
                 self.first = None;
-                segment(first, point)
+                let chosen = segment(first, point)?;
+                if wet {
+                    self.notice = Some(CROSSES_WATER.to_owned());
+                    return None;
+                }
+                Some(chosen)
             }
             // A click on nothing lets go of the end that was chosen.
             (Some(_), None) => {
@@ -278,9 +317,10 @@ impl PathTool {
         style.text_mid("Build a path", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
         match (&self.notice, self.first) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
+            (None, Some(_)) if self.hover_blocked => style.text_mid(CROSSES_WATER, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, None) => style.text_mid("Click the center of a region, or the middle of one of its edges.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
             (None, Some(Point::Center(_))) => style.text_mid("Now click the middle of one of its edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
-            (None, Some(Point::Edge(..))) => style.text_mid("Now click the center of one of the two regions. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
+            (None, Some(Point::Edge(..))) => style.text_mid("Now click the center of one of the two regions, or another of their edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         let paying = day.player_country().map_or_else(|| "No country".to_owned(), |c| format!("{} has {}", c.name, crate::format::money(c.money)));
         style.text_mid(&format!("{PATH_COST} coins a segment. {paying} coins."), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
@@ -299,18 +339,18 @@ mod tests {
     fn a_center_and_an_edge_of_its_region_make_a_segment_whichever_is_first() {
         let (a, b) = (region(1, RegionKind::Land), region(2, RegionKind::Land));
         let edge = Point::edge(a, b);
-        assert_eq!(segment(Point::Center(a.raw()), edge), Some(PathSegment { region: a.raw(), neighbor: b.raw() }));
-        assert_eq!(segment(edge, Point::Center(a.raw())), Some(PathSegment { region: a.raw(), neighbor: b.raw() }));
+        assert_eq!(segment(Point::Center(a.raw()), edge), Some(PathSegment::to_edge(a.raw(), b.raw())));
+        assert_eq!(segment(edge, Point::Center(a.raw())), Some(PathSegment::to_edge(a.raw(), b.raw())));
         // From the other side of the same edge it is the other segment.
-        assert_eq!(segment(edge, Point::Center(b.raw())), Some(PathSegment { region: b.raw(), neighbor: a.raw() }));
-        assert_eq!(segment(Point::Center(b.raw()), edge), Some(PathSegment { region: b.raw(), neighbor: a.raw() }));
+        assert_eq!(segment(edge, Point::Center(b.raw())), Some(PathSegment::to_edge(b.raw(), a.raw())));
+        assert_eq!(segment(Point::Center(b.raw()), edge), Some(PathSegment::to_edge(b.raw(), a.raw())));
     }
 
     #[test]
     fn two_ends_of_the_same_kind_or_of_different_regions_make_no_segment() {
         let (a, b, c) = (region(1, RegionKind::Land), region(2, RegionKind::Land), region(3, RegionKind::Land));
         assert_eq!(segment(Point::Center(a.raw()), Point::Center(b.raw())), None);
-        assert_eq!(segment(Point::edge(a, b), Point::edge(b, c)), None);
+        assert_eq!(segment(Point::edge(a, b), Point::edge(a, b)), None, "the same edge");
         assert_eq!(segment(Point::Center(c.raw()), Point::edge(a, b)), None, "an edge of other regions");
     }
 
@@ -321,11 +361,117 @@ mod tests {
     }
 
     #[test]
+    fn two_edges_of_the_same_region_make_a_segment_across_it() {
+        let (a, b, c, d) = (region(1, RegionKind::Land), region(2, RegionKind::Land), region(3, RegionKind::Land), region(4, RegionKind::Land));
+        // The edges a|b and b|c are both b's, so the segment crosses b, whichever is chosen first.
+        let across = Some(PathSegment::across(b.raw(), a.raw(), c.raw()));
+        assert_eq!(segment(Point::edge(a, b), Point::edge(b, c)), across);
+        assert_eq!(segment(Point::edge(b, c), Point::edge(a, b)), across);
+        // The edges a|b and a|c are both a's.
+        assert_eq!(segment(Point::edge(a, b), Point::edge(a, c)), Some(PathSegment::across(a.raw(), b.raw(), c.raw())));
+        // Edges that share no region don't make one.
+        assert_eq!(segment(Point::edge(a, b), Point::edge(c, d)), None);
+    }
+
+    #[test]
+    fn after_choosing_an_edge_the_other_edges_of_its_two_regions_can_be_chosen_too() {
+        // Three regions in a row, A | B | C, and the edge chosen is A|B: the other edge of A has nowhere to go
+        // (A is at the end), and the other edge of B is B|C.
+        let (world, map) = three_regions(|_| false);
+        let _ = world;
+        let tool = PathTool { active: true, first: Some(Point::Edge(0xC001, 0xC002)), ..PathTool::default() };
+        let points = tool.candidates(&map, None);
+        assert_eq!(points, [Point::Center(0xC001), Point::Center(0xC002), Point::Edge(0xC002, 0xC003)]);
+    }
+
+    /// Three regions side by side over dry ground, A | B | C, with `flood` turned to water first.
+    fn three_regions(flood: impl Fn(Vec2) -> bool) -> (World, RegionMap) {
+        let mut world = World::new(512.0, 512.0);
+        world.heights_mut().fill(5.0);
+        let half = world.half_extents();
+        let (nx, nz) = world.samples();
+        let mut regions = vec![0u16; nx * nz];
+        for j in 0..nz {
+            for i in 0..nx {
+                let at = vec2(i as f32 * 4.0 - half.x, j as f32 * 4.0 - half.y);
+                regions[j * nx + i] = if i < nx / 3 { 0xC001 } else if i < 2 * nx / 3 { 0xC002 } else { 0xC003 };
+                if flood(at) {
+                    world.water_mut()[j * nx + i] = 10.0;
+                }
+            }
+        }
+        world.set_regions(regions);
+        let map = RegionMap::build(&world);
+        (world, map)
+    }
+
+    #[test]
+    fn a_segment_across_a_region_runs_between_the_middles_of_two_borders_not_through_the_center() {
+        let (world, map) = three_regions(|_| false);
+        let across = PathSegment::across(0xC002, 0xC001, 0xC003);
+        let (from, to) = path_view::ends(&map, across).unwrap();
+        let (a_b, b_c) = (map.edge_midpoint(region_id(0xC001), region_id(0xC002)).unwrap(), map.edge_midpoint(region_id(0xC002), region_id(0xC003)).unwrap());
+        assert_eq!((from, to), (a_b, b_c));
+        assert!(from.distance(to) > 100.0, "{}", from.distance(to));
+        assert!(!crosses_water(&world, &map, across));
+        // A river between the two edges, inside B, stops it like any other.
+        let (river_world, river_map) = three_regions(|p| p.x.abs() < 10.0 && p.y.abs() < 250.0);
+        assert!(crosses_water(&river_world, &river_map, across));
+    }
+
+    fn region_id(raw: u16) -> RegionId {
+        RegionId::from_raw(raw).unwrap()
+    }
+
+    #[test]
     fn only_dry_land_can_have_a_path() {
         assert!(walkable(region(1, RegionKind::Land)));
         assert!(walkable(region(2, RegionKind::Mountain)));
         assert!(!walkable(region(3, RegionKind::Shallow)));
         assert!(!walkable(region(4, RegionKind::Deep)));
+    }
+
+    /// Two regions side by side, A on the left (x below -2) and B on the right, over dry ground, with `flood`
+    /// turned to water first.
+    fn two_regions(flood: impl Fn(Vec2) -> bool) -> (World, RegionMap) {
+        let mut world = World::new(512.0, 512.0);
+        world.heights_mut().fill(5.0);
+        let half = world.half_extents();
+        let (nx, nz) = world.samples();
+        let mut regions = vec![0u16; nx * nz];
+        for j in 0..nz {
+            for i in 0..nx {
+                let at = vec2(i as f32 * 4.0 - half.x, j as f32 * 4.0 - half.y);
+                regions[j * nx + i] = if i < nx / 2 { 0xC001 } else { 0xC002 };
+                if flood(at) {
+                    world.water_mut()[j * nx + i] = 10.0;
+                }
+            }
+        }
+        world.set_regions(regions);
+        let map = RegionMap::build(&world);
+        (world, map)
+    }
+
+    #[test]
+    fn a_segment_that_crosses_a_river_is_refused_and_one_that_does_not_is_allowed() {
+        let a_to_edge = PathSegment::to_edge(0xC001, 0xC002);
+        let (dry, map) = two_regions(|_| false);
+        assert!(!crosses_water(&dry, &map, a_to_edge));
+        // A river across all of A, between its center and the edge it goes to.
+        let (river, map) = two_regions(|p| (-90.0..-70.0).contains(&p.x));
+        assert!(crosses_water(&river, &map, a_to_edge));
+        // The other side of the border has no river, so its segment is fine.
+        assert!(!crosses_water(&river, &map, PathSegment::to_edge(0xC002, 0xC001)));
+        // A lake that can be got round doesn't count.
+        let (lake, map) = two_regions(|p| p.distance(vec2(-65.0, 0.0)) < 30.0);
+        assert!(!crosses_water(&lake, &map, a_to_edge));
+    }
+
+    #[test]
+    fn a_segment_that_is_not_a_real_one_counts_as_crossing() {
+        let (world, map) = two_regions(|_| false);
+        assert!(crosses_water(&world, &map, PathSegment::to_edge(0xC001, 0xC009)), "no such neighbor");
     }
 
     #[test]

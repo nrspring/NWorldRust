@@ -63,11 +63,22 @@ impl PathRenderer {
     }
 }
 
-/// The ends of `segment` on the map, in world x and z: the center of its region, and the middle of the edge it
-/// shares with its neighbor.
+/// The ends of `segment` on the map, in world x and z: the center of its region (or, for a segment across the
+/// region, the middle of its border with one neighbor) and the middle of its border with another.
 pub fn ends(map: &RegionMap, segment: PathSegment) -> Option<(Vec2, Vec2)> {
     let (region, neighbor) = (RegionId::from_raw(segment.region)?, RegionId::from_raw(segment.neighbor)?);
-    Some((map.center(region)?, map.edge_midpoint(region, neighbor)?))
+    let to = map.edge_midpoint(region, neighbor)?;
+    match segment.other {
+        None => Some((map.center(region)?, to)),
+        Some(other) => Some((to, map.edge_midpoint(region, RegionId::from_raw(other)?)?)),
+    }
+}
+
+/// Whether a path from `from` to `to` can be drawn all the way over dry ground, straight or going round the
+/// water, and so doesn't have to cross a river or a lake.
+pub fn connects(world: &World, from: Vec2, to: Vec2) -> bool {
+    let lines = route(world, from, to);
+    lines.len() == 1 && lines[0].first() == Some(&from) && lines[0].last() == Some(&to)
 }
 
 fn dry(world: &World, at: Vec2) -> bool {
@@ -380,6 +391,20 @@ mod tests {
         assert_eq!(*lines[1].last().unwrap(), to);
         assert!(lines[0].last().unwrap().x > -22.0 && lines[1][0].x < 22.0, "they go right up to the banks");
         assert!(lines[0].last().unwrap().x < -14.0 && lines[1][0].x > 14.0, "and stop there");
+    }
+
+    #[test]
+    fn a_path_connects_if_it_is_straight_or_goes_round_and_not_if_water_cuts_it() {
+        let (from, to) = (vec2(-100.0, 0.0), vec2(100.0, 0.0));
+        let mut world = dry_world();
+        assert!(connects(&world, from, to), "dry ground");
+        flood(&mut world, |p| p.distance(Vec2::ZERO) < 40.0);
+        assert!(connects(&world, from, to), "a lake it goes round");
+        let mut river = dry_world();
+        flood(&mut river, |p| p.x.abs() < 20.0);
+        assert!(!connects(&river, from, to), "a river across the whole map");
+        // One that ends in the water doesn't connect either, even though the part before it is dry.
+        assert!(!connects(&river, from, vec2(0.0, 0.0)));
     }
 
     #[test]
