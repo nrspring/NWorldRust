@@ -100,11 +100,20 @@ A **bridge** is a stone arch that carries a path across a river, which paths can
 
 ## Failures
 
-When a day ends, a rule lets **paths, roads and bridges fail**: each one that hasn't failed already has a random chance of failing on that day, **2% for a path, 0.1% for a road and 0.05% for a bridge** (a path or road that starts at the end of a bridge counts as a path or a road). A segment that goes both ways, or across a region, is one thing and fails once.
+When a day ends, a rule lets **paths, roads and bridges fail**: each one that hasn't failed already has a random chance of failing on that day, **2% for a path, 0.1% for a road and 0.05% for a bridge** (`PATH_FAILURE`, `ROAD_FAILURE` and `BRIDGE_FAILURE` in `failure.rs`) (a path or road that starts at the end of a bridge counts as a path or a road). A segment that goes both ways, or across a region, is one thing and fails once.
 
 - **What failing means.** The thing stays where it is, but it is **ruined**: a path or road is drawn dark and broken into pieces with gaps between them, and a bridge is darker and has **fallen in at the middle**. It is saved in the day as `failed` (the kind of thing and which one, or the bridge's id) and carries forward, so a ruin stays a ruin from day to day. Nothing uses paths, roads or bridges yet, so nothing else changes.
 - **Alerts.** Each thing that has failed is an alert ("A path has failed", "A road has failed", "A bridge has failed"), after the alerts about countries with no cities, in the order they failed. **Click one to go to the region where it failed**: the camera flies to the middle of that region (for a bridge, the region it stands in). With more alerts than fit under the newsreel, the mouse wheel over the alerts scrolls through them.
 - **Mending.** Build the same thing again and it is mended instead of there being a second one: the Paths and Roads tools take a click on a ruined segment (the prompt says "This path has failed. Click to build it again and mend it."), and the Bridge tool takes the same two places, for the usual cost (10, 100 or 1,000 coins). A bridge that has failed doesn't count as "already there" when planning a new one. A road built over a ruined path replaces it, and the ruin is removed with the path.
+
+## Region names
+
+Every region of the map, land or sea, can have a name. **Regions have no name to begin with**, and a region with no name has no label.
+
+- **Showing them.** Turn on **Region names** in the [overlays menu](#overlays-menu). Each region that has a name is then labeled at its middle, in white text with a dark edge so that it reads over any ground. It is off when the game starts.
+- **Naming a region.** With the overlay on, **click a region** (on the ground, not on a city, and when no tool is on) and a popup asks for its name: type it and press Enter (or click **Save name**). It says what kind of ground the region is (land, mountain, shallow water or deep water), and starts with the region's current name, so it works for renaming too. **Leave it blank to take the name away.** Esc closes it without changing anything. While the overlay is on, a note by the mouse says which region it is over, its name or "Unnamed region", and that clicking names it.
+- **Names.** Up to 32 characters: letters, numbers, spaces, hyphens, apostrophes and full stops. Two regions may have the same name. Names are saved the moment you save them.
+- **Saved.** The day's file has `region_names`: the region's number and its name, only for regions that have one. Names carry forward from day to day, and days saved before this load with none.
 
 ## Region ownership
 
@@ -121,6 +130,7 @@ There is not yet a way to give regions to a country by hand; `DaySave::set_regio
 The **Overlays** button in the footer, just left of the gear, opens a panel of layers drawn over the map, each with a switch. Click the button again, or press Esc, to close it. Only one of this and the options panel is open at a time.
 
 - **Country areas**: the regions that countries own, in their colors (see [Region ownership](#region-ownership)). **On** when the game starts; greyed out, with a note, for a map that has no regions. Like the options, it isn't saved.
+- **Region names**: the names the regions have been given, written on the map, and a way to change them (see [Region names](#region-names)). **Off** when the game starts.
 
 ## Options
 

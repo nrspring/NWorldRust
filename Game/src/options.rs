@@ -11,12 +11,14 @@ pub struct Options {
     pub show_regions: bool,
     /// Show the regions that countries own in their colors. Set in the overlays menu.
     pub show_country_areas: bool,
+    /// Show the names of the regions, and click a region to name it. Set in the overlays menu.
+    pub show_region_names: bool,
 }
 
 impl Default for Options {
     /// How the game starts: with the regions showing, and the countries' areas.
     fn default() -> Self {
-        Self { show_regions: true, show_country_areas: true }
+        Self { show_regions: true, show_country_areas: true, show_region_names: false }
     }
 }
 
@@ -144,5 +146,6 @@ mod tests {
     fn the_regions_and_the_countries_areas_show_when_the_game_starts() {
         assert!(Options::default().show_regions);
         assert!(Options::default().show_country_areas);
+        assert!(!Options::default().show_region_names, "the names start off: there are none to show");
     }
 }

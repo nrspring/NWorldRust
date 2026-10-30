@@ -8,7 +8,7 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
-use crate::{city, country, person, text, title_type};
+use crate::{city, country, person, region_name, text, title_type};
 
 const CARD_WIDTH: f32 = 520.0;
 const PADDING: f32 = 32.0;
@@ -35,6 +35,7 @@ pub enum Icon {
     Flag,
     Person,
     City,
+    Region,
 }
 
 struct Field {
@@ -106,6 +107,10 @@ fn check_country(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![country::clean_name(&typed[0])?])
 }
 
+fn check_region(typed: &[String]) -> Result<Vec<String>, String> {
+    Ok(vec![region_name::clean_name(&typed[0])?])
+}
+
 fn check_city(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![city::clean_name(&typed[0])?])
 }
@@ -136,6 +141,21 @@ impl Popup {
             "Save name",
             vec![Field::new("COUNTRY NAME", "e.g. Aldoria", country::MAX_NAME_CHARS)],
             check_country,
+        );
+        popup.fields[0].value = current.to_owned();
+        popup
+    }
+
+    /// Asks for the name of a region of `kind` (land, shallow water and so on), which starts as `current`, and can be
+    /// left blank, for no name.
+    pub fn region(current: &str, kind: &str) -> Self {
+        let mut popup = Self::new(
+            "Name this region",
+            format!("A region of {kind}. Leave the name blank for none."),
+            Icon::Region,
+            "Save name",
+            vec![Field::new("REGION NAME", "Leave blank for no name", region_name::MAX_NAME_CHARS)],
+            check_region,
         );
         popup.fields[0].value = current.to_owned();
         popup
@@ -483,6 +503,12 @@ pub fn draw_icon(icon: Icon, badge: Rect) {
                 style::rounded_rect(Rect::new(c.x + dx, c.y + 13.0 - h, w, h), 1.5, style::ACCENT);
             }
         }
+        Icon::Region => {
+            // A map pin: a ring on a point.
+            draw_circle(c.x, c.y - 4.0, 8.0, style::ACCENT);
+            draw_triangle(vec2(c.x - 6.0, c.y + 1.0), vec2(c.x + 6.0, c.y + 1.0), vec2(c.x, c.y + 14.0), style::ACCENT);
+            draw_circle(c.x, c.y - 4.0, 3.2, style::PANEL);
+        }
         Icon::Person => {
             draw_circle(c.x, c.y - 6.0, 7.0, style::ACCENT);
             style::rounded_rect(Rect::new(c.x - 12.0, c.y + 4.0, 24.0, 14.0), 7.0, style::ACCENT);
@@ -502,6 +528,13 @@ mod tests {
     fn the_country_check_tidies_the_name() {
         assert_eq!(check_country(&typed(&["  Old  Aldoria "])).unwrap(), typed(&["Old Aldoria"]));
         assert!(check_country(&typed(&[" "])).is_err());
+    }
+
+    #[test]
+    fn the_region_check_tidies_the_name_and_allows_none() {
+        assert_eq!(check_region(&typed(&["  The   Marches "])).unwrap(), typed(&["The Marches"]));
+        assert_eq!(check_region(&typed(&["  "])).unwrap(), typed(&[""]), "blank means no name");
+        assert!(check_region(&typed(&["Bad!"])).is_err());
     }
 
     #[test]

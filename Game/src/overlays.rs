@@ -77,7 +77,7 @@ impl OverlaysUi {
             self.panel = None;
             return;
         }
-        let rows = 1;
+        let rows = 2;
         let height = HEADER_HEIGHT + ROW_HEIGHT * rows as f32 + GAP;
         let panel = Rect::new(button.right() - PANEL_WIDTH, footer.y - GAP - height, PANEL_WIDTH, height);
         self.panel = Some(panel);
@@ -88,5 +88,8 @@ impl OverlaysUi {
         let row = Rect::new(panel.x + 8.0, panel.y + HEADER_HEIGHT, panel.w - 16.0, ROW_HEIGHT);
         let note = if has_regions { None } else { Some("This map has no regions.") };
         options::toggle(style, row, "Country areas", note, &mut options.show_country_areas, has_regions);
+        let names = Rect::new(row.x, row.y + ROW_HEIGHT, row.w, ROW_HEIGHT);
+        let names_note = if has_regions { Some("Click a region to name it.") } else { note };
+        options::toggle(style, names, "Region names", names_note, &mut options.show_region_names, has_regions);
     }
 }

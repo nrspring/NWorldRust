@@ -9,7 +9,8 @@ use crate::day::DaySave;
 use crate::ids::BridgeId;
 use crate::path::{Kind, PathPiece, PathSegment};
 
-/// The chance, as a fraction, that a path fails on a day: 2%.
+/// The chance, as a fraction, that a path fails on a day: 2%. The tests are written in terms of it, and one checks
+/// that it is this.
 pub const PATH_FAILURE: f32 = 0.02;
 /// The chance that a road fails on a day: 0.1%.
 pub const ROAD_FAILURE: f32 = 0.001;
@@ -105,15 +106,25 @@ mod tests {
     }
 
     #[test]
-    fn the_chances_are_2_percent_for_a_path_a_tenth_of_a_percent_for_a_road_and_a_twentieth_for_a_bridge() {
+    fn a_road_fails_a_tenth_of_a_percent_and_a_bridge_a_twentieth_and_a_path_by_its_own_rate() {
         let segment = PathSegment::to_edge(1, 2);
-        assert_eq!(Thing::Path(segment).chance(), 0.02);
+        assert_eq!(Thing::Path(segment).chance(), PATH_FAILURE);
         assert_eq!(Thing::Road(segment).chance(), 0.001);
         assert_eq!(Thing::Bridge(BridgeId::new()).chance(), 0.0005);
         // A path from a bridge is a path, and a road from a bridge a road.
         let link = BridgeLink { bridge: BridgeId::new(), end: End::First, region: 1, to: None };
-        assert_eq!((Thing::PathLink(link).chance(), Thing::RoadLink(link).chance()), (0.02, 0.001));
+        assert_eq!((Thing::PathLink(link).chance(), Thing::RoadLink(link).chance()), (PATH_FAILURE, 0.001));
         assert_eq!((Thing::PathLink(link).name(), Thing::RoadLink(link).name(), Thing::Bridge(link.bridge).name()), ("path", "road", "bridge"));
+    }
+
+    #[test]
+    fn the_chances_are_2_percent_for_a_path_a_tenth_of_a_percent_for_a_road_and_a_twentieth_for_a_bridge() {
+        assert_eq!((PATH_FAILURE, ROAD_FAILURE, BRIDGE_FAILURE), (0.02, 0.001, 0.0005));
+    }
+
+    #[test]
+    fn a_path_is_the_most_likely_to_fail_and_a_bridge_the_least() {
+        assert!(PATH_FAILURE > ROAD_FAILURE && ROAD_FAILURE > BRIDGE_FAILURE && BRIDGE_FAILURE > 0.0 && PATH_FAILURE < 1.0);
     }
 
     #[test]

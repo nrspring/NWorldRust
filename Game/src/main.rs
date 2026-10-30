@@ -34,6 +34,8 @@ mod overlays;
 mod person;
 mod placement;
 mod popup;
+mod region_labels;
+mod region_name;
 mod rules;
 mod rgb;
 mod saves;
@@ -186,6 +188,8 @@ async fn main() {
     let mut clicks = ClickTracker::default();
     // The popup for the name of the city being founded, and where it is going.
     let mut naming_city: Option<(Vec2, Popup)> = None;
+    // The popup for the name of the region that was clicked while the region names are showing, and its number.
+    let mut naming_region: Option<(u16, Popup)> = None;
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
@@ -228,6 +232,8 @@ async fn main() {
                 // A drop-down list was open, and is closed.
             } else if naming_city.is_some() {
                 naming_city = None;
+            } else if naming_region.is_some() {
+                naming_region = None;
             } else if path_tool.is_active() {
                 path_tool.escape();
             } else if road_tool.is_active() {
@@ -249,7 +255,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
@@ -350,10 +356,28 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 city_popup.open(id);
+            } else if options.show_region_names {
+                // With the region names showing, a click on a region is for naming it.
+                if let Some(region) = pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y)) {
+                    options_ui.close();
+                    overlays_ui.close();
+                    naming_region = Some((region.raw(), Popup::region(day.region_name(region.raw()).unwrap_or(""), region_name::kind_text(region))));
+                }
             }
         }
 
+        // The region under the mouse, for a note about it while the region names are showing.
+        let region_hover = if options.show_region_names && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+            pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y))
+        } else {
+            None
+        };
+
         set_default_camera();
+        // The names of the regions, over the map and under everything else.
+        if options.show_region_names {
+            region_labels::draw(&style, &day, &region_map, &world, &eye);
+        }
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
         let header = hud::header(&style, &day, !modal, camera.yaw());
         if !modal && is_mouse_button_pressed(MouseButton::Left) {
@@ -418,6 +442,8 @@ async fn main() {
             }
             if let Some(city) = hovered.and_then(|id| day.city(id)) {
                 hud::city_tooltip(&style, &day, city);
+            } else if let Some(region) = region_hover {
+                hud::region_tooltip(&style, day.region_name(region.raw()), region_name::kind_text(region));
             }
             // Only one of the two menus is open at a time: the one that was just opened wins.
             let (options_was_open, overlays_was_open) = (options_ui.is_open(), overlays_ui.is_open());
@@ -519,6 +545,24 @@ async fn main() {
         }
         if founded {
             naming_city = None;
+        }
+
+        let mut named = false;
+        if let Some((region, popup)) = naming_region.as_mut() {
+            if let Some(typed) = popup.show(&style) {
+                // Only keep the name if it is saved too.
+                let mut updated = day.clone();
+                match updated.set_region_name(*region, &typed[0]).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        named = true;
+                    }
+                    Err(message) => popup.fail(message),
+                }
+            }
+        }
+        if named {
+            naming_region = None;
         }
         next_frame().await;
     }

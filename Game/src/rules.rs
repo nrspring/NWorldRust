@@ -60,7 +60,7 @@ fn income(day: &mut DaySave) {
     }
 }
 
-/// Each path, road and bridge that hasn't failed already has a chance of failing: 2%, 0.1% and 0.05%. What fails is
+/// Each path, road and bridge that hasn't failed already has a chance of failing: `PATH_FAILURE`, 0.1% and 0.05%. What fails is
 /// marked as failed, which the alerts report, and it stays so until it is built again.
 fn failures(day: &mut DaySave) {
     fail_things(day, ids::random_unit);
@@ -114,7 +114,7 @@ mod tests {
     use super::*;
     use crate::calendar::Date;
     use crate::bridge::Spot;
-    use crate::failure::Thing;
+    use crate::failure::{Thing, PATH_FAILURE};
     use crate::path::{Kind, PathSegment};
 
     #[test]
@@ -199,8 +199,8 @@ mod tests {
             (day.is_failed(path), day.is_failed(road), day.is_failed(bridge))
         };
         assert_eq!(fails_with(0.5), (false, false, false), "nothing fails on most draws");
-        assert_eq!(fails_with(0.019), (true, false, false), "just under 2%: only a path");
-        assert_eq!(fails_with(0.021), (false, false, false), "just over 2%");
+        assert_eq!(fails_with(PATH_FAILURE * 0.99), (true, false, false), "just under the chance of a path: only a path");
+        assert_eq!(fails_with(PATH_FAILURE * 1.01), (false, false, false), "just over it");
         assert_eq!(fails_with(0.0009), (true, true, false), "under 0.1%: a path and a road");
         assert_eq!(fails_with(0.0004), (true, true, true), "under 0.05%: all three");
         assert_eq!(fails_with(0.0), (true, true, true));
@@ -235,7 +235,8 @@ mod tests {
         failures(&mut day);
         let count = |f: fn(&Thing) -> bool| day.failed.iter().filter(|t| f(t)).count();
         let (paths, roads, bridges) = (count(|t| matches!(t, Thing::Path(_))), count(|t| matches!(t, Thing::Road(_))), count(|t| matches!(t, Thing::Bridge(_))));
-        assert!((50..=160).contains(&paths), "about 100 of 5,000 paths: {paths}");
+        let (expected, spread) = (5_000.0 * PATH_FAILURE, (5_000.0 * PATH_FAILURE * (1.0 - PATH_FAILURE)).sqrt());
+        assert!((paths as f32 - expected).abs() < 6.0 * spread + 5.0, "about {expected} of 5,000 paths: {paths}");
         assert!((3..=45).contains(&roads), "about 20 of 20,000 roads: {roads}");
         assert!(bridges <= 40, "about 10 of 20,000 bridges: {bridges}");
     }

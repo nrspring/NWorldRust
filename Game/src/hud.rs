@@ -179,6 +179,22 @@ pub fn city_tooltip(style: &Style, day: &DaySave, city: &City) {
     }
 }
 
+/// A small note next to the mouse about the region it is over, when the region names are showing: its name, or that it
+/// has none, and that clicking it names it.
+pub fn region_tooltip(style: &Style, name: Option<&str>, kind: &str) {
+    let title = name.unwrap_or("Unnamed region");
+    let lines = [format!("A region of {kind}"), "Click to name it".to_owned()];
+    let width = lines.iter().map(|l| style.measure(l, 12, Weight::Regular).width).fold(style.measure(title, 15, Weight::Semibold).width, f32::max) + 32.0;
+    let height = 14.0 + 22.0 + lines.len() as f32 * 18.0 + 8.0;
+    let mouse = Vec2::from(mouse_position());
+    let panel = Rect::new((mouse.x + 20.0).min(screen_width() - width - MARGIN), (mouse.y + 20.0).min(screen_height() - height - FOOTER_HEIGHT - 8.0), width, height);
+    style::card(panel, 10.0, style::GLASS);
+    style.text_mid(title, panel.x + 16.0, panel.y + 14.0 + 10.0, 15, Weight::Semibold, if name.is_some() { style::TEXT } else { style::TEXT_MUTED });
+    for (k, line) in lines.iter().enumerate() {
+        style.text_mid(line, panel.x + 16.0, panel.y + 14.0 + 22.0 + 18.0 * (k as f32 + 0.5), 12, Weight::Regular, style::TEXT_MUTED);
+    }
+}
+
 /// The prompt for placing the first city, above the footer. `problem` says why the city can't go
 /// where the mouse is, if it can't.
 pub fn placing_prompt(style: &Style, problem: Option<&str>) {
