@@ -4,6 +4,11 @@ use nworld_map::regions::MOUNTAIN_HEIGHT;
 use nworld_map::world::{WaterClass, World};
 use serde::{Deserialize, Serialize};
 
+use crate::ids::{CityId, CountryId};
+use crate::text;
+
+/// The longest a city's name can be, in characters.
+pub const MAX_NAME_CHARS: usize = 32;
 /// The population of a new city.
 pub const INITIAL_POPULATION: u32 = 100;
 /// The most people a city can have.
@@ -17,9 +22,10 @@ pub const FULL_SIZE_POPULATION: u32 = 50_000;
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct City {
     /// Tells it apart from the other cities, and stays with it however it changes.
-    pub id: u32,
-    /// The name of the country it belongs to.
-    pub country: String,
+    pub id: CityId,
+    /// The id of the country it belongs to.
+    pub country: CountryId,
+    pub name: String,
     /// Where it stands on the map, in meters.
     pub x: f32,
     pub z: f32,
@@ -34,6 +40,11 @@ impl City {
     pub fn size(&self) -> f32 {
         size_of(self.population)
     }
+}
+
+/// A city name as typed, tidied up. An error says what is wrong with it.
+pub fn clean_name(typed: &str) -> Result<String, String> {
+    text::clean(typed, MAX_NAME_CHARS, "a name for your city")
 }
 
 /// The size, from 0 to 1, of a city of `population` people. See [`City::size`].
@@ -85,6 +96,13 @@ mod tests {
         for population in [50_000, 60_000, 75_000, MAX_POPULATION] {
             assert_eq!(size_of(population), 1.0, "{population}");
         }
+    }
+
+    #[test]
+    fn a_city_name_is_tidied_and_must_be_there() {
+        assert_eq!(clean_name("  Port   Aldor ").unwrap(), "Port Aldor");
+        assert_eq!(clean_name("").unwrap_err(), "Enter a name for your city.");
+        assert!(clean_name(&"a".repeat(MAX_NAME_CHARS + 1)).is_err());
     }
 
     #[test]

@@ -25,7 +25,9 @@ The gear button beside the day opens the options panel. Click it again, or press
 
 ## Cities
 
-A city belongs to a country, stands on the map, and has a population from 100 up to 100,000. Once the game has a country and a person but no city, it asks you to place the first one: move the mouse over the map, where a ring and a preview of the starting buildings show where it would go (green if it can, red if not, with the reason in the prompt), and click on dry land that is not up in the mountains. A drag still moves the map, so only a click places it. The city starts with 100 people, belongs to the first country, is reported in the newsreel, and the camera flies to it.
+A city has a name, belongs to a country, stands on the map, and has a population from 100 up to 100,000. Once the game has a country and a person but no city, it asks you to place the first one: move the mouse over the map, where a ring and a preview of the starting buildings show where it would go (green if it can, red if not, with the reason in the prompt), and click on dry land that is not up in the mountains. A drag still moves the map, so only a click places it. A popup then asks for the city's name (Esc gives up and goes back to placing it). The city starts with 100 people, belongs to the first country, is reported in the newsreel, and the camera flies to it. Two cities can't have the same name.
+
+**Hover over a city** to see a small panel with its name, its country and its population (with commas, like 12,345). A city counts as under the mouse when the mouse is over its buildings or just beside them, with a little extra room so a far-off city is not hard to point at.
 
 A city is drawn in 3D, like the trees, and its size follows its population: size goes by how many times the population has doubled, so each tenfold, 100 to 1,000 to 10,000, is the same step up. **A city stops growing in size at 50,000 people.** The population can go on up to 100,000, but the city looks the same from 50,000 up. A city grows outward from where it was placed, so the buildings it already has stay where they are. Buildings stay off the water and the mountains.
 
@@ -36,7 +38,8 @@ A city is drawn in 3D, like the trees, and its size follows its population: size
 This is all in the game (`city*.rs`); the map and the generic map view know nothing about cities. A city is saved in the day's file, and carries forward:
 
 ```json
-"cities": [ { "id": 1, "country": "Aldoria", "x": -120.0, "z": 441.4, "population": 100 } ]
+"cities": [ { "id": "47067f7a-fdac-4040-b652-873cebb0c53d", "country": "3f2b8c1e-5a47-4d0e-9b6a-7c1d2e8f4a90", "name": "Port Aldor",
+              "x": -120.0, "z": 441.4, "population": 100 } ]
 ```
 
 ## Calendar and saved game
@@ -48,22 +51,25 @@ The saved game is in the `Saves` folder of the data folder (`C:\Users\nrspring\O
 - `Saves\game.json` is the main file. It holds the current day, which tells the game which day to load at startup.
 - `Saves\Days\year-0001_month-01_day-01.json` is the state of one day. Every day gets a file, and they are kept forever for statistics. Names sort in date order.
 
-With no `game.json`, the game starts a new game: the day is set to 1-1-1 and `game.json` and the first day's file are written. A file that exists but can't be read stops the game with a message and is never overwritten. All files are plain JSON with a version number, and are written through a temporary file so a crash can't leave half a file.
+With no `game.json`, the game starts a new game: the day is set to 1-1-1 and `game.json` and the first day's file are written. A file that exists but can't be read stops the game with a message and is never overwritten. All files are plain JSON with a version number (a day's file is version 2, the one that refers to everything by GUID; earlier day files named things by name and can't be loaded), and are written through a temporary file so a crash can't leave half a file.
 
 ## Countries and the newsreel
 
 A day's file also holds the countries, the people and that day's newsreel:
 
 ```json
-"countries": [ { "name": "Aldoria" } ],
-"people": [ { "name": "Mara Voss", "title": "President", "country": "Aldoria" } ],
+"countries": [ { "id": "3f2b8c1e-5a47-4d0e-9b6a-7c1d2e8f4a90", "name": "Aldoria" } ],
+"people": [ { "id": "9a1c0d52-7be3-4f68-a2c4-1d5e8b3f6a07", "name": "Mara Voss", "title": "President",
+              "country": "3f2b8c1e-5a47-4d0e-9b6a-7c1d2e8f4a90" } ],
 "newsreel": [
-  { "type": "country_founded", "country": "Aldoria" },
-  { "type": "person_joined", "person": "Mara Voss", "title": "President", "country": "Aldoria" }
+  { "subject": "3f2b8c1e-5a47-4d0e-9b6a-7c1d2e8f4a90", "type": "country_founded" },
+  { "subject": "9a1c0d52-7be3-4f68-a2c4-1d5e8b3f6a07", "type": "person_joined" },
+  { "subject": "47067f7a-fdac-4040-b652-873cebb0c53d", "type": "city_founded", "population": 100 }
 ]
 ```
 
-- **Countries and people** carry forward: the next day's file starts with the same ones. The first country is the player's. Each person belongs to a country, by its name.
+- **Countries and people** carry forward: the next day's file starts with the same ones. The first country is the player's. Each person and each city belongs to a country by its id.
+- **Ids:** every country, person and city has a GUID, and things refer to one another by it, never by name. A person's country is the country's GUID, and every news item stores the GUID of its **subject**, the primary thing it is about (the country founded, the person who joined, the city), in a `subject` field. The subject is only stored, for statistics: the newsreel never shows it, and its headlines look the names up when they are shown, so a name can change without breaking anything. Each kind of id is its own type in the code, so a country's id can't be used for a city. Ids are random GUIDs (version 4 UUIDs), made when the thing is founded.
 - **The newsreel** belongs to its day alone: the next day starts with an empty one. Each item has a `type`, so statistics can count them by kind. Things like a country being founded are added to it, and it shows in the panel at the top right.
 
 If the saved game has no country, a popup asks for the name of a new one when the game starts. Type the name and press Enter (or click **Found country**). The country is saved, and the day's newsreel reports it.

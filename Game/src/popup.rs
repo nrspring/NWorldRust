@@ -4,7 +4,7 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
-use crate::{country, person, text};
+use crate::{city, country, person, text};
 
 const CARD_WIDTH: f32 = 520.0;
 const PADDING: f32 = 32.0;
@@ -26,6 +26,7 @@ type Check = fn(&[String]) -> Result<Vec<String>, String>;
 enum Icon {
     Flag,
     Person,
+    City,
 }
 
 struct Field {
@@ -60,6 +61,10 @@ fn check_country(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![country::clean_name(&typed[0])?])
 }
 
+fn check_city(typed: &[String]) -> Result<Vec<String>, String> {
+    Ok(vec![city::clean_name(&typed[0])?])
+}
+
 fn check_person(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![person::clean_name(&typed[0])?, person::clean_title(&typed[1])?])
 }
@@ -74,6 +79,18 @@ impl Popup {
             "Found country",
             vec![Field::new("COUNTRY NAME", "e.g. Aldoria", country::MAX_NAME_CHARS)],
             check_country,
+        )
+    }
+
+    /// Asks for the name of the city being founded.
+    pub fn city() -> Self {
+        Self::new(
+            "Name your city",
+            "Choose a name for the city you are founding.".to_owned(),
+            Icon::City,
+            "Found city",
+            vec![Field::new("CITY NAME", "e.g. Port Aldor", city::MAX_NAME_CHARS)],
+            check_city,
         )
     }
 
@@ -249,6 +266,12 @@ fn draw_icon(icon: Icon, badge: Rect) {
             draw_line(pole_x, top, pole_x, bottom, 2.5, style::ACCENT);
             draw_triangle(vec2(pole_x, top), vec2(pole_x + 19.0, top + 6.0), vec2(pole_x, top + 12.0), style::ACCENT);
         }
+        Icon::City => {
+            // A little town: three houses of different heights on a line.
+            for (dx, w, h) in [(-11.0, 9.0, 12.0), (-1.5, 10.0, 19.0), (9.0, 8.0, 9.0)] {
+                style::rounded_rect(Rect::new(c.x + dx, c.y + 13.0 - h, w, h), 1.5, style::ACCENT);
+            }
+        }
         Icon::Person => {
             draw_circle(c.x, c.y - 6.0, 7.0, style::ACCENT);
             style::rounded_rect(Rect::new(c.x - 12.0, c.y + 4.0, 24.0, 14.0), 7.0, style::ACCENT);
@@ -268,6 +291,12 @@ mod tests {
     fn the_country_check_tidies_the_name() {
         assert_eq!(check_country(&typed(&["  Old  Aldoria "])).unwrap(), typed(&["Old Aldoria"]));
         assert!(check_country(&typed(&[" "])).is_err());
+    }
+
+    #[test]
+    fn the_city_check_tidies_the_name() {
+        assert_eq!(check_city(&typed(&["  Port  Aldor "])).unwrap(), typed(&["Port Aldor"]));
+        assert!(check_city(&typed(&[""])).is_err());
     }
 
     #[test]

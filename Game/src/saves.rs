@@ -24,7 +24,10 @@ use crate::day::DaySave;
 const SAVES_DIR: &str = "Saves";
 const DAYS_DIR: &str = "Days";
 const MAIN_FILE: &str = "game.json";
-pub const VERSION: u32 = 1;
+/// The version of the main file, and of a day's file. A day's file is version 2: version 1 named
+/// the things that belong to a country by its name, and version 2 refers to everything by id.
+const MAIN_VERSION: u32 = 1;
+pub const DAY_VERSION: u32 = 2;
 
 /// The main file: what the game needs to know to carry on where it left off.
 #[derive(Serialize, Deserialize)]
@@ -74,8 +77,8 @@ impl Saves {
     pub fn open(&self, map: &str) -> Result<Opened, String> {
         let (date, new_game) = match read_json::<MainFile>(&self.main_path())? {
             Some(main) => {
-                if main.version != VERSION {
-                    return Err(format!("{} is version {}, and this game reads version {VERSION}.", self.main_path().display(), main.version));
+                if main.version != MAIN_VERSION {
+                    return Err(format!("{} is version {}, and this game reads version {MAIN_VERSION}.", self.main_path().display(), main.version));
                 }
                 if !main.date.is_valid() {
                     return Err(format!("{} says the day is {}, which isn't a day of the calendar.", self.main_path().display(), main.date));
@@ -86,8 +89,8 @@ impl Saves {
         };
 
         let day = match read_json::<DaySave>(&self.day_path(date))? {
-            Some(day) if day.version != VERSION => {
-                return Err(format!("{} is version {}, and this game reads version {VERSION}.", self.day_path(date).display(), day.version));
+            Some(day) if day.version != DAY_VERSION => {
+                return Err(format!("{} is version {}, and this game reads version {DAY_VERSION}.", self.day_path(date).display(), day.version));
             }
             Some(day) => day,
             None => {
@@ -99,7 +102,7 @@ impl Saves {
         };
         if new_game {
             // After the day's save, so a game that stopped in between starts over cleanly.
-            write_json(&self.main_path(), &MainFile { version: VERSION, date })?;
+            write_json(&self.main_path(), &MainFile { version: MAIN_VERSION, date })?;
         }
         Ok(Opened { day, new_game })
     }
@@ -171,7 +174,7 @@ mod tests {
         let root = TempRoot::new();
         let saves = saves(&root);
         let date = Date { year: 2, month: 7, day: 13 };
-        write_json(&saves.main_path(), &MainFile { version: VERSION, date }).unwrap();
+        write_json(&saves.main_path(), &MainFile { version: MAIN_VERSION, date }).unwrap();
         write_json(&saves.day_path(date), &DaySave::new(date, "Assets/later.nworld")).unwrap();
 
         let opened = saves.open(MAP).unwrap();
@@ -233,7 +236,7 @@ mod tests {
     fn a_day_that_is_not_in_the_calendar_is_an_error() {
         let root = TempRoot::new();
         let saves = saves(&root);
-        write_json(&saves.main_path(), &MainFile { version: VERSION, date: Date { year: 1, month: 11, day: 1 } }).unwrap();
+        write_json(&saves.main_path(), &MainFile { version: MAIN_VERSION, date: Date { year: 1, month: 11, day: 1 } }).unwrap();
         assert!(saves.open(MAP).unwrap_err().contains("isn't a day of the calendar"));
     }
 
@@ -241,7 +244,7 @@ mod tests {
     fn a_file_from_a_newer_version_is_an_error() {
         let root = TempRoot::new();
         let saves = saves(&root);
-        write_json(&saves.main_path(), &MainFile { version: VERSION + 1, date: Date::FIRST }).unwrap();
+        write_json(&saves.main_path(), &MainFile { version: MAIN_VERSION + 1, date: Date::FIRST }).unwrap();
         assert!(saves.open(MAP).unwrap_err().contains("version"));
     }
 

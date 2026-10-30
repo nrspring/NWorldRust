@@ -10,8 +10,10 @@ use nworld_map::world::World;
 use nworld_view::render::{self, AMBIENT, BACKGROUND, SUN_COLOR};
 
 use crate::city::{City, INITIAL_POPULATION};
+use crate::ids::{CityId, CountryId};
 use crate::city_layout;
 use crate::city_mesh;
+use crate::city_pick::{self, Bounds};
 
 const VERTEX: &str = r#"#version 100
 #ifdef GL_ES
@@ -93,16 +95,31 @@ void main() {
 }
 "#;
 
-/// The meshes of `city`'s buildings on `world`.
-fn meshes(city: &City, world: &World) -> Vec<Mesh> {
-    city_mesh::build(&city_layout::buildings(city, world)).into_iter().map(|g| Mesh { vertices: g.vertices, indices: g.indices, texture: None }).collect()
+/// How much bigger than a city, as a share of how far away it is, it counts as being under the mouse.
+/// A far city is a few pixels across, and would be hard to point at otherwise.
+const HOVER_SLOP: f32 = 0.012;
+
+/// What is drawn of one city: its meshes, the size they were made for as its bits, and the space it takes.
+struct Shape {
+    size: u32,
+    meshes: Vec<Mesh>,
+    bounds: Option<Bounds>,
+}
+
+/// The shape of `city` on `world`.
+fn shape(city: &City, world: &World) -> Shape {
+    let buildings = city_layout::buildings(city, world);
+    Shape {
+        size: city.size().to_bits(),
+        bounds: city_pick::bounds(vec2(city.x, city.z), &buildings),
+        meshes: city_mesh::build(&buildings).into_iter().map(|g| Mesh { vertices: g.vertices, indices: g.indices, texture: None }).collect(),
+    }
 }
 
 pub struct CityRenderer {
     material: Material,
-    /// The shapes of each city by its id, with the size they were made for, as its bits. A big city is
-    /// in several meshes.
-    shapes: HashMap<u32, (u32, Vec<Mesh>)>,
+    /// The shapes of each city, by its id.
+    shapes: HashMap<CityId, Shape>,
 }
 
 impl CityRenderer {
@@ -145,26 +162,41 @@ impl CityRenderer {
         for city in cities {
             // The shapes only change when the city's size does: a city with more people than
             // it needs to be full size looks the same.
-            let size = city.size().to_bits();
-            let current = self.shapes.get(&city.id).is_some_and(|(made_for, _)| *made_for == size);
+            let current = self.shapes.get(&city.id).is_some_and(|shape| shape.size == city.size().to_bits());
             if !current {
-                self.shapes.insert(city.id, (size, meshes(city, world)));
+                self.shapes.insert(city.id, shape(city, world));
             }
-            for mesh in &self.shapes[&city.id].1 {
+            for mesh in &self.shapes[&city.id].meshes {
                 draw_mesh(mesh);
             }
         }
         gl_use_default_material();
     }
 
+    /// The city, of `cities`, that the ray from the camera through the mouse (as `nworld_view::mouse_ray`
+    /// gives it) meets first, if any. It only knows the cities that have been drawn.
+    pub fn city_under(&self, ray: (Vec3, Vec3), cities: &[City]) -> Option<CityId> {
+        cities
+            .iter()
+            .filter_map(|city| {
+                let bounds = self.shapes.get(&city.id)?.bounds?;
+                let middle = vec3(city.x, (bounds.low + bounds.high) * 0.5, city.z);
+                let slop = ray.0.distance(middle) * HOVER_SLOP;
+                city_pick::hit(ray.0, ray.1, &bounds, slop).map(|distance| (distance, city.id))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, id)| id)
+    }
+
     /// Shows where a new city would go if it were placed at `at`: the buildings it would start with,
     /// tinted green if it can go there and red if not, inside a ring and over a marker post that stay
     /// easy to see from far away.
     pub fn draw_site(&mut self, world: &World, at: Vec2, can_build: bool, camera: &Camera3D) {
-        let city = City { id: 0, country: String::new(), x: at.x, z: at.y, population: INITIAL_POPULATION };
+        // The preview is not a real city, so it has ids that are never any city's.
+        let city = City { id: CityId::from_u128(0), country: CountryId::from_u128(0), name: String::new(), x: at.x, z: at.y, population: INITIAL_POPULATION };
         let tint = if can_build { vec4(0.3, 0.9, 0.4, 0.45) } else { vec4(0.95, 0.3, 0.3, 0.6) };
         self.use_material(camera, tint);
-        for mesh in &meshes(&city, world) {
+        for mesh in &shape(&city, world).meshes {
             draw_mesh(mesh);
         }
         gl_use_default_material();

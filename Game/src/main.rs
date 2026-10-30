@@ -8,10 +8,12 @@ mod camera;
 mod city;
 mod city_layout;
 mod city_mesh;
+mod city_pick;
 mod city_view;
 mod country;
 mod day;
 mod hud;
+mod ids;
 mod newsreel;
 mod options;
 mod person;
@@ -28,7 +30,7 @@ use macroquad::prelude::*;
 use nworld_map::storage;
 use nworld_map::world::World;
 use nworld_view::style::{Style, Weight};
-use nworld_view::{pick_terrain, MapView};
+use nworld_view::{mouse_ray, pick_terrain, MapView};
 
 use autosave::Autosave;
 use camera::GameCamera;
@@ -146,8 +148,8 @@ async fn main() {
     let mut asking: Option<(Asking, Popup)> = None;
     let mut cities = CityRenderer::new();
     let mut clicks = ClickTracker::default();
-    // Why the first city couldn't be placed, if the click was fine but saving it wasn't.
-    let mut placing_error: Option<String> = None;
+    // The popup for the name of the city being founded, and where it is going.
+    let mut naming_city: Option<(Vec2, Popup)> = None;
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut autosave = Autosave::new(&day, get_time());
@@ -159,9 +161,11 @@ async fn main() {
             break;
         }
         if is_key_pressed(KeyCode::Escape) {
-            // Esc first closes the options, and only then quits.
+            // Esc first closes the options, or gives up on naming a city, and only then quits.
             if options_ui.is_open() {
                 options_ui.close();
+            } else if naming_city.is_some() {
+                naming_city = None;
             } else {
                 break;
             }
@@ -177,7 +181,8 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        if asking.is_none() {
+        let modal = asking.is_some() || naming_city.is_some();
+        if !modal {
             camera.update(&world, dt, !options_ui.has_mouse(Vec2::from(mouse_position())));
         }
         let eye = camera.camera(&world);
@@ -185,7 +190,7 @@ async fn main() {
         view.draw(&world, &eye, time);
 
         // Once there is a country and a person, the first city has to be placed.
-        let placing = asking.is_none() && day.cities.is_empty();
+        let placing = !modal && day.cities.is_empty();
         let mouse = Vec2::from(mouse_position());
         let over_interface = options_ui.has_mouse(mouse);
         let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
@@ -196,18 +201,13 @@ async fn main() {
         }
         if clicks.update(placing && !over_interface) {
             if let (Some(at), None) = (site, problem) {
-                // Only keep the city if it is saved too.
-                let mut updated = day.clone();
-                match updated.found_city(at.x, at.y).and_then(|()| autosave.save_now(&saves, &updated)) {
-                    Ok(()) => {
-                        day = updated;
-                        placing_error = None;
-                        camera.fly_to(at, NEW_CITY_VIEW_DISTANCE);
-                    }
-                    Err(message) => placing_error = Some(message),
-                }
+                // The city is founded once it has a name.
+                naming_city = Some((at, Popup::city()));
             }
         }
+
+        // The city under the mouse, if there is one, which the tooltip tells about.
+        let hovered = if modal || naming_city.is_some() || over_interface { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
 
         set_default_camera();
         let bar = hud::top_bar(&style, day.date);
@@ -215,11 +215,14 @@ async fn main() {
         if let Some(message) = autosave.error() {
             hud::save_failed(&style, message);
         }
-        if asking.is_none() {
-            hud::newsreel(&style, day.date, &day.newsreel);
+        if !modal {
+            hud::newsreel(&style, &day);
             hud::help(&style);
-            if asking.is_none() && day.cities.is_empty() {
-                hud::placing_prompt(&style, problem.or(placing_error.as_deref()));
+            if placing {
+                hud::placing_prompt(&style, problem);
+            }
+            if let Some(city) = hovered.and_then(|id| day.city(id)) {
+                hud::city_tooltip(&style, &day, city);
             }
             options_ui.show(&style, bar, &mut options, view.has_regions());
         }
@@ -240,6 +243,25 @@ async fn main() {
         }
         if answered {
             asking = None;
+        }
+
+        let mut founded = false;
+        if let Some((at, popup)) = naming_city.as_mut() {
+            if let Some(typed) = popup.show(&style) {
+                // Only keep the city if it is saved too.
+                let mut updated = day.clone();
+                match updated.found_city(&typed[0], at.x, at.y).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        camera.fly_to(*at, NEW_CITY_VIEW_DISTANCE);
+                        founded = true;
+                    }
+                    Err(message) => popup.fail(message),
+                }
+            }
+        }
+        if founded {
+            naming_city = None;
         }
         next_frame().await;
     }

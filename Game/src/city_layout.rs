@@ -157,7 +157,7 @@ const SLATE: [[u8; 3]; 2] = [[92, 98, 110], [82, 88, 100]];
 /// nave and its tower.
 pub fn buildings(city: &City, world: &World) -> Vec<Building> {
     let wanted = building_count(city.size());
-    let seed = city.id.wrapping_add(1);
+    let seed = city.id.seed().wrapping_add(1);
     let grid_turn = hash(seed, 0, 0, 0) * TAU;
     let centre = vec2(city.x, city.z);
     // The city stays in the region it was founded in. A map with no regions has no such limit.
@@ -338,10 +338,11 @@ fn clear_ground(world: &World, at: Vec2, yaw: f32, ground: (Vec2, Vec2), region:
 mod tests {
     use super::*;
     use crate::city::{FULL_SIZE_POPULATION, INITIAL_POPULATION, MAX_POPULATION};
+    use crate::ids::{CityId, CountryId};
     use crate::test_support;
 
     fn city_at(at: Vec2, population: u32) -> City {
-        City { id: 7, country: "Aldoria".to_owned(), x: at.x, z: at.y, population }
+        City { id: CityId::from_u128(7), country: CountryId::from_u128(1), name: "Test".to_owned(), x: at.x, z: at.y, population }
     }
 
     /// The middle of the map's one continent, where there is room for the biggest city. The map has

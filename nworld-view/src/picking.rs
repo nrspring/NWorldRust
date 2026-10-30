@@ -3,18 +3,23 @@
 use macroquad::prelude::*;
 use nworld_map::world::{World, CELL_SIZE};
 
-/// The world x and z under the mouse, found by following the view ray down to the surface
-/// (the sea counts as surface). `None` if the ray never reaches it.
-pub fn pick_terrain(camera: &Camera3D, world: &World, mouse: Vec2) -> Option<Vec2> {
-    const MAX_DISTANCE: f32 = 40_000.0;
+/// The ray from the camera through the mouse, as where it starts and which way it points (a unit
+/// vector), for finding what is under the mouse.
+pub fn mouse_ray(camera: &Camera3D, mouse: Vec2) -> (Vec3, Vec3) {
     let ndc = vec2(2.0 * mouse.x / screen_width() - 1.0, 1.0 - 2.0 * mouse.y / screen_height());
     let inverse = camera.matrix().inverse();
     let unproject = |z: f32| {
         let p = inverse * vec4(ndc.x, ndc.y, z, 1.0);
         p.truncate() / p.w
     };
-    let origin = camera.position;
-    let dir = (unproject(1.0) - unproject(-1.0)).normalize();
+    (camera.position, (unproject(1.0) - unproject(-1.0)).normalize())
+}
+
+/// The world x and z under the mouse, found by following the view ray down to the surface
+/// (the sea counts as surface). `None` if the ray never reaches it.
+pub fn pick_terrain(camera: &Camera3D, world: &World, mouse: Vec2) -> Option<Vec2> {
+    const MAX_DISTANCE: f32 = 40_000.0;
+    let (origin, dir) = mouse_ray(camera, mouse);
 
     let above = |t: f32| {
         let p = origin + dir * t;

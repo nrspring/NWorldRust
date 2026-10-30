@@ -21,7 +21,7 @@ pub mod sulphur;
 pub mod terrain_mesh;
 
 pub use map_view::{view_distance, MapView};
-pub use picking::pick_terrain;
+pub use picking::{mouse_ray, pick_terrain};
 
 /// The vertical field of view of the 3D camera, in degrees. The terrain's level of detail depends
 /// on it, so cameras that draw a `MapView` should use it.

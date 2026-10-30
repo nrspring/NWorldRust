@@ -884,6 +884,7 @@ dependencies = [
  "nworld-view",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ids::CountryId;
 use crate::text;
 
 /// The longest a country's name can be, in characters.
@@ -9,6 +10,9 @@ pub const MAX_NAME_CHARS: usize = 32;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Country {
+    /// Tells it apart from every other country, whatever it is called. Everything that belongs to
+    /// the country refers to it by this.
+    pub id: CountryId,
     pub name: String,
 }
 
