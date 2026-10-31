@@ -1,5 +1,6 @@
-//! Drawing the names of the regions, rivers and lakes on the map, over everything else: a region's at its middle, and
-//! a river's or lake's at a point of its water near its middle. Anything with no name has no label.
+//! Drawing the names of the regions, rivers, lakes and places on the map, over everything else: a region's at its
+//! middle, a river's or lake's at a point of its water near its middle, and a place's at the point it was put.
+//! Anything with no name has no label.
 
 use macroquad::prelude::*;
 use nworld_map::region_map::RegionMap;
@@ -40,6 +41,22 @@ pub fn draw_rivers(style: &Style, day: &DaySave, bodies: &WaterBodies, world: &W
 /// The same for the lakes, in a paler blue-green so that the two can be told apart.
 pub fn draw_lakes(style: &Style, day: &DaySave, bodies: &WaterBodies, world: &World, camera: &Camera3D) {
     draw_waters(style, day.lake_names.iter().map(|n| (n.lake, n.name.as_str())), bodies, world, camera, Color::new(0.80, 1.0, 0.92, 1.0));
+}
+
+/// Draws the name of each place of `day`, in a pale gold.
+pub fn draw_places(style: &Style, day: &DaySave, world: &World, camera: &Camera3D) {
+    for place in &day.places {
+        draw_label(style, world, camera, vec2(place.x, place.z), &place.name, Color::new(1.0, 0.91, 0.68, 1.0));
+    }
+}
+
+/// The place whose label is under `mouse` (in pixels), if there is one; the one drawn last if labels overlap.
+pub fn place_under(style: &Style, day: &DaySave, world: &World, camera: &Camera3D, mouse: Vec2) -> Option<u32> {
+    day.places.iter().rev().find(|place| {
+        let Some(at) = to_screen(camera, vec3(place.x, world.surface_height(place.x, place.z) + HOLD, place.z)) else { return false };
+        let width = style.measure(&place.name, TEXT_SIZE, Weight::Semibold).width;
+        Rect::new(at.x - width * 0.5 - 4.0, at.y - 11.0, width + 8.0, 22.0).contains(mouse)
+    }).map(|place| place.id)
 }
 
 /// Draws the names of the bodies of water given as their numbers and names.

@@ -37,6 +37,7 @@ mod popup;
 mod region_labels;
 mod region_name;
 mod lake_name;
+mod place;
 mod river_name;
 mod rules;
 mod rgb;
@@ -196,6 +197,8 @@ async fn main() {
     let mut naming_region: Option<(u16, Popup)> = None;
     // The same for a river or a lake: its number, whether it is a lake, and the popup.
     let mut naming_water: Option<(u32, bool, Popup)> = None;
+    // The same for a place: its number if it is already there, where it goes if it is new, and the popup.
+    let mut naming_place: Option<(Option<u32>, Vec2, Popup)> = None;
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
@@ -242,6 +245,8 @@ async fn main() {
                 naming_region = None;
             } else if naming_water.is_some() {
                 naming_water = None;
+            } else if naming_place.is_some() {
+                naming_place = None;
             } else if path_tool.is_active() {
                 path_tool.escape();
             } else if road_tool.is_active() {
@@ -263,7 +268,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
@@ -319,9 +324,15 @@ async fn main() {
         // The city under the mouse, if there is one, which the tooltip tells about.
         let hovered = if modal || naming_city.is_some() || over_interface || path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
 
+        // The label of a place under the mouse while the named places are showing.
+        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+            region_labels::place_under(&style, &day, &world, &eye, mouse)
+        } else {
+            None
+        };
         // The river or lake under the mouse while the named places are showing, with a little give so that a thin river can be
         // hit when the camera is far away.
-        let water_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 1.5, 40.0);
             pick_terrain(&eye, &world, mouse).and_then(|at| water_bodies.near(at.x, at.y, reach))
         } else {
@@ -373,6 +384,12 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 city_popup.open(id);
+            } else if let Some(id) = place_hover {
+                // With the named places showing, a click on the label of a place is for changing it.
+                options_ui.close();
+                overlays_ui.close();
+                let at = day.place(id).map_or(Vec2::ZERO, |p| vec2(p.x, p.z));
+                naming_place = Some((Some(id), at, Popup::place(day.place(id).map(|p| p.name.as_str()))));
             } else if let Some(id) = water_hover {
                 // With the names of rivers or lakes showing, a click on one is for naming it.
                 options_ui.close();
@@ -386,6 +403,13 @@ async fn main() {
                     options_ui.close();
                     overlays_ui.close();
                     naming_region = Some((region.raw(), Popup::region(day.region_name(region.raw()).unwrap_or(""), region_name::kind_text(region))));
+                }
+            } else if options.show_named_places {
+                // Anywhere else on the map, with the named places showing, a click is for adding a place there.
+                if let Some(at) = pick_terrain(&eye, &world, mouse) {
+                    options_ui.close();
+                    overlays_ui.close();
+                    naming_place = Some((None, at, Popup::place(None)));
                 }
             }
         }
@@ -406,6 +430,7 @@ async fn main() {
         if options.show_named_places {
             region_labels::draw_rivers(&style, &day, &water_bodies, &world, &eye);
             region_labels::draw_lakes(&style, &day, &water_bodies, &world, &eye);
+            region_labels::draw_places(&style, &day, &world, &eye);
         }
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
         let header = hud::header(&style, &day, !modal, camera.yaw());
@@ -617,6 +642,28 @@ async fn main() {
         }
         if named {
             naming_water = None;
+        }
+
+        let mut named = false;
+        if let Some((existing, at, popup)) = naming_place.as_mut() {
+            if let Some(typed) = popup.show(&style) {
+                // Only keep the place if it is saved too.
+                let mut updated = day.clone();
+                let set = match existing {
+                    Some(id) => updated.set_place_name(*id, &typed[0]),
+                    None => updated.add_place(*at, &typed[0]).map(|_| ()),
+                };
+                match set.and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        named = true;
+                    }
+                    Err(message) => popup.fail(message),
+                }
+            }
+        }
+        if named {
+            naming_place = None;
         }
         next_frame().await;
     }

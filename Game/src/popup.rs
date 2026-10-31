@@ -8,7 +8,7 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
-use crate::{city, country, person, region_name, text, title_type};
+use crate::{city, country, person, place, region_name, text, title_type};
 
 const CARD_WIDTH: f32 = 520.0;
 const PADDING: f32 = 32.0;
@@ -112,6 +112,10 @@ fn check_region(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![region_name::clean_name(&typed[0])?])
 }
 
+fn check_place(typed: &[String]) -> Result<Vec<String>, String> {
+    Ok(vec![place::clean_name(&typed[0])?])
+}
+
 fn check_city(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![city::clean_name(&typed[0])?])
 }
@@ -174,6 +178,25 @@ impl Popup {
             check_region,
         );
         popup.fields[0].value = current.to_owned();
+        popup
+    }
+
+    /// Asks for the name of a place: a new one if `current` is `None`, and otherwise the place called that, which can
+    /// be renamed or, with a blank name, removed.
+    pub fn place(current: Option<&str>) -> Self {
+        let (title, about, button) = match current {
+            None => ("Name this place", "A strait, a plain, a bay: anything the map doesn't name.", "Add place"),
+            Some(_) => ("Edit this place", "Change its name, or leave the name blank to remove it.", "Save name"),
+        };
+        let mut popup = Self::new(
+            title,
+            about.to_owned(),
+            Icon::Region,
+            button,
+            vec![Field::new("PLACE NAME", "e.g. The Gallus Strait", place::MAX_NAME_CHARS)],
+            check_place,
+        );
+        popup.fields[0].value = current.unwrap_or("").to_owned();
         popup
     }
 

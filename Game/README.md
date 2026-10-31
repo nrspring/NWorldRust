@@ -125,6 +125,15 @@ Rivers and lakes (the **named places**) can be named in the same way as regions,
 - **Names.** The same as region names: up to 32 characters, and two may share one. Saved the moment you save them.
 - **Saved.** The day's file has `river_names` and `lake_names`: the number and the name, only for those that have one. Names carry forward from day to day, and days saved before this load with none.
 
+## Places
+
+Besides rivers and lakes, any spot on the map can be given a label of your own, for things the map doesn't name, such as a strait, a plain, a bay or a range. A place is only a name at a point: it changes nothing else in the game.
+
+- **Showing them.** Places are part of the **Named places** overlay (see [Overlays menu](#overlays-menu)): with it on, each place is written on the map at its point, in pale gold text with a dark edge. There are none to begin with.
+- **Adding one.** With **Named places** on, **click the map** anywhere that isn't a city, a river or a lake, or the label of another place (sea included) and a popup asks for its name: type it and press Enter (or click **Add place**). It needs a name. Up to 40 characters: letters, numbers, spaces, hyphens, apostrophes and full stops. If **Region names** is on too, a click on the ground is for naming the region instead, so turn it off to add places.
+- **Changing one.** Click its label: the popup starts with the name, and **Save name** renames it. **Leave the name blank to remove the place.** Esc closes the popup without changing anything. A place can't be moved: remove it and add it again where you want it.
+- **Saved.** The day's file has `places`: a number, the point (`x`, `z`) and the name for each. They carry forward from day to day, and days saved before this load with none.
+
 ## Region ownership
 
 Every region of the map can be owned by a country. They all start unowned. The day's file lists the owned ones (`region_owners`: the region's number and the owner's country id), which carries forward with the countries and cities.
@@ -141,7 +150,7 @@ The **Overlays** button in the footer, just left of the gear, opens a panel of l
 
 - **Country areas**: the regions that countries own, in their colors (see [Region ownership](#region-ownership)). **On** when the game starts; greyed out, with a note, for a map that has no regions. Like the options, it isn't saved.
 - **Region names**: the names the regions have been given, written on the map, and a way to change them (see [Region names](#region-names)). **Off** when the game starts.
-- **Named places**: the names the rivers and lakes have been given, written on the water, and a way to change them (see [River and lake names](#river-and-lake-names)). **Off** when the game starts.
+- **Named places**: the names the rivers and lakes have been given, written on the water, and the places you have labeled, with a way to change them (see [River and lake names](#river-and-lake-names) and [Places](#places)). **Off** when the game starts.
 
 ## Options
 
