@@ -249,7 +249,7 @@ impl DaySave {
         let mut owned: Vec<String> = Vec::new();
         let mut counts = vec![(cities, "city", "cities".to_owned())];
         for kind in GathererKind::ALL {
-            counts.push((self.gatherers.iter().filter(|g| g.country == id && g.kind == kind).count(), kind.noun(), format!("{}s", kind.noun())));
+            counts.push((self.gatherers.iter().filter(|g| g.country == id && g.kind == kind).count(), kind.noun(), kind.plural().to_owned()));
         }
         counts.push((regions, "region", "regions".to_owned()));
         for (n, one, many) in counts {

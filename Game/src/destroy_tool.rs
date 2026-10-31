@@ -170,7 +170,7 @@ impl DestroyTool {
         draw_line(icon.x - 5.0, icon.y + 5.0, icon.x + 5.0, icon.y - 5.0, 2.0, color);
         style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
         if hovered {
-            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge, woodcutter or stonecutter for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
+            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge, woodcutter, sawmill, stonecutter or quarry for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
         }
         button
     }
@@ -184,7 +184,7 @@ impl DestroyTool {
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 88.0, width, 88.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
-        style.text_mid("Destroy a path, a road, a bridge, a woodcutter or a stonecutter", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+        style.text_mid("Destroy a path, a road, a bridge or a gatherer", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
         match (&self.notice, self.hovered) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(Target::Built(thing))) => {

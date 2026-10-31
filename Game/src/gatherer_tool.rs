@@ -147,20 +147,7 @@ impl GathererTool {
             (false, true) => style::ACCENT_HOVER,
             (false, false) => style::TEXT,
         };
-        let icon = vec2(button.x + 12.0 + 7.0, button.center().y);
-        match self.kind {
-            // A little pine: a triangle on a trunk.
-            GathererKind::Woodcutter => {
-                draw_triangle(vec2(icon.x, icon.y - 8.0), vec2(icon.x - 6.0, icon.y + 4.0), vec2(icon.x + 6.0, icon.y + 4.0), color);
-                draw_line(icon.x, icon.y + 4.0, icon.x, icon.y + 8.0, 2.0, color);
-            }
-            // A little rock: a lump with a crack across it.
-            GathererKind::Stonecutter => {
-                draw_poly(icon.x, icon.y + 1.0, 6, 8.0, 0.0, color);
-                draw_line(icon.x - 3.0, icon.y - 4.0, icon.x + 1.0, icon.y + 1.0, 1.4, style::GLASS);
-                draw_line(icon.x + 1.0, icon.y + 1.0, icon.x - 1.0, icon.y + 6.0, 1.4, style::GLASS);
-            }
-        }
+        self.kind.draw_icon(vec2(button.x + 12.0 + 7.0, button.center().y), 1.0, color, style::GLASS);
         style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
 
         if hovered {
@@ -180,7 +167,7 @@ impl GathererTool {
         if !self.active {
             return;
         }
-        let width = 520.0;
+        let width = 600.0;
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 112.0, width, 112.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
@@ -188,12 +175,11 @@ impl GathererTool {
         match (&self.notice, &self.hover_problem) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(problem)) => style.text_mid(problem, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
-            (None, None) => style.text_mid(&format!("Click dry ground in a region with {}. One to a region. Esc stops.", self.kind.deposit()), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
+            (None, None) => style.text_mid(&format!("Click dry ground in a region with {}. One {} or {} per region.", self.kind.deposit(), self.kind.same_resource()[0].noun(), self.kind.same_resource()[1].noun()), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
-        let paying = day.player_country().map_or_else(|| "No country".to_owned(), |c| format!("{} has {}", c.name, crate::format::money(c.money)));
         let buildable = Buildable::Gatherer(self.kind);
         style.text_mid(&buildable.output(), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
-        style.text_mid(&format!("Costs {}. {paying} coins.", buildable.cost_text()), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&format!("Costs {}. {}.", buildable.cost_text(), buildable.has_text(day)), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
     }
 }
 

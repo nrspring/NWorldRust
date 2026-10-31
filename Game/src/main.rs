@@ -614,7 +614,8 @@ async fn main() {
             options_ui.show(&style, footer, &mut options, view.has_regions());
             overlays_ui.show(&style, footer, &mut options, view.has_regions());
             // Only one of the tools is on at a time: the one that was just turned on wins.
-            let was_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active(), gatherer_tools[0].is_active(), gatherer_tools[1].is_active()];
+            let mut was_on = vec![path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
+            was_on.extend(gatherer_tools.iter().map(|tool| tool.is_active()));
             let destroy_button = destroy_tool.show_button(&style, footer, overlays_ui.button().x - 8.0);
             // The gatherer buttons, the last kind nearest the destroy button so that they read in order.
             let mut gatherers_left = destroy_button.x - 8.0;
@@ -625,7 +626,8 @@ async fn main() {
             let path_button = path_tool.show_button(&style, footer, gatherers_left, path_problem.as_ref(), no_regions);
             let road_button = road_tool.show_button(&style, footer, path_button.x - 8.0, road_problem.as_ref(), no_regions);
             bridge_tool.show_button(&style, footer, road_button.x - 8.0, bridge_problem.as_ref(), tool_reason.as_deref());
-            let now_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active(), gatherer_tools[0].is_active(), gatherer_tools[1].is_active()];
+            let mut now_on = vec![path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
+            now_on.extend(gatherer_tools.iter().map(|tool| tool.is_active()));
             if now_on.iter().filter(|on| **on).count() > 1 {
                 // The one that was already on gives way.
                 if was_on[0] && now_on[0] {

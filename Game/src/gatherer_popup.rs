@@ -5,7 +5,6 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
 use crate::day::DaySave;
-use crate::gatherer::GathererKind;
 use crate::ids::{CountryId, GathererId};
 
 const CARD_WIDTH: f32 = 380.0;
@@ -101,18 +100,7 @@ impl GathererPopup {
         let badge = Rect::new(card.x + PADDING, card.y + PADDING, 40.0, 40.0);
         style::rounded_rect(badge, 10.0, style::ACCENT_SOFT);
         let c = badge.center();
-        match gatherer.kind {
-            // A little pine, or a little rock.
-            GathererKind::Woodcutter => {
-                draw_triangle(vec2(c.x, c.y - 12.0), vec2(c.x - 9.0, c.y + 5.0), vec2(c.x + 9.0, c.y + 5.0), style::ACCENT_HOVER);
-                draw_line(c.x, c.y + 5.0, c.x, c.y + 12.0, 2.5, style::ACCENT_HOVER);
-            }
-            GathererKind::Stonecutter => {
-                draw_poly(c.x, c.y + 1.0, 6, 12.0, 0.0, style::ACCENT_HOVER);
-                draw_line(c.x - 4.0, c.y - 6.0, c.x + 1.0, c.y + 1.0, 2.0, style::ACCENT_SOFT);
-                draw_line(c.x + 1.0, c.y + 1.0, c.x - 2.0, c.y + 8.0, 2.0, style::ACCENT_SOFT);
-            }
-        }
+        gatherer.kind.draw_icon(c, 1.5, style::ACCENT_HOVER, style::ACCENT_SOFT);
         let text_x = badge.right() + 14.0;
         style.text(gatherer.kind.label(), text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
         style.text(&day.region_label(gatherer.region), text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);

@@ -423,10 +423,9 @@ impl PathTool {
             (None, Some(Point::Edge(..))) => style.text_mid("Now click the center of one of the two regions, or another of their edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
             (None, Some(Point::BridgeEnd(..))) => style.text_mid("Now click the center of its region, or the middle of one of its edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
-        let paying = day.player_country().map_or_else(|| "No country".to_owned(), |c| format!("{} has {}", c.name, crate::format::money(c.money)));
         let buildable = Buildable::Way(self.kind);
         style.text_mid(&buildable.output(), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
-        style.text_mid(&format!("Costs {}. {paying} coins.", buildable.cost_text()), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&format!("Costs {}. {}.", buildable.cost_text(), buildable.has_text(day)), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
     }
 }
 

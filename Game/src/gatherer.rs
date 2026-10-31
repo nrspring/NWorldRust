@@ -1,6 +1,8 @@
 //! Gatherers: a country's camp where there is a resource to gather, of a kind: a woodcutter in a forest, a
-//! stonecutter in stone. One can only be put in a region that has some of the resource, only one of each kind to a
-//! region, and it belongs to the country that built it, which pays for it. A region with a gatherer in it can't be one
+//! stonecutter in stone, and the greater ones, a sawmill for wood and a quarry for stone, which cost much more, in
+//! materials too, and provide much more. One can only be put in a region that has some of the resource, only one of the
+//! lesser and the greater kind of a resource between them to a region (a woodcutter or a sawmill, a stonecutter or a
+//! quarry), and it belongs to the country that built it, which pays for it. A region with a gatherer in it can't be one
 //! that another country owns.
 
 use std::collections::{HashMap, HashSet};
@@ -26,43 +28,75 @@ pub enum GathererKind {
     /// Gathers wood, from a forest.
     #[default]
     Woodcutter,
+    /// Gathers wood, a great deal of it.
+    Sawmill,
     /// Gathers stone.
     Stonecutter,
+    /// Gathers stone, a great deal of it.
+    Quarry,
 }
 
 impl GathererKind {
-    pub const ALL: [GathererKind; 2] = [GathererKind::Woodcutter, GathererKind::Stonecutter];
+    /// Every kind, in the order the footer has them: each of wood and then each of stone, the lesser first.
+    pub const ALL: [GathererKind; 4] = [GathererKind::Woodcutter, GathererKind::Sawmill, GathererKind::Stonecutter, GathererKind::Quarry];
 
-    /// What to call one, in lower case: "woodcutter" or "stonecutter".
+    /// What to call one, in lower case: "woodcutter", "sawmill", "stonecutter" or "quarry".
     pub fn noun(self) -> &'static str {
         match self {
             Self::Woodcutter => "woodcutter",
+            Self::Sawmill => "sawmill",
             Self::Stonecutter => "stonecutter",
+            Self::Quarry => "quarry",
         }
     }
 
-    /// What to call it where a name starts something: "Woodcutter" or "Stonecutter".
+    /// What to call several of them: "woodcutters", "sawmills", "stonecutters" or "quarries".
+    pub fn plural(self) -> &'static str {
+        match self {
+            Self::Woodcutter => "woodcutters",
+            Self::Sawmill => "sawmills",
+            Self::Stonecutter => "stonecutters",
+            Self::Quarry => "quarries",
+        }
+    }
+
+    /// What to call it where a name starts something: "Woodcutter", "Sawmill", "Stonecutter" or "Quarry".
     pub fn label(self) -> &'static str {
         match self {
             Self::Woodcutter => "Woodcutter",
+            Self::Sawmill => "Sawmill",
             Self::Stonecutter => "Stonecutter",
+            Self::Quarry => "Quarry",
         }
     }
 
     /// The resource of the map it gathers.
     pub fn resource(self) -> Resource {
         match self {
-            Self::Woodcutter => Resource::Forest,
-            Self::Stonecutter => Resource::Stone,
+            Self::Woodcutter | Self::Sawmill => Resource::Forest,
+            Self::Stonecutter | Self::Quarry => Resource::Stone,
         }
     }
 
     /// What the resource it gathers is called as it lies on the map: "forest" or "stone".
     pub fn deposit(self) -> &'static str {
         match self {
-            Self::Woodcutter => "forest",
-            Self::Stonecutter => "stone",
+            Self::Woodcutter | Self::Sawmill => "forest",
+            Self::Stonecutter | Self::Quarry => "stone",
         }
+    }
+
+    /// The two kinds that gather the same resource, the lesser first, which can't both be in a region.
+    pub fn same_resource(self) -> [GathererKind; 2] {
+        match self.resource() {
+            Resource::Forest => [Self::Woodcutter, Self::Sawmill],
+            _ => [Self::Stonecutter, Self::Quarry],
+        }
+    }
+
+    /// Whether it is one of the greater ones, a sawmill or a quarry, which are built bigger, cost more and provide more.
+    pub fn greater(self) -> bool {
+        matches!(self, Self::Sawmill | Self::Quarry)
     }
 
     /// What the country gets of it: "wood" or "stone".
@@ -72,12 +106,59 @@ impl GathererKind {
 
     /// What one costs to build, in coins.
     pub fn cost(self) -> i64 {
-        1_000
+        if self.greater() {
+            10_000
+        } else {
+            1_000
+        }
     }
 
-    /// How much of its resource one that is operating provides its country each day.
+    /// What one takes to build besides coins: nothing for a woodcutter or a stonecutter, and 1,000 wood and 1,000 stone for
+    /// a sawmill or a quarry.
+    pub fn materials(self) -> &'static [(Resource, u64)] {
+        if self.greater() {
+            &[(Resource::Forest, 1_000), (Resource::Stone, 1_000)]
+        } else {
+            &[]
+        }
+    }
+
+    /// How much of its resource one that is operating provides its country each day: ten times as much from a greater
+    /// one, which costs ten times as many coins.
     pub fn daily_yield(self) -> u64 {
-        100
+        if self.greater() {
+            1_000
+        } else {
+            100
+        }
+    }
+
+    /// Draws its icon, centered on `c` and about 16 pixels across times `s`, in `color`, with `accent` for what is
+    /// marked on it: a pine, a sawblade, a rock, or steps of stone.
+    pub fn draw_icon(self, c: Vec2, s: f32, color: Color, accent: Color) {
+        match self {
+            Self::Woodcutter => {
+                draw_triangle(vec2(c.x, c.y - 8.0 * s), vec2(c.x - 6.0 * s, c.y + 4.0 * s), vec2(c.x + 6.0 * s, c.y + 4.0 * s), color);
+                draw_line(c.x, c.y + 4.0 * s, c.x, c.y + 8.0 * s, 2.0 * s, color);
+            }
+            Self::Sawmill => {
+                draw_poly(c.x, c.y, 8, 8.0 * s, 0.0, color);
+                draw_circle(c.x, c.y, 2.6 * s, accent);
+                draw_line(c.x - 5.0 * s, c.y - 1.0 * s, c.x + 5.0 * s, c.y + 1.0 * s, 1.2 * s, accent);
+            }
+            Self::Stonecutter => {
+                draw_poly(c.x, c.y + 1.0 * s, 6, 8.0 * s, 0.0, color);
+                draw_line(c.x - 3.0 * s, c.y - 4.0 * s, c.x + 1.0 * s, c.y + 1.0 * s, 1.4 * s, accent);
+                draw_line(c.x + 1.0 * s, c.y + 1.0 * s, c.x - 1.0 * s, c.y + 6.0 * s, 1.4 * s, accent);
+            }
+            Self::Quarry => {
+                draw_rectangle(c.x - 8.0 * s, c.y + 2.0 * s, 16.0 * s, 5.0 * s, color);
+                draw_rectangle(c.x - 5.5 * s, c.y - 3.0 * s, 11.0 * s, 5.0 * s, color);
+                draw_rectangle(c.x - 3.0 * s, c.y - 8.0 * s, 6.0 * s, 5.0 * s, color);
+                draw_line(c.x - 8.0 * s, c.y + 2.0 * s, c.x + 8.0 * s, c.y + 2.0 * s, 1.0 * s, accent);
+                draw_line(c.x - 5.5 * s, c.y - 3.0 * s, c.x + 5.5 * s, c.y - 3.0 * s, 1.0 * s, accent);
+            }
+        }
     }
 }
 
@@ -153,32 +234,38 @@ impl DaySave {
         self.gatherers.iter().find(|g| g.id == id)
     }
 
-    /// The gatherer of `kind` in the map region numbered `region`, if there is one.
-    pub fn gatherer_in(&self, region: u16, kind: GathererKind) -> Option<&Gatherer> {
-        self.gatherers.iter().find(|g| g.region == region && g.kind == kind)
+    /// The gatherer of `resource` in the map region numbered `region`, of either kind that gathers it, if there is one.
+    pub fn gatherer_in(&self, region: u16, resource: Resource) -> Option<&Gatherer> {
+        self.gatherers.iter().find(|g| g.region == region && g.kind.resource() == resource)
     }
 
     /// Why a gatherer of `kind` can't be built now, or `None` if one can: the country being played has to be there and
-    /// able to pay for it.
+    /// able to pay for it, in coins, and for a greater one in wood and stone too.
     pub fn gatherer_problem(&self, kind: GathererKind) -> Option<String> {
         match self.player_country() {
             None => Some(format!("There is no country yet to own a {}.", kind.noun())),
             Some(country) if country.money < kind.cost() => {
                 Some(format!("Not enough coin: a {} costs {} coins, and {} has {}.", kind.noun(), format::money(kind.cost()), country.name, format::money(country.money)))
             }
-            Some(_) => None,
+            // Then the wood and the stone a greater one takes, whichever is short first.
+            Some(country) => kind.materials().iter().find(|(resource, needed)| country.stock.get(*resource) < *needed).map(|(resource, needed)| {
+                let name = crate::country::resource_name(*resource);
+                format!("Not enough {name}: a {} needs {} {name} as well as its coins, and {} has {}.", kind.noun(), format::thousands_u64(*needed), country.name, format::thousands_u64(country.stock.get(*resource)))
+            }),
         }
     }
 
     /// Why the country being played can't have a gatherer of `kind` in the region numbered `region`, or `None` if it
-    /// can: the region can't belong to another country, and can't have one of that kind in it already.
+    /// can: the region can't belong to another country, and can't have one in it already that gathers the same resource,
+    /// of either kind: a sawmill can't go where there is a woodcutter, nor a woodcutter where there is a sawmill.
     pub fn gatherer_region_problem(&self, region: u16, kind: GathererKind) -> Option<String> {
         let country = self.player_country()?.id;
-        self.city_region_problem(country, Some(region)).or_else(|| self.gatherer_in(region, kind).map(|_| format!("There is already a {} in this region.", kind.noun())))
+        self.city_region_problem(country, Some(region)).or_else(|| self.gatherer_in(region, kind.resource()).map(|there| format!("There is already a {} in this region.", there.kind.noun())))
     }
 
     /// Builds a gatherer of `kind` at (`x`, `z`) in the region numbered `region` for the country being played, which
-    /// pays for it, and reports it in the newsreel. Whether the place is fit for one (see [`site_region`]) is for the
+    /// pays for it (in wood and stone as well, for a greater one), and reports it in the newsreel. Whether the place is
+    /// fit for one (see [`site_region`]) is for the
     /// caller to say. An error says why it can't be done.
     pub fn build_gatherer(&mut self, kind: GathererKind, x: f32, z: f32, region: u16) -> Result<(), String> {
         if let Some(problem) = self.gatherer_problem(kind) {
@@ -192,6 +279,9 @@ impl DaySave {
         }
         let country = self.player_country().ok_or_else(|| format!("There is no country yet to own a {}.", kind.noun()))?.id;
         self.add_money(country, -kind.cost())?;
+        for (resource, needed) in kind.materials() {
+            self.add_resource(country, *resource, -(*needed as i64))?;
+        }
         let id = GathererId::new();
         self.gatherers.push(Gatherer { id, kind, country, x, z, region, operating: false });
         self.newsreel.push(News::about(id, Event::GathererBuilt { kind }));
@@ -310,8 +400,9 @@ mod tests {
         assert_eq!(day.countries[0].money, 1_500);
         assert_eq!(day.countries[1].money, crate::country::STARTING_MONEY, "only the country being played pays");
         assert_eq!(day.gatherer(cutter.id), Some(&cutter));
-        assert_eq!(day.gatherer_in(7, GathererKind::Woodcutter), Some(&cutter));
-        assert_eq!(day.gatherer_in(8, GathererKind::Woodcutter), None);
+        assert_eq!(day.gatherer_in(7, Resource::Forest), Some(&cutter));
+        assert_eq!(day.gatherer_in(7, Resource::Stone), None, "it is not stone that it gathers");
+        assert_eq!(day.gatherer_in(8, Resource::Forest), None);
     }
 
     #[test]
@@ -409,7 +500,7 @@ mod tests {
         let id = day.gatherers[0].id;
         let paid = day.countries[0].money;
         day.destroy_gatherer(id).unwrap();
-        assert!(day.gatherers.is_empty() && day.gatherer(id).is_none() && day.gatherer_in(0xC001, GathererKind::Woodcutter).is_none());
+        assert!(day.gatherers.is_empty() && day.gatherer(id).is_none() && day.gatherer_in(0xC001, Resource::Forest).is_none());
         assert_eq!(day.countries[0].money, paid, "nothing is paid back");
         assert!(day.destroy_gatherer(id).unwrap_err().contains("no such gatherer"));
         assert!(day.cut_off_gatherers().is_empty());
@@ -446,7 +537,7 @@ mod tests {
         day.build_gatherer(GathererKind::Stonecutter, 20.0, 0.0, 0xC001).unwrap();
         assert_eq!(day.countries[0].money, 3_000, "each costs 1,000");
         assert_eq!(day.gatherers.iter().map(|g| g.kind).collect::<Vec<_>>(), [GathererKind::Woodcutter, GathererKind::Stonecutter]);
-        assert_eq!(day.gatherer_in(0xC001, GathererKind::Stonecutter).unwrap().kind, GathererKind::Stonecutter);
+        assert_eq!(day.gatherer_in(0xC001, Resource::Stone).unwrap().kind, GathererKind::Stonecutter);
         assert_eq!(day.gatherer_region_problem(0xC001, GathererKind::Stonecutter).unwrap(), "There is already a stonecutter in this region.");
         let before = day.clone();
         assert!(day.build_gatherer(GathererKind::Stonecutter, 30.0, 0.0, 0xC001).unwrap_err().contains("already a stonecutter"));
@@ -463,13 +554,98 @@ mod tests {
     }
 
     #[test]
+    fn a_sawmill_and_a_quarry_need_the_same_deposits_as_the_lesser_ones_and_cost_coin_wood_and_stone() {
+        let mut day = day_with_money(20_000);
+        let id = day.countries[0].id;
+        // Rich in coin and not in materials: it is the wood that is asked for, and then the stone.
+        let before = day.clone();
+        for kind in [GathererKind::Sawmill, GathererKind::Quarry] {
+            assert_eq!(day.gatherer_problem(kind).unwrap(), format!("Not enough wood: a {} needs 1,000 wood as well as its coins, and Aldoria has 0.", kind.noun()));
+            assert!(day.build_gatherer(kind, 0.0, 0.0, 0xC001).unwrap_err().contains("Not enough wood"));
+        }
+        assert_eq!(day, before, "nothing is taken when it can't be done");
+        day.add_resource(id, Resource::Forest, 1_000).unwrap();
+        assert_eq!(day.gatherer_problem(GathererKind::Quarry).unwrap(), "Not enough stone: a quarry needs 1,000 stone as well as its coins, and Aldoria has 0.");
+        day.add_resource(id, Resource::Stone, 1_500).unwrap();
+        assert_eq!(day.gatherer_problem(GathererKind::Sawmill), None);
+        // A lesser one asks for none of it, and still only the coin.
+        assert_eq!(day.gatherer_problem(GathererKind::Woodcutter), None);
+
+        day.build_gatherer(GathererKind::Sawmill, 0.0, 0.0, 0xC001).unwrap();
+        let country = &day.countries[0];
+        assert_eq!((country.money, country.stock.wood, country.stock.stone), (10_000, 0, 500));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a sawmill in region 1");
+        // The materials are used up, so a quarry can't follow it until there is more.
+        assert!(day.build_gatherer(GathererKind::Quarry, 20.0, 0.0, 0xC001).unwrap_err().contains("Not enough wood"));
+        // A woodcutter can't join the sawmill, which already gathers the wood of the region, and neither can a second sawmill.
+        assert_eq!(day.gatherer_region_problem(0xC001, GathererKind::Woodcutter).unwrap(), "There is already a sawmill in this region.");
+        assert!(day.build_gatherer(GathererKind::Woodcutter, 30.0, 0.0, 0xC001).unwrap_err().contains("already a sawmill"));
+        assert_eq!(day.gatherer_region_problem(0xC001, GathererKind::Sawmill).unwrap(), "There is already a sawmill in this region.");
+        // It takes its country's money: the coin is 10,000 and not 1,000.
+        let mut poor = day_with_money(9_999);
+        poor.add_resource(poor.countries[0].id, Resource::Forest, 1_000).unwrap();
+        poor.add_resource(poor.countries[0].id, Resource::Stone, 1_000).unwrap();
+        assert!(poor.build_gatherer(GathererKind::Quarry, 0.0, 0.0, 0xC001).unwrap_err().contains("a quarry costs 10,000"));
+        assert_eq!(poor.gatherer_problem(GathererKind::Woodcutter), None, "but it can pay for a woodcutter");
+    }
+
+    #[test]
+    fn a_region_has_one_gatherer_of_each_resource_whichever_kind_the_lesser_or_the_greater() {
+        let mut day = day_with_money(100_000);
+        let id = day.countries[0].id;
+        day.add_resource(id, Resource::Forest, 10_000).unwrap();
+        day.add_resource(id, Resource::Stone, 10_000).unwrap();
+        for kind in GathererKind::ALL {
+            let (lesser, greater) = (kind.same_resource()[0], kind.same_resource()[1]);
+            assert_eq!(kind.resource(), lesser.resource());
+            assert!(kind == lesser || kind == greater);
+            assert!(!lesser.greater() && greater.greater());
+        }
+        // Nothing is in region 1: all four can go. A woodcutter goes in, and then neither it nor a sawmill can.
+        assert!(GathererKind::ALL.iter().all(|kind| day.gatherer_region_problem(1, *kind).is_none()));
+        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 1).unwrap();
+        assert_eq!(day.gatherer_region_problem(1, GathererKind::Woodcutter).unwrap(), "There is already a woodcutter in this region.");
+        assert_eq!(day.gatherer_region_problem(1, GathererKind::Sawmill).unwrap(), "There is already a woodcutter in this region.");
+        let before = day.clone();
+        assert!(day.build_gatherer(GathererKind::Sawmill, 10.0, 0.0, 1).unwrap_err().contains("already a woodcutter"));
+        assert_eq!(day, before, "and nothing is paid for it");
+        // The stone of the region is another matter: either stone kind can still go in, and then the other can't.
+        assert_eq!((day.gatherer_region_problem(1, GathererKind::Stonecutter), day.gatherer_region_problem(1, GathererKind::Quarry)), (None, None));
+        day.build_gatherer(GathererKind::Quarry, 20.0, 0.0, 1).unwrap();
+        assert_eq!(day.gatherer_region_problem(1, GathererKind::Stonecutter).unwrap(), "There is already a quarry in this region.");
+        assert_eq!(day.gatherer_region_problem(1, GathererKind::Quarry).unwrap(), "There is already a quarry in this region.");
+        // Other regions are free, and once one is destroyed its resource is free again in its region.
+        assert!(GathererKind::ALL.iter().all(|kind| day.gatherer_region_problem(2, *kind).is_none()));
+        let woodcutter = day.gatherers[0].id;
+        day.destroy_gatherer(woodcutter).unwrap();
+        assert_eq!(day.gatherer_region_problem(1, GathererKind::Sawmill), None);
+        day.build_gatherer(GathererKind::Sawmill, 0.0, 0.0, 1).unwrap();
+        assert_eq!(day.gatherers.iter().map(|g| g.kind).collect::<Vec<_>>(), [GathererKind::Quarry, GathererKind::Sawmill]);
+    }
+
+    #[test]
     fn what_each_kind_gathers_and_is_called() {
         assert_eq!((GathererKind::Woodcutter.noun(), GathererKind::Stonecutter.noun()), ("woodcutter", "stonecutter"));
         assert_eq!((GathererKind::Woodcutter.label(), GathererKind::Stonecutter.label()), ("Woodcutter", "Stonecutter"));
         assert_eq!((GathererKind::Woodcutter.resource(), GathererKind::Stonecutter.resource()), (Resource::Forest, Resource::Stone));
         assert_eq!((GathererKind::Woodcutter.product(), GathererKind::Stonecutter.product()), ("wood", "stone"));
         assert_eq!((GathererKind::Woodcutter.deposit(), GathererKind::Stonecutter.deposit()), ("forest", "stone"));
-        assert!(GathererKind::ALL.iter().all(|kind| kind.cost() == 1_000 && kind.daily_yield() == 100));
+        assert_eq!(GathererKind::ALL, [GathererKind::Woodcutter, GathererKind::Sawmill, GathererKind::Stonecutter, GathererKind::Quarry]);
+        assert_eq!((GathererKind::Sawmill.noun(), GathererKind::Quarry.noun()), ("sawmill", "quarry"));
+        assert_eq!((GathererKind::Sawmill.plural(), GathererKind::Quarry.plural()), ("sawmills", "quarries"));
+        assert_eq!((GathererKind::Sawmill.label(), GathererKind::Quarry.label()), ("Sawmill", "Quarry"));
+        assert_eq!((GathererKind::Sawmill.resource(), GathererKind::Quarry.resource()), (Resource::Forest, Resource::Stone));
+        assert_eq!((GathererKind::Sawmill.deposit(), GathererKind::Quarry.deposit()), ("forest", "stone"));
+        assert_eq!((GathererKind::Sawmill.product(), GathererKind::Quarry.product()), ("wood", "stone"));
+        // The lesser ones cost 1,000 coins and nothing else and give 100 a day; the greater ones, ten times the coin, a
+        // thousand each of wood and stone, and ten times the yield.
+        for kind in [GathererKind::Woodcutter, GathererKind::Stonecutter] {
+            assert!(!kind.greater() && kind.cost() == 1_000 && kind.daily_yield() == 100 && kind.materials().is_empty());
+        }
+        for kind in [GathererKind::Sawmill, GathererKind::Quarry] {
+            assert!(kind.greater() && kind.cost() == 10_000 && kind.daily_yield() == 1_000);
+            assert_eq!(kind.materials(), &[(Resource::Forest, 1_000), (Resource::Stone, 1_000)]);
+        }
         assert_eq!(GathererKind::default(), GathererKind::Woodcutter);
     }
 

@@ -18,7 +18,7 @@ pub const BRIDGE_COST: i64 = 1_000;
 pub const BRIDGE_WOOD: u64 = 100;
 pub const BRIDGE_STONE: u64 = 500;
 /// What a bridge costs in each resource, besides coins.
-const BRIDGE_MATERIALS: [(Resource, u64); 2] = [(Resource::Forest, BRIDGE_WOOD), (Resource::Stone, BRIDGE_STONE)];
+pub const BRIDGE_MATERIALS: [(Resource, u64); 2] = [(Resource::Forest, BRIDGE_WOOD), (Resource::Stone, BRIDGE_STONE)];
 /// The longest a bridge can be, in meters, end to end.
 pub const MAX_SPAN: f32 = 80.0;
 /// The least water, in meters, that the line of a bridge has to cross: otherwise it isn't crossing anything.

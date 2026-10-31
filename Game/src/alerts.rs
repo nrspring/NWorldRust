@@ -17,7 +17,8 @@ use crate::failure::Thing;
 use crate::hud;
 use crate::ids::{BridgeId, CountryId, GathererId};
 use crate::path::PathPiece;
-use crate::{path_view, region_labels};
+use crate::gatherer::GathererKind;
+use crate::{gatherer_view, path_view, region_labels};
 
 /// The color of an alert's icon and marks.
 const AMBER: Color = Color::new(0.96, 0.69, 0.20, 1.0);
@@ -32,8 +33,8 @@ const NOTE_HEIGHT: f32 = 26.0;
 const FLASH_PERIOD: f32 = 2.4;
 /// How high above the ground the warning icon is held, in meters, and how big it is, in pixels.
 const MARK_HOLD: f32 = 3.0;
-/// The same over a gatherer, which is tall: above the top of its flag.
-const GATHERER_MARK_HOLD: f32 = 27.0;
+/// How far over the top of a gatherer, which is tall, its warning icon is held.
+const GATHERER_MARK_CLEARANCE: f32 = 3.0;
 const MARK_WIDTH: f32 = 24.0;
 const MARK_HEIGHT: f32 = 21.0;
 
@@ -106,7 +107,7 @@ impl Alert {
     pub fn place(&self, day: &DaySave, map: &RegionMap) -> Option<(Vec2, f32)> {
         let piece = match self {
             Alert::CountryWithoutCities(_) => return None,
-            Alert::GathererCutOff(id) => return day.gatherer(*id).map(|w| (vec2(w.x, w.z), GATHERER_MARK_HOLD)),
+            Alert::GathererCutOff(id) => return day.gatherer(*id).map(|w| (vec2(w.x, w.z), gatherer_mark_hold(w.kind))),
             Alert::Failed(Thing::Path(segment) | Thing::Road(segment)) => PathPiece::Segment(*segment),
             Alert::Failed(Thing::PathLink(link) | Thing::RoadLink(link)) => PathPiece::Link(*link),
             Alert::Failed(Thing::Bridge(id)) => {
@@ -116,6 +117,12 @@ impl Alert {
         };
         path_view::piece_ends(map, &day.bridges, piece).map(|(from, to)| ((from + to) * 0.5, MARK_HOLD))
     }
+}
+
+/// How high above the ground to hold the warning icon over a gatherer of `kind`: above the top of its flag pole, which is
+/// higher on a greater one.
+fn gatherer_mark_hold(kind: GathererKind) -> f32 {
+    gatherer_view::height(kind) + GATHERER_MARK_CLEARANCE
 }
 
 /// Draws a red warning icon, flashing slowly, over each alert there is that is about a place on the map, as `camera`
@@ -356,8 +363,10 @@ mod tests {
         assert_eq!(alerts, [Alert::GathererCutOff(id)]);
         assert_eq!(alerts[0].text(&day), "The woodcutter in region 2 has no path, road or bridge to a city of Aldoria");
         assert_eq!(alerts[0].target(), AlertTarget::Gatherer(id));
-        assert_eq!(alerts[0].place(&day, &RegionMap::default()), Some((vec2(100.0, 0.0), GATHERER_MARK_HOLD)));
-        assert!(GATHERER_MARK_HOLD > 24.0, "above the top of its flag pole");
+        assert_eq!(alerts[0].place(&day, &RegionMap::default()), Some((vec2(100.0, 0.0), 17.0)));
+        assert!(gatherer_mark_hold(GathererKind::Woodcutter) > 14.0, "above the top of its flag pole");
+        assert_eq!(gatherer_mark_hold(GathererKind::Sawmill), 30.0);
+        assert!(gatherer_mark_hold(GathererKind::Quarry) > gatherer_mark_hold(GathererKind::Stonecutter), "the icon is higher over a bigger one");
         day.set_region_name(CUTTER, "The Marches").unwrap();
         assert_eq!(Alert::current(&day, &[])[0].text(&day), "The woodcutter in The Marches has no path, road or bridge to a city of Aldoria");
 
@@ -366,7 +375,7 @@ mod tests {
         let stone = day.gatherers[1].id;
         assert_eq!(Alert::current(&day, &[]), [Alert::GathererCutOff(id), Alert::GathererCutOff(stone)]);
         assert_eq!(Alert::GathererCutOff(stone).text(&day), "The stonecutter in The Marches has no path, road or bridge to a city of Aldoria");
-        assert_eq!(Alert::GathererCutOff(stone).place(&day, &RegionMap::default()), Some((vec2(130.0, 0.0), GATHERER_MARK_HOLD)));
+        assert_eq!(Alert::GathererCutOff(stone).place(&day, &RegionMap::default()), Some((vec2(130.0, 0.0), 17.0)));
         day.destroy_gatherer(stone).unwrap();
 
         // After the countries that have no city, and before what failed.

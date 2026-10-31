@@ -207,10 +207,8 @@ impl BridgeTool {
             (None, _, None) => style.text_mid("Click dry ground by the water, on one side of a river.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
             (None, _, Some(_)) => style.text_mid("Now click dry ground on the other side. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
-        // What it takes is more than coin, so what the country has is more than coin too.
-        let paying = day.player_country().map_or_else(|| "No country".to_owned(), |c| format!("{} has {} coins, {} wood and {} stone", c.name, crate::format::money(c.money), crate::format::thousands_u64(c.stock.wood), crate::format::thousands_u64(c.stock.stone)));
         style.text_mid(&Buildable::Bridge.output(), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
-        style.text_mid(&format!("Costs {}. {paying}.", Buildable::Bridge.cost_text()), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&format!("Costs {}. {}.", Buildable::Bridge.cost_text(), Buildable::Bridge.has_text(day)), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
     }
 }
 

@@ -38,7 +38,7 @@ pub const DAY_RULES: &[Rule] = &[
         description: "A path has a 2% chance of failing, a road 0.1% and a bridge 0.05%. What fails is ruined and is listed in the alerts until it is built again.",
         apply: failures,
     },
-    Rule { description: "Each woodcutter or stonecutter that has a path, road or bridge route to a city of its country provides 100 wood or stone to the country.", apply: gather },
+    Rule { description: "Each woodcutter, sawmill, stonecutter or quarry that has a path, road or bridge route to a city of its country provides its wood or stone to the country each day: 100 from a woodcutter or stonecutter, and 1,000 from a sawmill or quarry.", apply: gather },
 ];
 
 /// Runs every rule, in order, on `day`, which has just started.
@@ -503,8 +503,38 @@ mod tests {
     }
 
     #[test]
+    fn a_sawmill_provides_1000_wood_and_a_quarry_1000_stone_and_the_news_says_what_gathered_it() {
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        let aldoria = day.countries[0].id;
+        day.add_money(aldoria, 100_000).unwrap();
+        day.add_resource(aldoria, nworld_map::world::Resource::Forest, 3_000).unwrap();
+        day.add_resource(aldoria, nworld_map::world::Resource::Stone, 3_000).unwrap();
+        // One of each kind, each in the region of a city, since a region has one gatherer of each resource.
+        for (n, kind) in [GathererKind::Woodcutter, GathererKind::Sawmill, GathererKind::Stonecutter, GathererKind::Quarry].into_iter().enumerate() {
+            let region = 0xC001 + n as u16 * 2;
+            day.found_city(&format!("City {n}"), n as f32 * 50.0, 0.0, Some(region)).unwrap();
+            day.build_gatherer(kind, n as f32 * 50.0 + 5.0, 0.0, region).unwrap();
+        }
+        let before = day.country(aldoria).unwrap().stock;
+        gather(&mut day);
+        let stock = day.country(aldoria).unwrap().stock;
+        assert_eq!((stock.wood - before.wood, stock.stone - before.stone), (1_100, 1_100), "100 and 1,000 of each");
+        let news: Vec<String> = day.newsreel.iter().filter(|n| matches!(n.event, Event::Gathered { .. })).map(|n| n.headline(&day)).collect();
+        assert_eq!(
+            news,
+            [
+                "Aldoria gathers 100 wood from its woodcutters",
+                "Aldoria gathers 1,000 wood from its sawmills",
+                "Aldoria gathers 100 stone from its stonecutters",
+                "Aldoria gathers 1,000 stone from its quarries",
+            ]
+        );
+    }
+
+    #[test]
     fn the_wood_comes_after_the_failures_in_the_rules_and_a_day_with_no_gatherers_gathers_none() {
-        let wood_at = DAY_RULES.iter().position(|r| r.description.contains("provides 100 wood or stone")).unwrap();
+        let wood_at = DAY_RULES.iter().position(|r| r.description.contains("provides its wood or stone")).unwrap();
         let failures_at = DAY_RULES.iter().position(|r| r.description.contains("chance of failing")).unwrap();
         assert!(wood_at > failures_at);
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");

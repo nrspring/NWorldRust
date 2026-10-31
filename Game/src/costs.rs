@@ -5,7 +5,11 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
-use crate::bridge::{BRIDGE_COST, BRIDGE_STONE, BRIDGE_WOOD};
+use nworld_map::world::Resource;
+
+use crate::bridge::{BRIDGE_COST, BRIDGE_MATERIALS};
+use crate::country::resource_name;
+use crate::day::DaySave;
 use crate::failure::{BRIDGE_FAILURE, PATH_FAILURE, ROAD_FAILURE};
 use crate::format;
 use crate::gatherer::GathererKind;
@@ -42,15 +46,40 @@ impl Buildable {
         }
     }
 
-    /// What it costs, as it is said: "10 coins a segment", "1,000 coins", or for a bridge, which takes wood and stone as
-    /// well, "1,000 coins, 100 wood and 500 stone".
+    /// What it takes besides coins: wood and stone for a bridge, and for a sawmill or a quarry.
+    pub fn materials(self) -> &'static [(Resource, u64)] {
+        match self {
+            Self::Way(_) => &[],
+            Self::Bridge => &BRIDGE_MATERIALS,
+            Self::Gatherer(kind) => kind.materials(),
+        }
+    }
+
+    /// What it costs, as it is said: "10 coins a segment", "1,000 coins", or for one that takes wood and stone as well,
+    /// "1,000 coins, 100 wood and 500 stone".
     pub fn cost_text(self) -> String {
         let coins = format::money(self.cost());
-        match self {
-            Self::Way(_) => format!("{coins} coins a segment"),
-            Self::Bridge => format!("{coins} coins, {BRIDGE_WOOD} wood and {BRIDGE_STONE} stone"),
-            Self::Gatherer(_) => format!("{coins} coins"),
+        let mut parts = vec![if matches!(self, Self::Way(_)) { format!("{coins} coins a segment") } else { format!("{coins} coins") }];
+        parts.extend(self.materials().iter().map(|(resource, needed)| format!("{} {}", format::thousands_u64(*needed), resource_name(*resource))));
+        match parts.as_slice() {
+            [only] => only.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+            [] => String::new(),
         }
+    }
+
+    /// What the country being played has of what it takes, as it is said: "Aldoria has 5,000 coins", and for one that
+    /// takes wood and stone as well, "Aldoria has 5,000 coins, 80 wood and 20 stone".
+    pub fn has_text(self, day: &DaySave) -> String {
+        let Some(country) = day.player_country() else { return "No country".to_owned() };
+        let mut parts = vec![format!("{} coins", format::money(country.money))];
+        parts.extend(self.materials().iter().map(|(resource, _)| format!("{} {}", format::thousands_u64(country.stock.get(*resource)), resource_name(*resource))));
+        let list = match parts.as_slice() {
+            [only] => only.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+            [] => String::new(),
+        };
+        format!("{} has {list}", country.name)
     }
 
     /// What it does for the player, in a sentence or two. A path, a road or a bridge makes nothing of its own: it
@@ -60,7 +89,7 @@ impl Buildable {
             Self::Way(Kind::Path) => format!("Joins regions into routes. Fails {} of days.", percent(PATH_FAILURE)),
             Self::Way(Kind::Road) => format!("Joins regions into routes. Fails {} of days.", percent(ROAD_FAILURE)),
             Self::Bridge => format!("Carries a route across a river. Fails {} of days.", percent(BRIDGE_FAILURE)),
-            Self::Gatherer(kind) => format!("Provides {} {} a day while it has a route to a city.", kind.daily_yield(), kind.product()),
+            Self::Gatherer(kind) => format!("Provides {} {} a day while it has a route to a city.", format::thousands_u64(kind.daily_yield()), kind.product()),
         }
     }
 
@@ -68,8 +97,9 @@ impl Buildable {
     /// that building it again mends it for the same.
     pub fn button_lines(self) -> Vec<(String, Color)> {
         let mut lines = vec![(format!("{}: {}.", self.label(), self.cost_text()), style::TEXT), (self.output(), style::TEXT_MUTED)];
-        if !matches!(self, Self::Gatherer(_)) {
-            lines.push(("A failed one is mended by building it again, for the same.".to_owned(), style::TEXT_MUTED));
+        match self {
+            Self::Gatherer(kind) => lines.push((format!("Only one {} or {} to a region.", kind.same_resource()[0].noun(), kind.same_resource()[1].noun()), style::TEXT_MUTED)),
+            _ => lines.push(("A failed one is mended by building it again, for the same.".to_owned(), style::TEXT_MUTED)),
         }
         lines
     }
@@ -121,6 +151,32 @@ mod tests {
     }
 
     #[test]
+    fn a_sawmill_and_a_quarry_cost_ten_thousand_coins_and_a_thousand_each_of_wood_and_stone() {
+        for kind in [GathererKind::Sawmill, GathererKind::Quarry] {
+            assert_eq!(Buildable::Gatherer(kind).cost_text(), "10,000 coins, 1,000 wood and 1,000 stone");
+        }
+        assert_eq!(Buildable::Gatherer(GathererKind::Woodcutter).materials(), &[]);
+        assert_eq!(Buildable::Way(Kind::Road).materials(), &[]);
+        assert_eq!(Buildable::Bridge.materials(), &BRIDGE_MATERIALS);
+        assert_eq!(Buildable::Gatherer(GathererKind::Sawmill).output(), "Provides 1,000 wood a day while it has a route to a city.");
+        assert_eq!(Buildable::Gatherer(GathererKind::Quarry).output(), "Provides 1,000 stone a day while it has a route to a city.");
+    }
+
+    #[test]
+    fn what_the_country_has_says_only_what_the_thing_takes() {
+        use crate::calendar::Date;
+        let mut day = DaySave::new(Date::FIRST, "x");
+        assert_eq!(Buildable::Bridge.has_text(&day), "No country");
+        day.found_country("Aldoria").unwrap();
+        let id = day.countries[0].id;
+        let coins = day.countries[0].money;
+        day.add_resource(id, Resource::Forest, 80).unwrap();
+        day.add_resource(id, Resource::Stone, 2_500).unwrap();
+        assert_eq!(Buildable::Way(Kind::Path).has_text(&day), format!("Aldoria has {} coins", format::money(coins)));
+        assert_eq!(Buildable::Bridge.has_text(&day), format!("Aldoria has {} coins, 80 wood and 2,500 stone", format::money(coins)));
+    }
+
+    #[test]
     fn what_each_thing_does_is_said_with_the_games_own_figures() {
         assert_eq!(Buildable::Way(Kind::Path).output(), "Joins regions into routes. Fails 2% of days.");
         assert_eq!(Buildable::Way(Kind::Road).output(), "Joins regions into routes. Fails 0.1% of days.");
@@ -136,6 +192,8 @@ mod tests {
         assert_eq!(bridge.len(), 3);
         assert!(bridge[2].contains("mended"));
         let stone: Vec<String> = Buildable::Gatherer(GathererKind::Stonecutter).button_lines().into_iter().map(|(text, _)| text).collect();
-        assert_eq!(stone, ["Stonecutter: 1,000 coins.", "Provides 100 stone a day while it has a route to a city."]);
+        assert_eq!(stone, ["Stonecutter: 1,000 coins.", "Provides 100 stone a day while it has a route to a city.", "Only one stonecutter or quarry to a region."]);
+        let sawmill: Vec<String> = Buildable::Gatherer(GathererKind::Sawmill).button_lines().into_iter().map(|(text, _)| text).collect();
+        assert_eq!(sawmill[2], "Only one woodcutter or sawmill to a region.");
     }
 }
