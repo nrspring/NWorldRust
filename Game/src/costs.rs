@@ -5,7 +5,7 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
-use crate::bridge::BRIDGE_COST;
+use crate::bridge::{BRIDGE_COST, BRIDGE_STONE, BRIDGE_WOOD};
 use crate::failure::{BRIDGE_FAILURE, PATH_FAILURE, ROAD_FAILURE};
 use crate::format;
 use crate::gatherer::GathererKind;
@@ -42,12 +42,14 @@ impl Buildable {
         }
     }
 
-    /// What it costs, as it is said: "10 coins a segment" or "1,000 coins".
+    /// What it costs, as it is said: "10 coins a segment", "1,000 coins", or for a bridge, which takes wood and stone as
+    /// well, "1,000 coins, 100 wood and 500 stone".
     pub fn cost_text(self) -> String {
         let coins = format::money(self.cost());
         match self {
             Self::Way(_) => format!("{coins} coins a segment"),
-            _ => format!("{coins} coins"),
+            Self::Bridge => format!("{coins} coins, {BRIDGE_WOOD} wood and {BRIDGE_STONE} stone"),
+            Self::Gatherer(_) => format!("{coins} coins"),
         }
     }
 
@@ -114,7 +116,7 @@ mod tests {
         }
         assert_eq!(Buildable::Way(Kind::Path).cost_text(), "10 coins a segment");
         assert_eq!(Buildable::Way(Kind::Road).cost_text(), "100 coins a segment");
-        assert_eq!(Buildable::Bridge.cost_text(), "1,000 coins");
+        assert_eq!(Buildable::Bridge.cost_text(), "1,000 coins, 100 wood and 500 stone");
         assert_eq!(Buildable::Gatherer(GathererKind::Stonecutter).cost_text(), "1,000 coins");
     }
 
@@ -130,7 +132,7 @@ mod tests {
     #[test]
     fn a_button_says_what_it_is_costs_and_does_and_only_what_can_fail_says_it_is_mended() {
         let bridge: Vec<String> = Buildable::Bridge.button_lines().into_iter().map(|(text, _)| text).collect();
-        assert_eq!(bridge[0], "Bridge: 1,000 coins.");
+        assert_eq!(bridge[0], "Bridge: 1,000 coins, 100 wood and 500 stone.");
         assert_eq!(bridge.len(), 3);
         assert!(bridge[2].contains("mended"));
         let stone: Vec<String> = Buildable::Gatherer(GathererKind::Stonecutter).button_lines().into_iter().map(|(text, _)| text).collect();

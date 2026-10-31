@@ -331,6 +331,7 @@ mod tests {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
         day.add_money(day.countries[0].id, 5_000).unwrap();
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: -30.0, z: 10.0 }, Spot { x: 30.0, z: 20.0 }).unwrap();
         let map = RegionMap::default();
         assert_eq!(Alert::CountryWithoutCities(day.countries[0].id).place(&day, &map), None);

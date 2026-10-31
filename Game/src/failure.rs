@@ -211,7 +211,9 @@ mod tests {
     fn a_bridge_destroyed_takes_the_paths_and_roads_from_its_ends_with_it() {
         let mut day = day();
         day.add_money(day.countries[0].id, 5_000).unwrap();
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: -30.0, z: 0.0 }, Spot { x: 30.0, z: 0.0 }).unwrap();
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: -30.0, z: 50.0 }, Spot { x: 30.0, z: 50.0 }).unwrap();
         let (gone, kept) = (day.bridges[0].id, day.bridges[1].id);
         let on = |bridge, end| BridgeLink { bridge, end, region: 1, to: None };
@@ -234,6 +236,7 @@ mod tests {
     #[test]
     fn everything_that_can_fail_is_listed_in_order() {
         let mut day = day();
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: -30.0, z: 0.0 }, Spot { x: 30.0, z: 0.0 }).unwrap();
         let bridge = day.bridges[0].id;
         let link = BridgeLink { bridge, end: End::First, region: 1, to: None };

@@ -3,7 +3,7 @@
 //! player is playing. Paths connect to either end of one, with a [`BridgeLink`].
 
 use macroquad::prelude::*;
-use nworld_map::world::{WaterClass, World};
+use nworld_map::world::{Resource, WaterClass, World};
 use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
@@ -14,6 +14,11 @@ use crate::path::Kind;
 
 /// What a bridge costs, in coins.
 pub const BRIDGE_COST: i64 = 1_000;
+/// What a bridge costs in wood and in stone, as well as in coins.
+pub const BRIDGE_WOOD: u64 = 100;
+pub const BRIDGE_STONE: u64 = 500;
+/// What a bridge costs in each resource, besides coins.
+const BRIDGE_MATERIALS: [(Resource, u64); 2] = [(Resource::Forest, BRIDGE_WOOD), (Resource::Stone, BRIDGE_STONE)];
 /// The longest a bridge can be, in meters, end to end.
 pub const MAX_SPAN: f32 = 80.0;
 /// The least water, in meters, that the line of a bridge has to cross: otherwise it isn't crossing anything.
@@ -84,6 +89,8 @@ pub struct BridgeLink {
 pub enum BridgeProblem {
     NoCountry,
     NotEnoughCoin { country: String, money: i64 },
+    /// The country has less than the `needed` of a resource, called `resource`, that a bridge takes.
+    NotEnoughMaterial { country: String, resource: &'static str, needed: u64, has: u64 },
 }
 
 impl BridgeProblem {
@@ -92,6 +99,7 @@ impl BridgeProblem {
         match self {
             Self::NoCountry => "No country to pay for bridges".to_owned(),
             Self::NotEnoughCoin { money, .. } => format!("Bridges need {} coins (has {money})", crate::format::money(BRIDGE_COST)),
+            Self::NotEnoughMaterial { resource, needed, has, .. } => format!("Bridges need {needed} {resource} (has {has})"),
         }
     }
 
@@ -102,26 +110,47 @@ impl BridgeProblem {
             Self::NotEnoughCoin { country, money } => {
                 format!("Not enough coin: a bridge costs {} coins, and {country} has {}.", crate::format::money(BRIDGE_COST), crate::format::money(*money))
             }
+            Self::NotEnoughMaterial { country, resource, needed, has } => {
+                format!("Not enough {resource}: a bridge needs {needed} {resource} as well as its coins, and {country} has {has}.")
+            }
         }
     }
 }
 
 impl DaySave {
+    /// Gives every country plenty of the wood and stone a bridge takes, for tests that build one and aren't about that.
+    #[cfg(test)]
+    pub fn stock_for_bridges(&mut self) {
+        let ids: Vec<_> = self.countries.iter().map(|c| c.id).collect();
+        for id in ids {
+            for (resource, _) in BRIDGE_MATERIALS {
+                self.add_resource(id, resource, 100_000).unwrap();
+            }
+        }
+    }
+
     pub fn bridge(&self, id: BridgeId) -> Option<&Bridge> {
         self.bridges.iter().find(|b| b.id == id)
     }
 
-    /// Why a bridge can't be built, or `None` if one can: the country being played has to be able to pay for it.
+    /// Why a bridge can't be built, or `None` if one can: the country being played has to be able to pay for it, in
+    /// coins first, and then in the wood and the stone it takes.
     pub fn bridge_problem(&self) -> Option<BridgeProblem> {
-        match self.player_country() {
-            None => Some(BridgeProblem::NoCountry),
-            Some(country) if country.money < BRIDGE_COST => Some(BridgeProblem::NotEnoughCoin { country: country.name.clone(), money: country.money }),
-            Some(_) => None,
+        let Some(country) = self.player_country() else { return Some(BridgeProblem::NoCountry) };
+        if country.money < BRIDGE_COST {
+            return Some(BridgeProblem::NotEnoughCoin { country: country.name.clone(), money: country.money });
         }
+        BRIDGE_MATERIALS.iter().find(|(resource, needed)| country.stock.get(*resource) < *needed).map(|(resource, needed)| BridgeProblem::NotEnoughMaterial {
+            country: country.name.clone(),
+            resource: crate::country::resource_name(*resource),
+            needed: *needed,
+            has: country.stock.get(*resource),
+        })
     }
 
     /// Builds a bridge between `first` and `second`, which the caller has checked are fit places for one (see
-    /// [`check_bridge`]), and charges its cost to the country being played. An error says why it can't be done.
+    /// [`check_bridge`]), and charges its cost to the country being played: coins, wood and stone. An error says why it
+    /// can't be done.
     pub fn build_bridge(&mut self, first: Spot, second: Spot) -> Result<(), String> {
         if let Some(problem) = self.bridge_problem() {
             return Err(problem.long());
@@ -135,6 +164,9 @@ impl DaySave {
             .find(|b| self.is_failed(Thing::Bridge(b.id)) && ((near(b.first, first) && near(b.second, second)) || (near(b.first, second) && near(b.second, first))))
             .map(|b| b.id);
         self.add_money(country, -BRIDGE_COST)?;
+        for (resource, needed) in BRIDGE_MATERIALS {
+            self.add_resource(country, resource, -(needed as i64))?;
+        }
         match failed_here {
             Some(id) => self.repair(Thing::Bridge(id)),
             None => self.bridges.push(Bridge { id: BridgeId::new(), first, second }),
@@ -235,6 +267,8 @@ mod tests {
         day.found_country("Aldoria").unwrap();
         let id = day.countries[0].id;
         day.add_money(id, money).unwrap();
+        day.add_resource(id, Resource::Forest, 1_000).unwrap();
+        day.add_resource(id, Resource::Stone, 1_000).unwrap();
         day
     }
 
@@ -249,7 +283,10 @@ mod tests {
         assert_eq!(day.bridges.len(), 1);
         assert_eq!((day.bridges[0].first, day.bridges[0].second), (A, B));
         assert_eq!(day.countries[0].money, 1_500);
-        assert_eq!(day.countries[1].money, 0, "only the country being played pays");
+        assert_eq!(day.countries[1].money, crate::country::STARTING_MONEY, "only the country being played pays");
+        let stock = day.countries[0].stock;
+        assert_eq!((stock.wood, stock.stone), (900, 500), "and it takes 100 wood and 500 stone as well");
+        assert_eq!(day.countries[1].stock, crate::country::Stock::default());
         assert!(day.bridge(day.bridges[0].id).is_some());
     }
 
@@ -269,6 +306,44 @@ mod tests {
         let mut empty = DaySave::new(Date::FIRST, "Assets/map.nworld");
         assert_eq!(empty.bridge_problem(), Some(BridgeProblem::NoCountry));
         assert!(empty.build_bridge(A, B).is_err());
+    }
+
+    #[test]
+    fn a_bridge_needs_100_wood_and_500_stone_as_well_and_the_coin_is_asked_for_first() {
+        let mut day = day_with_money(5_000);
+        let id = day.countries[0].id;
+        day.add_resource(id, Resource::Forest, -1_000 + 99).unwrap();
+        let before = day.clone();
+        let problem = day.bridge_problem().unwrap();
+        assert_eq!(problem, BridgeProblem::NotEnoughMaterial { country: "Aldoria".to_owned(), resource: "wood", needed: 100, has: 99 });
+        assert_eq!(problem.short(), "Bridges need 100 wood (has 99)");
+        assert_eq!(problem.long(), "Not enough wood: a bridge needs 100 wood as well as its coins, and Aldoria has 99.");
+        assert!(day.build_bridge(A, B).unwrap_err().contains("Not enough wood"));
+        assert_eq!(day, before, "nothing is taken when it can't be done");
+        // One more wood is enough for the wood, and then it is the stone that is short.
+        day.add_resource(id, Resource::Forest, 1).unwrap();
+        day.add_resource(id, Resource::Stone, -1_000 + 499).unwrap();
+        assert_eq!(day.bridge_problem(), Some(BridgeProblem::NotEnoughMaterial { country: "Aldoria".to_owned(), resource: "stone", needed: 500, has: 499 }));
+        day.add_resource(id, Resource::Stone, 1).unwrap();
+        assert_eq!(day.bridge_problem(), None);
+        day.build_bridge(A, B).unwrap();
+        assert_eq!((day.countries[0].stock.wood, day.countries[0].stock.stone), (0, 0));
+        // With too little of everything, it is the coin it says first.
+        let mut poor = day_with_money(10);
+        poor.add_resource(poor.countries[0].id, Resource::Stone, -1_000).unwrap();
+        assert!(matches!(poor.bridge_problem(), Some(BridgeProblem::NotEnoughCoin { .. })));
+    }
+
+    #[test]
+    fn a_failed_bridge_built_again_takes_the_wood_and_stone_again_to_mend() {
+        let mut day = day_with_money(5_000);
+        day.build_bridge(A, B).unwrap();
+        day.fail(Thing::Bridge(day.bridges[0].id));
+        let (money, stock) = (day.countries[0].money, day.countries[0].stock);
+        day.build_bridge(A, B).unwrap();
+        assert_eq!(day.bridges.len(), 1, "it is mended and not built again");
+        assert_eq!(day.countries[0].money, money - BRIDGE_COST);
+        assert_eq!((day.countries[0].stock.wood, day.countries[0].stock.stone), (stock.wood - 100, stock.stone - 500));
     }
 
     #[test]
@@ -345,6 +420,7 @@ mod tests {
         assert!(problem.long().contains("1,000") && problem.long().contains("250"));
         assert!(!BridgeProblem::NoCountry.short().is_empty());
         let _ = CountryId::new();
+        assert!(BridgeProblem::NotEnoughMaterial { country: "Aldoria".to_owned(), resource: "stone", needed: 500, has: 3 }.long().contains("500 stone"));
     }
 
     /// A map 512 m across of dry ground, with a river 20 m wide across it (a lake level of 10 over ground at 5).

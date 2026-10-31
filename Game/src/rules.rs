@@ -205,6 +205,7 @@ mod tests {
         day.add_money(id, 5_000).unwrap();
         day.build_segment(Kind::Path, PathSegment::to_edge(1, 2)).unwrap();
         day.build_segment(Kind::Road, PathSegment::to_edge(3, 4)).unwrap();
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: -30.0, z: 0.0 }, Spot { x: 30.0, z: 0.0 }).unwrap();
         day
     }
@@ -275,6 +276,7 @@ mod tests {
         assert_eq!(day.countries[0].money, money - 10);
         day.build_segment(Kind::Road, road).unwrap();
         assert_eq!(day.countries[0].money, money - 10 - 100);
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: 31.0, z: 1.0 }, Spot { x: -29.0, z: 0.0 }).unwrap();
         assert_eq!(day.countries[0].money, money - 10 - 100 - 1_000);
         assert!(day.failed.is_empty(), "all three are mended");

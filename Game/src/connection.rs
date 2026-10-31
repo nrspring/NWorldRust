@@ -370,6 +370,7 @@ mod tests {
     #[test]
     fn a_bridge_joins_the_regions_at_its_two_ends_unless_it_has_failed() {
         let (mut day, id) = day();
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: -30.0, z: 0.0 }, Spot { x: 30.0, z: 0.0 }).unwrap();
         let bridge = day.bridges[0].id;
         let at_a = BridgeLink { bridge, end: End::First, region: A, to: None };

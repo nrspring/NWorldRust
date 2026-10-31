@@ -246,6 +246,7 @@ mod tests {
     #[test]
     fn a_target_destroys_what_it_is_in_the_day() {
         let mut day = day();
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: 0.0, z: 0.0 }, Spot { x: 40.0, z: 0.0 }).unwrap();
         day.build_gatherer(GathererKind::Woodcutter, 5.0, 5.0, 0xC001).unwrap();
         let (bridge, gatherer) = (day.bridges[0].id, day.gatherers[0].id);
@@ -259,6 +260,7 @@ mod tests {
     #[test]
     fn what_is_pointed_at_is_a_bridge_when_the_mouse_is_near_enough_to_it() {
         let mut day = day();
+        day.stock_for_bridges();
         day.build_bridge(Spot { x: 0.0, z: 0.0 }, Spot { x: 40.0, z: 0.0 }).unwrap();
         let bridge = day.bridges[0].id;
         let (paths, roads) = (PathRenderer::new(Kind::Path), PathRenderer::new(Kind::Road));
