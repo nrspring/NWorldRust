@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
 use crate::format::{money, thousands};
-use crate::ids::{CityId, CountryId, Guid, NoteId, PersonId};
+use crate::ids::{CityId, CountryId, Guid, NoteId, PersonId, WoodcutterId};
 use crate::text;
 
 /// One thing that happened, saved with the id of its subject and a `type`, so statistics can count
@@ -38,6 +38,17 @@ pub enum Event {
     /// The subject is a city, whose population went from `from` to `to` people, while it was or was not under
     /// siege.
     PopulationChanged { from: u32, to: u32, under_siege: bool },
+    /// The subject is a woodcutter, and it was built.
+    WoodcutterBuilt,
+    /// The subject is a woodcutter, which belonged to the country `country`, and it was destroyed in the region
+    /// numbered `region`. It is gone, so what the news says of it is kept here.
+    WoodcutterDestroyed { country: CountryId, region: u16 },
+    /// The subject is a woodcutter, and it was transferred from the country `from` to the country `to`.
+    WoodcutterTransferred { from: CountryId, to: CountryId },
+    /// The subject is a woodcutter, and it stopped operating because it lost its route to a city.
+    WoodcutterStopped,
+    /// The subject is a woodcutter, and it started operating, because it has a route to a city.
+    WoodcutterStarted,
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -102,6 +113,23 @@ impl News {
                     (false, false) => format!("{name} loses {change} people and falls to {now}"),
                 }
             }
+            Event::WoodcutterBuilt => match day.woodcutter(WoodcutterId::from(self.subject)) {
+                Some(woodcutter) => format!("{} builds a woodcutter in {}", day.country_name(woodcutter.country), day.region_label(woodcutter.region)),
+                None => "A woodcutter is built".to_owned(),
+            },
+            Event::WoodcutterDestroyed { country, region } => format!("{}'s woodcutter in {} is destroyed", day.country_name(country), day.region_label(region)),
+            Event::WoodcutterTransferred { from, to } => match day.woodcutter(WoodcutterId::from(self.subject)) {
+                Some(woodcutter) => format!("The woodcutter in {} is transferred from {} to {}", day.region_label(woodcutter.region), day.country_name(from), day.country_name(to)),
+                None => format!("A woodcutter is transferred from {} to {}", day.country_name(from), day.country_name(to)),
+            },
+            Event::WoodcutterStopped => match day.woodcutter(WoodcutterId::from(self.subject)) {
+                Some(woodcutter) => format!("{}'s woodcutter in {} stops operating, with no route to a city", day.country_name(woodcutter.country), day.region_label(woodcutter.region)),
+                None => "A woodcutter stops operating".to_owned(),
+            },
+            Event::WoodcutterStarted => match day.woodcutter(WoodcutterId::from(self.subject)) {
+                Some(woodcutter) => format!("{}'s woodcutter in {} starts operating", day.country_name(woodcutter.country), day.region_label(woodcutter.region)),
+                None => "A woodcutter starts operating".to_owned(),
+            },
             Event::Note { ref text } => text.clone(),
         }
     }

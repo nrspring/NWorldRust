@@ -94,10 +94,7 @@ impl Alert {
             Alert::CountryWithoutCities(id) => format!("{} has no cities", day.country_name(*id)),
             Alert::Failed(thing) => format!("A {} has failed", thing.name()),
             Alert::WoodcutterCutOff(id) => match day.woodcutter(*id) {
-                Some(w) => {
-                    let region = day.region_name(w.region).map_or_else(|| format!("region {}", w.region & 0x3FFF), str::to_owned);
-                    format!("The woodcutter in {region} has no path, road or bridge to a city of {}", day.country_name(w.country))
-                }
+                Some(w) => format!("The woodcutter in {} has no path, road or bridge to a city of {}", day.region_label(w.region), day.country_name(w.country)),
                 None => "A woodcutter has no path to a city".to_owned(),
             },
         }

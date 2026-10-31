@@ -43,7 +43,7 @@ pub enum Choice {
     Rename(CountryId, String),
     /// Give this country this color.
     Recolor(CountryId, Rgb),
-    /// Delete this country, which has no cities.
+    /// Delete this country, which owns nothing.
     Delete(CountryId),
 }
 
@@ -399,7 +399,7 @@ impl CountryMenu {
             let rect = Rect::new(list.x + LIST_PADDING, list.y + LIST_PADDING + row as f32 * ROW_HEIGHT, list.w - LIST_PADDING * 2.0, ROW_HEIGHT);
             let edit = Rect::new(rect.right() - 8.0 - 46.0, rect.center().y - 12.0, 46.0, 24.0);
             let delete = Rect::new(edit.x - 4.0 - 24.0, edit.y, 24.0, 24.0);
-            let has_cities = day.cities.iter().any(|c| c.country == country.id);
+            let can_delete = day.delete_problem(country.id).is_none();
             let over_row = rect.contains(mouse);
             if over_row && mouse_delta_position() != Vec2::ZERO {
                 self.highlight = place;
@@ -437,9 +437,9 @@ impl CountryMenu {
             let over_edit = edit.contains(mouse);
             style::rounded_rect(edit, 6.0, if over_edit { style::BORDER_STRONG } else { style::HOVER });
             style.text_centered("Edit", edit, 12, Weight::Semibold, if over_edit { style::TEXT } else { style::TEXT_MUTED });
-            // Delete, a cross, only for a country with no cities.
-            let over_delete = !has_cities && delete.contains(mouse);
-            if !has_cities {
+            // Delete, a cross, only for a country that owns nothing.
+            let over_delete = can_delete && delete.contains(mouse);
+            if can_delete {
                 if over_delete {
                     style::rounded_rect(delete, 6.0, Color::new(ERROR_SOFT.0, ERROR_SOFT.1, ERROR_SOFT.2, 0.25));
                 }
@@ -589,7 +589,7 @@ mod tests {
         Choice::Delete(brevon).apply(&mut day).unwrap();
         assert_eq!(day.countries.len(), 1);
         day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
-        assert!(Choice::Delete(day.countries[0].id).apply(&mut day).unwrap_err().contains("has cities"));
+        assert!(Choice::Delete(day.countries[0].id).apply(&mut day).unwrap_err().contains("owns 1 city"));
     }
 
     #[test]

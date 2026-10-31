@@ -132,10 +132,12 @@ impl DaySave {
     }
 
     /// The day after this one, as it starts: everything that carries forward (see [`following`](Self::following)),
-    /// with the day's rules run on it (see [`crate::rules`]).
+    /// with the day's rules run on it (see [`crate::rules`]), and the woodcutters that the rules cut off from a city
+    /// reported.
     pub fn next_day(&self) -> Self {
         let mut next = self.following(self.date.next());
         crate::rules::run(&mut next);
+        next.update_woodcutter_operation();
         next
     }
 
@@ -237,19 +239,39 @@ impl DaySave {
         Ok(())
     }
 
-    /// Removes the country with this id, which can only be done if it has no cities. Its people, its woodcutters
-    /// and the regions it owns go with it (the regions become unowned), and so does the news of any of them. If it was the
+    /// Why the country with this id can't be deleted, or `None` if it can: it can't own anything, which is cities,
+    /// woodcutters, and regions that it owns with no city of its in them. Its people don't count.
+    pub fn delete_problem(&self, id: CountryId) -> Option<String> {
+        let country = self.country(id)?;
+        let cities = self.cities.iter().filter(|c| c.country == id).count();
+        let woodcutters = self.woodcutters.iter().filter(|w| w.country == id).count();
+        let regions = self.region_owners.iter().filter(|o| o.country == id && !self.cities.iter().any(|c| c.country == id && c.region == Some(o.region))).count();
+        let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let mut owned: Vec<String> = Vec::new();
+        for (n, one, many) in [(cities, "city", "cities"), (woodcutters, "woodcutter", "woodcutters"), (regions, "region", "regions")] {
+            if n > 0 {
+                owned.push(plural(n, one, many));
+            }
+        }
+        let list = match owned.as_slice() {
+            [] => return None,
+            [only] => only.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        };
+        Some(format!("{} owns {list}, so it can't be deleted.", country.name))
+    }
+
+    /// Removes the country with this id, which can only be done if it owns nothing (see
+    /// [`delete_problem`](Self::delete_problem)). Its people go with it, and so does the news of them. If it was the
     /// country the player plays, the first country left is. An error says why it can't be done.
     pub fn delete_country(&mut self, id: CountryId) -> Result<(), String> {
-        let country = self.country(id).ok_or("There is no such country.")?;
-        if self.cities.iter().any(|c| c.country == id) {
-            return Err(format!("{} has cities, so it can't be deleted.", country.name));
+        self.country(id).ok_or("There is no such country.")?;
+        if let Some(problem) = self.delete_problem(id) {
+            return Err(problem);
         }
         let gone: Vec<Guid> = std::iter::once(id.into()).chain(self.people.iter().filter(|p| p.country == id).map(|p| Guid::from(p.id))).collect();
         self.countries.retain(|c| c.id != id);
         self.people.retain(|p| p.country != id);
-        self.region_owners.retain(|o| o.country != id);
-        self.woodcutters.retain(|w| w.country != id);
         self.newsreel.retain(|n| !gone.contains(&n.subject));
         if self.player == Some(id) {
             self.player = self.countries.first().map(|c| c.id);
@@ -900,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn a_country_with_no_cities_can_be_deleted_with_what_is_its_own() {
+    fn a_country_that_owns_nothing_can_be_deleted_with_its_people() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
         day.found_country("Brevon").unwrap();
@@ -908,16 +930,15 @@ mod tests {
         day.found_person("Mara Voss", "President", "Head of State").unwrap();
         day.select_country(brevon).unwrap();
         day.found_person("Tomas Rue", "King", "Monarch").unwrap();
-        day.set_region_owner(0x4005, Some(brevon)).unwrap();
         day.set_region_owner(0x4006, Some(aldoria)).unwrap();
         let tomas = day.people[1].id;
 
+        assert_eq!(day.delete_problem(brevon), None);
         day.delete_country(brevon).unwrap();
         assert_eq!(day.countries.len(), 1);
         assert!(day.country(brevon).is_none());
         assert_eq!(day.people.len(), 1, "its people go with it");
         assert_eq!(day.people[0].name, "Mara Voss");
-        assert_eq!(day.region_owner(0x4005), None, "its regions are unowned");
         assert_eq!(day.region_owner(0x4006), Some(aldoria), "other countries' regions are not touched");
         // Its news goes: the founding and Tomas joining, and nothing of Aldoria's.
         assert!(day.newsreel.iter().all(|n| n.subject != Guid::from(brevon) && n.subject != Guid::from(tomas)));
@@ -934,9 +955,35 @@ mod tests {
         day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
         let before = day.clone();
         let err = day.delete_country(day.countries[0].id).unwrap_err();
-        assert!(err.contains("Aldoria") && err.contains("cities"), "{err}");
+        assert_eq!(err, "Aldoria owns 1 city, so it can't be deleted.");
         assert!(day.delete_country(CountryId::new()).is_err());
+        assert_eq!(day.delete_problem(CountryId::new()), None, "there is nothing to say of a country that isn't there");
         assert_eq!(day, before);
+    }
+
+    #[test]
+    fn a_country_cannot_be_deleted_while_it_owns_anything_and_the_reason_lists_it() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        // A region it owns with no city in it.
+        day.set_region_owner(0x4005, Some(brevon)).unwrap();
+        assert_eq!(day.delete_problem(brevon).unwrap(), "Brevon owns 1 region, so it can't be deleted.");
+        let before = day.clone();
+        assert!(day.delete_country(brevon).unwrap_err().contains("owns 1 region"));
+        assert_eq!(day, before, "and nothing is lost");
+        // A woodcutter, and cities and a region together.
+        day.add_money(aldoria, 5_000).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4001)).unwrap();
+        day.found_city("Farhold", 10.0, 0.0, Some(0x4002)).unwrap();
+        day.build_woodcutter(5.0, 5.0, 0x4003).unwrap();
+        day.set_region_owner(0x4004, Some(aldoria)).unwrap();
+        assert_eq!(day.delete_problem(aldoria).unwrap(), "Aldoria owns 2 cities, 1 woodcutter and 1 region, so it can't be deleted.");
+        // Letting go of the region it owns by itself is what lets it go.
+        day.set_region_owner(0x4005, None).unwrap();
+        assert_eq!(day.delete_problem(brevon), None);
+        day.delete_country(brevon).unwrap();
     }
 
     #[test]

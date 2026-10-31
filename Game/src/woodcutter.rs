@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::day::DaySave;
 use crate::format;
 use crate::ids::{CountryId, WoodcutterId};
+use crate::newsreel::{Event, News};
 
 /// What a woodcutter costs, in coins.
 pub const WOODCUTTER_COST: i64 = 1_000;
@@ -29,6 +30,10 @@ pub struct Woodcutter {
     pub z: f32,
     /// The number of the map region it stands in.
     pub region: u16,
+    /// Whether it was operating when last looked at (see [`DaySave::update_woodcutter_operation`]), which is for
+    /// knowing when that changes. A woodcutter starts off not operating.
+    #[serde(default)]
+    pub operating: bool,
 }
 
 /// The numbers of the regions of `world` that have forest in them. This takes a pass over the whole map, so it is
@@ -91,8 +96,8 @@ impl DaySave {
     }
 
     /// Builds a woodcutter at (`x`, `z`) in the region numbered `region` for the country being played, which pays for
-    /// it. Whether the place is fit for one (see [`site_region`]) is for the caller to say. An error says why it can't
-    /// be done.
+    /// it, and reports it in the newsreel. Whether the place is fit for one (see [`site_region`]) is for the caller to
+    /// say. An error says why it can't be done.
     pub fn build_woodcutter(&mut self, x: f32, z: f32, region: u16) -> Result<(), String> {
         if let Some(problem) = self.woodcutter_problem() {
             return Err(problem);
@@ -105,8 +110,44 @@ impl DaySave {
         }
         let country = self.player_country().ok_or("There is no country yet to own a woodcutter.")?.id;
         self.add_money(country, -WOODCUTTER_COST)?;
-        self.woodcutters.push(Woodcutter { id: WoodcutterId::new(), country, x, z, region });
+        let id = WoodcutterId::new();
+        self.woodcutters.push(Woodcutter { id, country, x, z, region, operating: false });
+        self.newsreel.push(News::about(id, Event::WoodcutterBuilt));
         Ok(())
+    }
+
+    /// Transfers the woodcutter with this id to `country`, which is reported in the newsreel unless it belonged to it
+    /// already. The region it stands in can't belong to a different country from that. An error says why it can't be
+    /// done.
+    pub fn set_woodcutter_country(&mut self, id: WoodcutterId, country: CountryId) -> Result<(), String> {
+        self.country(country).ok_or("There is no such country.")?;
+        let Woodcutter { region, country: from, .. } = *self.woodcutter(id).ok_or("There is no such woodcutter.")?;
+        if from == country {
+            return Ok(());
+        }
+        if let Some(problem) = self.city_region_problem(country, Some(region)) {
+            return Err(problem);
+        }
+        if let Some(woodcutter) = self.woodcutters.iter_mut().find(|w| w.id == id) {
+            woodcutter.country = country;
+        }
+        self.newsreel.push(News::about(id, Event::WoodcutterTransferred { from, to: country }));
+        Ok(())
+    }
+
+    /// Destroys the woodcutter with this id, which costs nothing and pays nothing back, and reports it in the
+    /// newsreel. An error says why it can't be done.
+    pub fn destroy_woodcutter(&mut self, id: WoodcutterId) -> Result<(), String> {
+        let Woodcutter { country, region, .. } = *self.woodcutter(id).ok_or("There is no such woodcutter to destroy.")?;
+        self.woodcutters.retain(|w| w.id != id);
+        self.newsreel.push(News::about(id, Event::WoodcutterDestroyed { country, region }));
+        Ok(())
+    }
+
+    /// What to call the map region numbered `region` in a sentence: its name if it has one, and otherwise "region" and
+    /// its number.
+    pub fn region_label(&self, region: u16) -> String {
+        self.region_name(region).map_or_else(|| format!("region {}", region & 0x3FFF), str::to_owned)
     }
 }
 
@@ -190,6 +231,109 @@ mod tests {
     }
 
     #[test]
+    fn building_a_woodcutter_is_in_the_newsreel_with_the_woodcutter_as_its_subject() {
+        let mut day = day_with_money(2_000);
+        let before = day.newsreel.len();
+        day.build_woodcutter(-100.0, 20.0, 0xC007).unwrap();
+        let id = day.woodcutters[0].id;
+        assert_eq!(day.newsreel.len(), before + 1);
+        let news = day.newsreel.last().unwrap();
+        assert_eq!(*news, News::about(id, Event::WoodcutterBuilt));
+        assert_eq!(news.headline(&day), "Aldoria builds a woodcutter in region 7");
+        day.set_region_name(0xC007, "The Greenwood").unwrap();
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a woodcutter in The Greenwood");
+        // It is saved with its kind, and the subject's id is never in the words.
+        let json = serde_json::to_string(day.newsreel.last().unwrap()).unwrap();
+        assert!(json.contains(r#""type":"woodcutter_built""#), "{json}");
+        assert!(!day.newsreel.last().unwrap().headline(&day).contains(&id.to_string()));
+        // News of one that is gone reads on without it, and a woodcutter that can't be built is not reported.
+        assert_eq!(News::about(WoodcutterId::new(), Event::WoodcutterBuilt).headline(&day), "A woodcutter is built");
+        let count = day.newsreel.len();
+        assert!(day.build_woodcutter(0.0, 0.0, 0xC007).is_err());
+        assert_eq!(day.newsreel.len(), count);
+    }
+
+    #[test]
+    fn a_woodcutter_can_be_transferred_to_another_country_unless_the_region_is_a_third_countrys() {
+        let mut day = day_with_money(5_000);
+        day.found_country("Brevon").unwrap();
+        day.found_country("Cardell").unwrap();
+        let (aldoria, brevon, cardell) = (day.countries[0].id, day.countries[1].id, day.countries[2].id);
+        day.build_woodcutter(0.0, 0.0, 0xC001).unwrap();
+        let id = day.woodcutters[0].id;
+        let paid = day.countries[0].money;
+        day.set_woodcutter_country(id, brevon).unwrap();
+        assert_eq!(day.woodcutter(id).unwrap().country, brevon);
+        assert_eq!(day.countries[0].money, paid, "it costs nothing");
+        assert_eq!((day.woodcutter(id).unwrap().x, day.woodcutter(id).unwrap().region), (0.0, 0xC001), "and it stays where it is");
+        // Its region being Cardell's, only Cardell can have it.
+        day.set_region_owner(0xC001, Some(cardell)).unwrap();
+        let before = day.clone();
+        assert!(day.set_woodcutter_country(id, aldoria).unwrap_err().contains("belongs to Cardell"));
+        assert_eq!(day, before);
+        day.set_woodcutter_country(id, cardell).unwrap();
+        // A country or a woodcutter that isn't there is an error.
+        assert!(day.set_woodcutter_country(id, CountryId::new()).is_err());
+        assert!(day.set_woodcutter_country(WoodcutterId::new(), cardell).is_err());
+        // Which country it is changes which cities it has to reach.
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0xC002)).unwrap();
+        day.select_country(brevon).unwrap();
+        day.found_city("Brevonport", 9.0, 0.0, Some(0xC003)).unwrap();
+        assert_eq!(day.cut_off_woodcutters(), [id], "Cardell has no city to reach");
+    }
+
+    #[test]
+    fn transferring_a_woodcutter_to_another_country_and_destroying_one_are_in_the_newsreel() {
+        let mut day = day_with_money(5_000);
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.build_woodcutter(0.0, 0.0, 0xC001).unwrap();
+        let id = day.woodcutters[0].id;
+        let before = day.newsreel.len();
+
+        // Transferred to the country it already has, nothing happens and there is no news.
+        day.set_woodcutter_country(id, aldoria).unwrap();
+        assert_eq!(day.newsreel.len(), before);
+        day.set_woodcutter_country(id, brevon).unwrap();
+        let news = day.newsreel.last().unwrap();
+        assert_eq!(*news, News::about(id, Event::WoodcutterTransferred { from: aldoria, to: brevon }));
+        assert_eq!(news.headline(&day), "The woodcutter in region 1 is transferred from Aldoria to Brevon");
+        assert!(serde_json::to_string(news).unwrap().contains(r#""type":"woodcutter_transferred""#));
+        // A change that can't be made is not news.
+        let count = day.newsreel.len();
+        assert!(day.set_woodcutter_country(id, CountryId::new()).is_err());
+        assert_eq!(day.newsreel.len(), count);
+
+        // Destroyed, it is gone, and the news still says whose it was and where.
+        day.destroy_woodcutter(id).unwrap();
+        let news = day.newsreel.last().unwrap();
+        assert_eq!(*news, News::about(id, Event::WoodcutterDestroyed { country: brevon, region: 0xC001 }));
+        assert_eq!(news.headline(&day), "Brevon's woodcutter in region 1 is destroyed");
+        let json = serde_json::to_string(news).unwrap();
+        assert!(json.contains(r#""type":"woodcutter_destroyed""#) && json.contains(r#""region":49153"#), "{json}");
+        assert_eq!(serde_json::from_str::<News>(&json).unwrap(), *news);
+        let count = day.newsreel.len();
+        assert!(day.destroy_woodcutter(id).is_err());
+        assert_eq!(day.newsreel.len(), count, "one that isn't there is not news");
+        assert_eq!(News::about(id, Event::WoodcutterTransferred { from: aldoria, to: brevon }).headline(&day), "A woodcutter is transferred from Aldoria to Brevon");
+    }
+
+    #[test]
+    fn a_woodcutter_destroyed_is_gone_for_nothing_and_its_region_has_room_for_another() {
+        let mut day = day_with_money(5_000);
+        day.build_woodcutter(0.0, 0.0, 0xC001).unwrap();
+        let id = day.woodcutters[0].id;
+        let paid = day.countries[0].money;
+        day.destroy_woodcutter(id).unwrap();
+        assert!(day.woodcutters.is_empty() && day.woodcutter(id).is_none() && day.woodcutter_in(0xC001).is_none());
+        assert_eq!(day.countries[0].money, paid, "nothing is paid back");
+        assert!(day.destroy_woodcutter(id).unwrap_err().contains("no such woodcutter"));
+        assert!(day.cut_off_woodcutters().is_empty());
+        day.build_woodcutter(3.0, 3.0, 0xC001).unwrap();
+        assert_eq!(day.woodcutters.len(), 1);
+    }
+
+    #[test]
     fn a_woodcutter_cannot_be_built_without_the_coin_and_says_why() {
         let mut day = day_with_money(999);
         let before = day.clone();
@@ -248,12 +392,11 @@ mod tests {
         let mut old = serde_json::to_value(&day).unwrap();
         old.as_object_mut().unwrap().remove("woodcutters");
         assert!(serde_json::from_value::<DaySave>(old).unwrap().woodcutters.is_empty());
-        // The other country, which has none, can go; the one that owns it can't while it has cities, but can without.
+        // The other country, which owns nothing, can go; the one that owns the woodcutter can't.
         day.delete_country(day.countries[1].id).unwrap();
         assert_eq!(day.woodcutters.len(), 1);
-        day.found_country("Cardell").unwrap();
-        day.select_country(day.countries[1].id).unwrap();
-        day.delete_country(day.countries[0].id).unwrap();
-        assert!(day.woodcutters.is_empty(), "it was Aldoria's");
+        let before = day.clone();
+        assert_eq!(day.delete_country(day.countries[0].id).unwrap_err(), "Aldoria owns 1 woodcutter, so it can't be deleted.");
+        assert_eq!(day, before);
     }
 }

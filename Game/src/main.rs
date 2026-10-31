@@ -10,6 +10,7 @@ mod bridge_tool;
 mod destroy_tool;
 mod connection;
 mod woodcutter;
+mod woodcutter_popup;
 mod woodcutter_tool;
 mod woodcutter_view;
 mod bridge_view;
@@ -76,6 +77,7 @@ use options::{Options, OptionsUi};
 use bridge::BRIDGE_COST;
 use bridge_tool::BridgeTool;
 use destroy_tool::DestroyTool;
+use woodcutter_popup::WoodcutterPopup;
 use woodcutter_tool::WoodcutterTool;
 use bridge_view::BridgeRenderer;
 use path::Kind;
@@ -231,6 +233,8 @@ async fn main() {
     let mut country_menu = CountryMenu::default();
     // The popup for the city that was clicked.
     let mut city_popup = CityPopup::default();
+    // The popup for the woodcutter that was clicked.
+    let mut woodcutter_popup = WoodcutterPopup::default();
     // The owned regions the map is showing, as (region, color), to know when they change.
     let mut shown_owners: Vec<(u16, Rgb)> = Vec::new();
     let mut autosave = Autosave::new(&day, get_time());
@@ -248,6 +252,8 @@ async fn main() {
                 advance_popup.close();
             } else if city_popup.is_open() {
                 city_popup.escape();
+            } else if woodcutter_popup.is_open() {
+                woodcutter_popup.escape();
             } else if country_menu.is_open() {
                 country_menu.escape();
             } else if options_ui.is_open() || overlays_ui.is_open() {
@@ -281,6 +287,9 @@ async fn main() {
         }
         let dt = get_frame_time();
         time += dt;
+        // A woodcutter that has been cut off from a city, or has got a route to one, since last looked at is news. This is
+        // not saved at once: the autosave finds the change.
+        day.update_woodcutter_operation();
 
         if asking.is_none() {
             asking = Asking::of(&day).map(|kind| {
@@ -290,7 +299,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || country_menu.is_open() || city_popup.is_open() || woodcutter_popup.is_open() || advance_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
@@ -421,13 +430,13 @@ async fn main() {
                 }
             }
         } else if !modal && destroy_tool.is_active() {
-            // With the destroy tool on, a click is for destroying the path, road or bridge the mouse is on.
+            // With the destroy tool on, a click is for destroying the path, road, bridge or woodcutter the mouse is on.
             let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
             let reach = (camera.distance() * 0.006).clamp(0.0, 20.0);
-            if let Some(thing) = destroy_tool.update(&scene, &day, &paths, &roads, reach, clicked) {
+            if let Some(target) = destroy_tool.update(&scene, &day, &paths, &roads, reach, clicked) {
                 // Only keep it destroyed if that is saved too.
                 let mut updated = day.clone();
-                match updated.destroy(thing).and_then(|()| autosave.save_now(&saves, &updated)) {
+                match target.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
                     Ok(()) => {
                         day = updated;
                         destroy_tool.destroyed();
@@ -445,6 +454,10 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 city_popup.open(id);
+            } else if let Some(id) = woodcutter_hover {
+                options_ui.close();
+                overlays_ui.close();
+                woodcutter_popup.open(id);
             } else if let Some(id) = place_hover {
                 // With the named places showing, a click on the label of a place is for changing it.
                 options_ui.close();
@@ -682,6 +695,15 @@ async fn main() {
             match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
                 Ok(()) => day = updated,
                 Err(message) => city_popup.fail(message),
+            }
+        }
+
+        if let Some(change) = woodcutter_popup.show(&style, &day) {
+            // Only keep the change if it is saved too.
+            let mut updated = day.clone();
+            match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
+                Ok(()) => day = updated,
+                Err(message) => woodcutter_popup.fail(message),
             }
         }
 

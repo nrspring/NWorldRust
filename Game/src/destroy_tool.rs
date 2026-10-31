@@ -1,7 +1,7 @@
-//! The destroy tool: a button in the footer that turns it on, and then the player points at a path, a road or a bridge
-//! and clicks it, and it is gone for good. It costs nothing, and nothing is paid back. The one the mouse is on is
-//! marked in red, so that it is clear which will go; if it is a bridge, so are the paths and roads that start at its
-//! ends.
+//! The destroy tool: a button in the footer that turns it on, and then the player points at a path, a road, a bridge
+//! or a woodcutter and clicks it, and it is gone for good. It costs nothing, and nothing is paid back. The one the
+//! mouse is on is marked in red, so that it is clear which will go; if it is a bridge, so are the paths and roads that
+//! start at its ends.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -10,9 +10,29 @@ use nworld_view::{mouse_ray, pick_terrain};
 use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::hud;
+use crate::ids::WoodcutterId;
 use crate::path::{Kind, PathPiece};
 use crate::path_tool::Scene;
 use crate::path_view::{distance_to_segment, PathRenderer};
+use crate::woodcutter_view;
+
+/// What the tool can destroy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Target {
+    /// A path, a road or a bridge, or a path or road from the end of one.
+    Built(Thing),
+    Woodcutter(WoodcutterId),
+}
+
+impl Target {
+    /// Destroys it in `day`. An error says why it can't be done.
+    pub fn apply(self, day: &mut DaySave) -> Result<(), String> {
+        match self {
+            Self::Built(thing) => day.destroy(thing),
+            Self::Woodcutter(id) => day.destroy_woodcutter(id),
+        }
+    }
+}
 
 /// The least distance, in meters, the mouse can be from something and still be on it.
 const LEAST_REACH: f32 = 5.0;
@@ -31,7 +51,7 @@ const RED: Color = Color::new(0.93, 0.26, 0.24, 1.0);
 pub struct DestroyTool {
     active: bool,
     /// What the mouse is on, which a click destroys.
-    hovered: Option<Thing>,
+    hovered: Option<Target>,
     /// Why the last one couldn't be destroyed.
     notice: Option<String>,
     /// Where the prompt was drawn last, so the mouse can be told it is over it.
@@ -52,7 +72,7 @@ impl DestroyTool {
         self.deactivate();
     }
 
-    /// Shows why the thing that `update` gave couldn't be destroyed.
+    /// Shows why what `update` gave couldn't be destroyed.
     pub fn fail(&mut self, message: String) {
         self.notice = Some(message);
     }
@@ -80,16 +100,28 @@ impl DestroyTool {
     /// Marks the thing the mouse is on, in the map's camera, and works out what the player is doing. `reach` is how
     /// close, in meters, the mouse has to be to a thing to be on it, which grows as the camera moves away. `clicked` is
     /// whether the left button was just clicked on the map. Returns what the player has just clicked, for the caller to
-    /// destroy.
-    pub fn update(&mut self, scene: &Scene, day: &DaySave, paths: &PathRenderer, roads: &PathRenderer, reach: f32, clicked: bool) -> Option<Thing> {
+    /// destroy. A woodcutter is pointed at where it is seen, and is first, since it stands over what is round it.
+    pub fn update(&mut self, scene: &Scene, day: &DaySave, paths: &PathRenderer, roads: &PathRenderer, reach: f32, clicked: bool) -> Option<Target> {
         if !self.active {
             return None;
         }
-        let under_mouse = if scene.over_map { pick_terrain(scene.eye, scene.world, scene.mouse) } else { None };
-        self.hovered = under_mouse.and_then(|at| Self::thing_near(day, paths, roads, at, reach.max(LEAST_REACH)));
+        let ray = mouse_ray(scene.eye, scene.mouse);
+        let origin = ray.0;
+        let woodcutter = if scene.over_map { woodcutter_view::under_ray(ray, scene.world, &day.woodcutters) } else { None };
+        self.hovered = match woodcutter {
+            Some(id) => Some(Target::Woodcutter(id)),
+            None => {
+                let under_mouse = if scene.over_map { pick_terrain(scene.eye, scene.world, scene.mouse) } else { None };
+                under_mouse.and_then(|at| Self::thing_near(day, paths, roads, at, reach.max(LEAST_REACH))).map(Target::Built)
+            }
+        };
 
-        if let Some(thing) = self.hovered {
-            let (origin, _) = mouse_ray(scene.eye, scene.mouse);
+        if let Some(Target::Woodcutter(id)) = self.hovered {
+            if let Some(woodcutter) = day.woodcutter(id) {
+                woodcutter_view::outline(scene.world, woodcutter, RED);
+            }
+        }
+        if let Some(Target::Built(thing)) = self.hovered {
             for (line, hold) in lines_of(day, paths, roads, thing) {
                 for pair in line.windows(2) {
                     let steps = (pair[0].distance(pair[1]) / MARK_EVERY).ceil().max(1.0) as usize;
@@ -148,14 +180,15 @@ impl DestroyTool {
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 88.0, width, 88.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
-        style.text_mid("Destroy a path, a road or a bridge", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+        style.text_mid("Destroy a path, a road, a bridge or a woodcutter", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
         match (&self.notice, self.hovered) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
-            (None, Some(thing)) => {
+            (None, Some(Target::Built(thing))) => {
                 let failed = if day.is_failed(thing) { " (it has failed)" } else { "" };
                 let more = if matches!(thing, Thing::Bridge(_)) { " The paths and roads from its ends go too." } else { "" };
                 style.text_mid(&format!("Click to destroy this {}{failed}.{more}", thing.name()), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR)
             }
+            (None, Some(Target::Woodcutter(_))) => style.text_mid("Click to destroy this woodcutter.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, None) => style.text_mid("Point at one and click it. Esc stops.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         style.text_mid("Destroying is free, and nothing is paid back.", panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
@@ -203,6 +236,19 @@ mod tests {
         assert!(!tool.has_mouse(vec2(5.0, 5.0)));
         tool.active = true;
         assert!(tool.has_mouse(vec2(5.0, 5.0)) && !tool.has_mouse(vec2(50.0, 5.0)));
+    }
+
+    #[test]
+    fn a_target_destroys_what_it_is_in_the_day() {
+        let mut day = day();
+        day.build_bridge(Spot { x: 0.0, z: 0.0 }, Spot { x: 40.0, z: 0.0 }).unwrap();
+        day.build_woodcutter(5.0, 5.0, 0xC001).unwrap();
+        let (bridge, woodcutter) = (day.bridges[0].id, day.woodcutters[0].id);
+        Target::Woodcutter(woodcutter).apply(&mut day).unwrap();
+        assert!(day.woodcutters.is_empty() && day.bridges.len() == 1);
+        assert!(Target::Woodcutter(woodcutter).apply(&mut day).is_err(), "it is already gone");
+        Target::Built(Thing::Bridge(bridge)).apply(&mut day).unwrap();
+        assert!(day.bridges.is_empty());
     }
 
     #[test]

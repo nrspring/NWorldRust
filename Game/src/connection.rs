@@ -13,6 +13,7 @@ use crate::bridge::End;
 use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::ids::{BridgeId, WoodcutterId};
+use crate::newsreel::{Event, News};
 use crate::path::{Kind, PathPiece};
 use crate::woodcutter::Woodcutter;
 
@@ -129,6 +130,26 @@ impl DaySave {
         self.woodcutter(id).is_some() && !self.cut_off_woodcutters().contains(&id)
     }
 
+    /// Brings what each woodcutter says of whether it is operating up to date with whether it has a route to a city,
+    /// and reports each one that stopped or started in the newsreel. Returns whether any changed.
+    pub fn update_woodcutter_operation(&mut self) -> bool {
+        if self.woodcutters.is_empty() {
+            return false;
+        }
+        let cut_off = self.cut_off_woodcutters();
+        let mut news = Vec::new();
+        for woodcutter in &mut self.woodcutters {
+            let operating = !cut_off.contains(&woodcutter.id);
+            if woodcutter.operating != operating {
+                woodcutter.operating = operating;
+                news.push(News::about(woodcutter.id, if operating { Event::WoodcutterStarted } else { Event::WoodcutterStopped }));
+            }
+        }
+        let changed = !news.is_empty();
+        self.newsreel.extend(news);
+        changed
+    }
+
     fn reaches_a_city(&self, network: &mut Network, woodcutter: &Woodcutter) -> bool {
         self.cities.iter().filter(|c| c.country == woodcutter.country).filter_map(|c| c.region).any(|region| network.connects(woodcutter.region, region))
     }
@@ -239,6 +260,93 @@ mod tests {
         day.repair(Thing::Road(PathSegment::to_edge(C, A)));
         day.destroy(piece).unwrap();
         assert!(!day.woodcutter_operating(id));
+    }
+
+    /// The news of the woodcutter's operation in the day's newsreel, as headlines, after the one that it was built.
+    fn operation_news(day: &DaySave) -> Vec<String> {
+        day.newsreel.iter().filter(|n| matches!(n.event, Event::WoodcutterStarted | Event::WoodcutterStopped)).map(|n| n.headline(day)).collect()
+    }
+
+    #[test]
+    fn a_woodcutter_that_gets_a_route_starts_operating_and_it_is_news_once() {
+        let (mut day, id) = day();
+        assert!(!day.woodcutters[0].operating, "it starts off not operating");
+        // Still no route, so nothing to report.
+        assert!(!day.update_woodcutter_operation());
+        assert!(operation_news(&day).is_empty());
+        route(&mut day);
+        assert!(day.update_woodcutter_operation());
+        assert!(day.woodcutters[0].operating);
+        assert_eq!(operation_news(&day), ["Aldoria's woodcutter in region 2 starts operating"]);
+        assert_eq!(day.newsreel.last().unwrap().subject, id.into());
+        // Looking again says nothing more.
+        assert!(!day.update_woodcutter_operation());
+        assert_eq!(operation_news(&day).len(), 1);
+    }
+
+    #[test]
+    fn a_woodcutter_that_loses_its_route_stops_and_it_starts_again_when_it_is_mended_each_is_news() {
+        let (mut day, _) = day();
+        route(&mut day);
+        day.update_woodcutter_operation();
+        let piece = Thing::Path(PathSegment::to_edge(C, B));
+        day.fail(piece);
+        assert!(day.update_woodcutter_operation());
+        assert!(!day.woodcutters[0].operating);
+        assert_eq!(operation_news(&day).last().unwrap(), "Aldoria's woodcutter in region 2 stops operating, with no route to a city");
+        assert!(!day.update_woodcutter_operation(), "and it is only said once");
+        // Built again, it is mended, and the woodcutter starts again.
+        day.build_segment(Kind::Path, PathSegment::to_edge(C, B)).unwrap();
+        assert!(day.update_woodcutter_operation());
+        assert!(day.woodcutters[0].operating);
+        assert_eq!(operation_news(&day).len(), 3, "started, stopped, started");
+        assert_eq!(operation_news(&day).last().unwrap(), "Aldoria's woodcutter in region 2 starts operating");
+    }
+
+    #[test]
+    fn each_woodcutter_is_reported_on_its_own() {
+        let (mut day, first) = day();
+        day.build_woodcutter(150.0, 0.0, C).unwrap();
+        let second = day.woodcutters[1].id;
+        // The route from B reaches C, where the second one is, but the city is in A: neither has a route to it until the
+        // route goes on to A, and then they start together.
+        day.build_segment(Kind::Path, PathSegment::to_edge(B, C)).unwrap();
+        day.build_segment(Kind::Path, PathSegment::to_edge(C, B)).unwrap();
+        assert!(!day.update_woodcutter_operation());
+        day.build_segment(Kind::Road, PathSegment::to_edge(C, A)).unwrap();
+        assert!(day.update_woodcutter_operation());
+        let started: Vec<_> = day.newsreel.iter().filter(|n| n.event == Event::WoodcutterStarted).map(|n| n.subject).collect();
+        assert_eq!(started, [first.into(), second.into()]);
+        // Cutting the last piece stops both.
+        day.fail(Thing::Road(PathSegment::to_edge(C, A)));
+        day.update_woodcutter_operation();
+        assert_eq!(day.newsreel.iter().filter(|n| n.event == Event::WoodcutterStopped).count(), 2);
+    }
+
+    #[test]
+    fn what_happens_as_the_day_ends_is_reported_in_the_new_days_news() {
+        let (mut day, _) = day();
+        route(&mut day);
+        day.update_woodcutter_operation();
+        // The route is lost as the day ends, and the new day begins with the news and with it recorded.
+        day.destroy(Thing::Road(PathSegment::to_edge(C, A))).unwrap();
+        let next = day.next_day();
+        assert!(operation_news(&next).contains(&"Aldoria's woodcutter in region 2 stops operating, with no route to a city".to_owned()));
+        assert!(!next.woodcutters[0].operating);
+        assert!(day.woodcutters[0].operating, "the day that ended is as it was");
+        // A day with nothing lost carries it on with nothing to report.
+        let (mut kept, _) = self::day();
+        route(&mut kept);
+        kept.update_woodcutter_operation();
+        assert!(kept.following(crate::calendar::Date { year: 1, month: 1, day: 2 }).woodcutters[0].operating);
+    }
+
+    #[test]
+    fn an_old_save_with_a_woodcutter_that_says_nothing_of_operating_has_it_not_operating() {
+        let (day, _) = day();
+        let mut json = serde_json::to_value(&day).unwrap();
+        json["woodcutters"][0].as_object_mut().unwrap().remove("operating");
+        assert!(!serde_json::from_value::<DaySave>(json).unwrap().woodcutters[0].operating);
     }
 
     #[test]

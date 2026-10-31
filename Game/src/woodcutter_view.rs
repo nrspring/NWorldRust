@@ -39,6 +39,13 @@ pub fn draw(world: &World, day: &DaySave) {
     }
 }
 
+/// Draws a frame of `color` round each part of `woodcutter`, to mark it out, as seen by the camera that is set.
+pub fn outline(world: &World, woodcutter: &Woodcutter, color: Color) {
+    for part in parts(world, woodcutter, WHITE) {
+        draw_cube_wires(part.middle, part.size * 1.04, color);
+    }
+}
+
 /// The woodcutter the ray (where it starts and which way it points, as `mouse_ray` gives it) goes through first, if it
 /// goes through any.
 pub fn under_ray(ray: (Vec3, Vec3), world: &World, woodcutters: &[Woodcutter]) -> Option<WoodcutterId> {
@@ -117,7 +124,7 @@ mod tests {
     }
 
     fn woodcutter() -> Woodcutter {
-        Woodcutter { id: WoodcutterId::new(), country: CountryId::new(), x: 0.0, z: 0.0, region: 1 }
+        Woodcutter { id: WoodcutterId::new(), country: CountryId::new(), x: 0.0, z: 0.0, region: 1, operating: false }
     }
 
     #[test]
