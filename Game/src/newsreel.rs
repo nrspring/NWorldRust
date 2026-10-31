@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
-use crate::format::{money, thousands};
+use crate::format::{money, thousands, thousands_u64};
 use crate::ids::{CityId, CountryId, Guid, NoteId, PersonId, WoodcutterId};
 use crate::text;
 
@@ -38,6 +38,8 @@ pub enum Event {
     /// The subject is a city, whose population went from `from` to `to` people, while it was or was not under
     /// siege.
     PopulationChanged { from: u32, to: u32, under_siege: bool },
+    /// The subject is a country, and its woodcutters that were operating provided this much wood.
+    WoodGathered { amount: u64 },
     /// The subject is a woodcutter, and it was built.
     WoodcutterBuilt,
     /// The subject is a woodcutter, which belonged to the country `country`, and it was destroyed in the region
@@ -113,6 +115,7 @@ impl News {
                     (false, false) => format!("{name} loses {change} people and falls to {now}"),
                 }
             }
+            Event::WoodGathered { amount } => format!("{} gathers {} wood from its woodcutters", day.country_name(CountryId::from(self.subject)), thousands_u64(amount)),
             Event::WoodcutterBuilt => match day.woodcutter(WoodcutterId::from(self.subject)) {
                 Some(woodcutter) => format!("{} builds a woodcutter in {}", day.country_name(woodcutter.country), day.region_label(woodcutter.region)),
                 None => "A woodcutter is built".to_owned(),

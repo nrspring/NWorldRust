@@ -15,6 +15,8 @@ use crate::newsreel::{Event, News};
 
 /// What a woodcutter costs, in coins.
 pub const WOODCUTTER_COST: i64 = 1_000;
+/// How much wood a woodcutter that is operating provides its country each day.
+pub const WOODCUTTER_WOOD: u64 = 100;
 /// How dense the forest has to be at a point of the map, from 0 to 255, to count as forest there, and how many such
 /// points a region needs to have for it to count as having forest at all: a stray speck doesn't make a forest.
 const FOREST_DENSITY: u8 = 32;
