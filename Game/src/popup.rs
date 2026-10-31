@@ -8,6 +8,7 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
+use crate::transfer::Asset;
 use crate::{city, country, newsreel, person, place, region_name, text, title_type};
 
 const CARD_WIDTH: f32 = 520.0;
@@ -38,6 +39,7 @@ pub enum Icon {
     Region,
     River,
     Note,
+    Coin,
 }
 
 struct Field {
@@ -50,13 +52,15 @@ struct Field {
     /// Whether it is a drop-down, a text field that also has a list of choices to pick from, and
     /// what is typed in it that isn't one of them is a new choice.
     drop_down: bool,
+    /// Whether what is typed in a drop-down may be something that isn't a choice. If not, it has to be one of them.
+    allows_new: bool,
     /// The choices of a drop-down. There may be none yet.
     options: Vec<String>,
 }
 
 impl Field {
     fn new(label: &'static str, placeholder: &'static str, max_chars: usize) -> Self {
-        Self { label, placeholder, max_chars, accepts: text::is_text_char, value: String::new(), drop_down: false, options: Vec::new() }
+        Self { label, placeholder, max_chars, accepts: text::is_text_char, value: String::new(), drop_down: false, allows_new: true, options: Vec::new() }
     }
 
     /// The same, taking the characters `accepts` says yes to.
@@ -67,6 +71,11 @@ impl Field {
     /// A drop-down with these choices, of which there may be none yet.
     fn choice(label: &'static str, placeholder: &'static str, max_chars: usize, options: Vec<String>) -> Self {
         Self { drop_down: true, options, ..Self::new(label, placeholder, max_chars) }
+    }
+
+    /// A drop-down whose answer has to be one of `options`.
+    fn pick_from(label: &'static str, placeholder: &'static str, max_chars: usize, options: Vec<String>) -> Self {
+        Self { allows_new: false, ..Self::choice(label, placeholder, max_chars, options) }
     }
 
     fn is_choice(&self) -> bool {
@@ -81,7 +90,7 @@ impl Field {
     /// Whether what is typed is not one of the choices, so it would be a new one.
     fn is_new_choice(&self) -> bool {
         let typed = self.value.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
-        self.is_choice() && !typed.is_empty() && !self.options.iter().any(|o| o.to_lowercase() == typed)
+        self.is_choice() && self.allows_new && !typed.is_empty() && !self.options.iter().any(|o| o.to_lowercase() == typed)
     }
 }
 
@@ -126,6 +135,16 @@ fn check_place(typed: &[String]) -> Result<Vec<String>, String> {
 
 fn check_note(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![newsreel::clean_note(&typed[0])?])
+}
+
+fn check_transfer(typed: &[String]) -> Result<Vec<String>, String> {
+    let asset = Asset::named(&typed[0]).ok_or("Choose what to send: coins or one of the resources.")?;
+    let to = typed[1].split_whitespace().collect::<Vec<_>>().join(" ");
+    if to.is_empty() {
+        return Err("Choose the country to send to.".to_owned());
+    }
+    let amount = typed[2].trim().parse::<u64>().ok().filter(|n| *n > 0).ok_or("Enter how much to send, as a whole number.")?;
+    Ok(vec![asset.label(), to, amount.to_string()])
 }
 
 fn check_city(typed: &[String]) -> Result<Vec<String>, String> {
@@ -222,6 +241,30 @@ impl Popup {
             vec![Field::new("NOTE", "e.g. The harvest festival begins", newsreel::MAX_NOTE_CHARS).accepting(newsreel::is_note_char)],
             check_note,
         )
+    }
+
+    /// Asks what `from` sends, to which of the countries `others`, and how much. `asset` is what it starts as, if the
+    /// player has already picked one.
+    pub fn transfer(from: &str, others: Vec<String>, asset: Option<Asset>) -> Self {
+        let mut popup = Self::new(
+            "Send to another country",
+            format!("From {from}'s treasury."),
+            Icon::Coin,
+            "Send",
+            vec![
+                Field::pick_from("WHAT TO SEND", "Coins, or a resource", 8, Asset::ALL.iter().map(|a| a.label()).collect()),
+                Field::pick_from("SEND TO", "Choose a country", country::MAX_NAME_CHARS, others.clone()),
+                Field::new("AMOUNT", "e.g. 500", 15).accepting(|c| c.is_ascii_digit()),
+            ],
+            check_transfer,
+        );
+        popup.fields[0].value = asset.map(Asset::label).unwrap_or_default();
+        if let [only] = others.as_slice() {
+            popup.fields[1].value = only.clone();
+        }
+        // Start on the first thing that is still to answer.
+        popup.focus = popup.fields.iter().position(|f| f.value.is_empty()).unwrap_or(2);
+        popup
     }
 
     /// Asks for the name of the city being founded.
@@ -582,6 +625,7 @@ pub fn draw_icon(icon: Icon, badge: Rect) {
             draw_triangle(vec2(c.x - 6.0, c.y + 1.0), vec2(c.x + 6.0, c.y + 1.0), vec2(c.x, c.y + 14.0), style::ACCENT);
             draw_circle(c.x, c.y - 4.0, 3.2, style::PANEL);
         }
+        Icon::Coin => crate::hud::draw_coin(c, 14.0),
         Icon::Note => {
             // A page with lines of writing on it.
             style::rounded_rect(Rect::new(c.x - 11.0, c.y - 14.0, 22.0, 28.0), 3.0, style::ACCENT);
@@ -629,6 +673,24 @@ mod tests {
         assert!(check_person(&typed(&["Mara Voss", "", "Head of State"])).unwrap_err().contains("title"));
         assert!(check_person(&typed(&["", "President", "Head of State"])).unwrap_err().contains("name"));
         assert!(check_person(&typed(&["Mara Voss", "President", " "])).unwrap_err().contains("title type"));
+    }
+
+    #[test]
+    fn the_transfer_check_needs_something_to_send_somewhere_and_a_whole_amount() {
+        assert_eq!(check_transfer(&typed(&[" money ", " Brevon ", "500"])).unwrap(), typed(&["Coins", "Brevon", "500"]));
+        assert_eq!(check_transfer(&typed(&["wood", "Brevon", "007"])).unwrap(), typed(&["Wood", "Brevon", "7"]));
+        assert!(check_transfer(&typed(&["", "Brevon", "5"])).unwrap_err().contains("what to send"));
+        assert!(check_transfer(&typed(&["Oil", " ", "5"])).unwrap_err().contains("country"));
+        assert!(check_transfer(&typed(&["Oil", "Brevon", ""])).unwrap_err().contains("how much"));
+        assert!(check_transfer(&typed(&["Oil", "Brevon", "0"])).is_err());
+        assert!(check_transfer(&typed(&["Oil", "Brevon", "99999999999999999999999"])).is_err());
+    }
+
+    #[test]
+    fn a_pick_only_drop_down_never_tags_what_is_typed_as_new() {
+        let field = Field { value: "Narnia".to_owned(), ..Field::pick_from("TO", "", 32, kinds()) };
+        assert!(!field.is_new_choice());
+        assert!(field.has_list());
     }
 
     fn kinds() -> Vec<String> {

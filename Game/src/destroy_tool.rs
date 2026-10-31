@@ -55,8 +55,13 @@ pub struct DestroyTool {
     hovered: Option<Target>,
     /// Why the last one couldn't be destroyed.
     notice: Option<String>,
+    /// What has been clicked and is waiting to be confirmed.
+    pending: Option<Target>,
     /// Where the prompt was drawn last, so the mouse can be told it is over it.
     prompt: Rect,
+    /// Where the buttons that confirm and cancel were drawn last.
+    confirm_button: Rect,
+    cancel_button: Rect,
 }
 
 impl DestroyTool {
@@ -68,9 +73,11 @@ impl DestroyTool {
         *self = Self::default();
     }
 
-    /// What Esc does: turns the tool off.
+    /// What Esc does: calls off what was waiting to be confirmed, and failing that turns the tool off.
     pub fn escape(&mut self) {
-        self.deactivate();
+        if self.pending.take().is_none() {
+            self.deactivate();
+        }
     }
 
     /// Shows why what `update` gave couldn't be destroyed.
@@ -108,12 +115,17 @@ impl DestroyTool {
         }
         let ray = mouse_ray(scene.eye, scene.mouse);
         let origin = ray.0;
-        let gatherer = if scene.over_map { gatherer_view::under_ray(ray, scene.world, &day.gatherers) } else { None };
-        self.hovered = match gatherer {
-            Some(id) => Some(Target::Gatherer(id)),
-            None => {
-                let under_mouse = if scene.over_map { pick_terrain(scene.eye, scene.world, scene.mouse) } else { None };
-                under_mouse.and_then(|at| Self::thing_near(day, paths, roads, at, reach.max(LEAST_REACH))).map(Target::Built)
+        // While it is being confirmed, what is to go stays marked, and the mouse can't point at anything else.
+        self.hovered = if self.pending.is_some() {
+            self.pending
+        } else {
+            let gatherer = if scene.over_map { gatherer_view::under_ray(ray, scene.world, &day.gatherers) } else { None };
+            match gatherer {
+                Some(id) => Some(Target::Gatherer(id)),
+                None => {
+                    let under_mouse = if scene.over_map { pick_terrain(scene.eye, scene.world, scene.mouse) } else { None };
+                    under_mouse.and_then(|at| Self::thing_near(day, paths, roads, at, reach.max(LEAST_REACH))).map(Target::Built)
+                }
             }
         };
 
@@ -135,11 +147,24 @@ impl DestroyTool {
             }
         }
 
-        if !clicked {
+        if self.pending.is_some() {
+            // Waiting to be confirmed: Destroy goes ahead, and Cancel, or a click anywhere else, thinks better of it.
+            if is_mouse_button_pressed(MouseButton::Left) {
+                let mouse = Vec2::from(mouse_position());
+                if self.confirm_button.contains(mouse) {
+                    return self.pending.take();
+                }
+                if self.cancel_button.contains(mouse) || !self.prompt.contains(mouse) {
+                    self.pending = None;
+                }
+            }
             return None;
         }
-        self.notice = None;
-        self.hovered
+        if clicked && self.hovered.is_some() {
+            self.notice = None;
+            self.pending = self.hovered;
+        }
+        None
     }
 
     /// Draws the button that turns the tool on and off, in the `footer`, with its right edge at `right`. Returns where
@@ -181,6 +206,31 @@ impl DestroyTool {
             return;
         }
         let width = 520.0;
+        if let Some(target) = self.pending {
+            let height = 132.0;
+            let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - height, width, height);
+            self.prompt = panel;
+            style::card(panel, 12.0, style::GLASS);
+            let (name, more) = match target {
+                Target::Built(thing) => (thing.name(), if matches!(thing, Thing::Bridge(_)) { " The paths and roads from its ends go too." } else { "" }),
+                Target::Gatherer(id) => (day.gatherer(id).map_or("gatherer", |g| g.kind.noun()), ""),
+            };
+            style.text_mid(&format!("Destroy this {name}?"), panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+            style.text_mid(&format!("It is gone for good, and nothing is paid back.{more}"), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR);
+            let (button_width, button_height) = (110.0, 32.0);
+            let top = panel.y + height - button_height - 16.0;
+            self.cancel_button = Rect::new(panel.x + width - 20.0 - button_width, top, button_width, button_height);
+            self.confirm_button = Rect::new(self.cancel_button.x - 10.0 - button_width, top, button_width, button_height);
+            let mouse = Vec2::from(mouse_position());
+            let fill = if self.confirm_button.contains(mouse) { Color::new(1.0, 0.36, 0.34, 1.0) } else { RED };
+            style::rounded_rect(self.confirm_button, 8.0, fill);
+            style.text_centered("Destroy", self.confirm_button, 14, Weight::Semibold, WHITE);
+            let fill = if self.cancel_button.contains(mouse) { Color::new(1.0, 1.0, 1.0, 0.10) } else { style::FIELD };
+            style::rounded_rect(self.cancel_button, 8.0, fill);
+            style::rounded_rect_lines(self.cancel_button, 8.0, 1.0, style::BORDER_STRONG);
+            style.text_centered("Cancel", self.cancel_button, 14, Weight::Semibold, style::TEXT);
+            return;
+        }
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 88.0, width, 88.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
@@ -233,6 +283,15 @@ mod tests {
         tool.notice = Some("x".to_owned());
         tool.escape();
         assert!(!tool.is_active() && tool.notice.is_none());
+    }
+
+    #[test]
+    fn esc_calls_off_a_destroy_waiting_to_be_confirmed_before_it_turns_the_tool_off() {
+        let mut tool = DestroyTool { active: true, pending: Some(Target::Gatherer(GathererId::from_u128(1))), ..DestroyTool::default() };
+        tool.escape();
+        assert!(tool.is_active() && tool.pending.is_none());
+        tool.escape();
+        assert!(!tool.is_active());
     }
 
     #[test]

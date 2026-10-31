@@ -50,6 +50,8 @@ pub struct HeaderButtons {
     pub country: Option<Rect>,
     /// The day, for ending it.
     pub day: Rect,
+    /// The player's country's money, for its treasury, once there is a country.
+    pub money: Option<Rect>,
     /// The compass at the right, for turning the map to look straight down with north up.
     pub compass: Rect,
 }
@@ -67,6 +69,7 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
     let y = bar.center().y;
     let mut x = bar.x + FOOTER_PADDING;
     let mut button = None;
+    let mut money_button = None;
     if let Some(country) = day.player_country() {
         let name_width = style.measure(&country.name, BAR_TEXT_SIZE, Weight::Semibold).width;
         let pill = Rect::new(x, y - 14.0, name_width + 52.0, 28.0);
@@ -95,6 +98,13 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
     if let Some(country) = day.player_country() {
         x += day_width;
         draw_circle(x + 14.0, y, 2.0, style::TEXT_MUTED);
+        // The coin and the amount are a button, lit when the mouse is over it.
+        let amount_width = style.measure(&money(country.money), BAR_TEXT_SIZE, Weight::Semibold).width;
+        let pill = Rect::new(x + 22.0, y - 14.0, 43.0 - 22.0 + amount_width + 8.0, 28.0);
+        if interactive && pill.contains(Vec2::from(mouse_position())) {
+            style::rounded_rect(pill, 8.0, style::HOVER);
+        }
+        money_button = Some(pill);
         draw_coin(vec2(x + 31.0, y), 6.5);
         let color = if country.money < 0 { style::ERROR } else { style::TEXT };
         style.text_mid(&money(country.money), x + 43.0, y, BAR_TEXT_SIZE, Weight::Semibold, color);
@@ -106,7 +116,7 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
         draw_stock(style, &country.stock, coin_end + 22.0, y, compass.x - 16.0);
     }
     draw_compass(compass, yaw, interactive && compass.contains(Vec2::from(mouse_position())));
-    HeaderButtons { country: button, day: day_button, compass }
+    HeaderButtons { country: button, day: day_button, money: money_button, compass }
 }
 
 /// What `resource` is drawn as in the header: a dot of this color, like the resource looks on the map.

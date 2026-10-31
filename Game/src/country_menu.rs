@@ -520,7 +520,7 @@ impl CountryMenu {
 const ERROR_SOFT: (f32, f32, f32) = (0.80, 0.27, 0.27);
 
 /// `text` cut short, with "..." at the end, so that it is no wider than `width`.
-fn fit(style: &Style, text: &str, size: u16, weight: Weight, width: f32) -> String {
+pub fn fit(style: &Style, text: &str, size: u16, weight: Weight, width: f32) -> String {
     if style.measure(text, size, weight).width <= width {
         return text.to_owned();
     }

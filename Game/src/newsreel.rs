@@ -12,6 +12,7 @@ use crate::format::{money, thousands, thousands_u64};
 use crate::gatherer::GathererKind;
 use crate::ids::{CityId, CountryId, GathererId, Guid, NoteId, PersonId};
 use crate::text;
+use crate::transfer::Asset;
 
 /// One thing that happened, saved with the id of its subject and a `type`, so statistics can count
 /// and join the news by kind and by subject.
@@ -39,6 +40,8 @@ pub enum Event {
     /// The subject is a city, whose population went from `from` to `to` people, while it was or was not under
     /// siege.
     PopulationChanged { from: u32, to: u32, under_siege: bool },
+    /// The subject is a country, and it sent this much of `asset` to the country `to`.
+    Transfer { to: CountryId, asset: Asset, amount: u64 },
     /// The subject is a country, and its gatherers of `kind` that were operating provided this much of what they
     /// gather. News saved before there were kinds is of wood, and so is that of a gatherer, from when they were all
     /// woodcutters, under the names it had then.
@@ -123,6 +126,13 @@ impl News {
                     (false, true) => format!("{name}, under siege, loses {change} people and falls to {now}"),
                     (false, false) => format!("{name} loses {change} people and falls to {now}"),
                 }
+            }
+            Event::Transfer { to, asset, amount } => {
+                let what = match asset {
+                    Asset::Coins => format!("{} {}", money(amount as i64), if amount == 1 { "coin" } else { "coins" }),
+                    _ => format!("{} {}", thousands_u64(amount), asset.name()),
+                };
+                format!("{} sends {what} to {}", day.country_name(CountryId::from(self.subject)), day.country_name(to))
             }
             Event::Gathered { amount, kind } => format!("{} gathers {} {} from its {}", day.country_name(CountryId::from(self.subject)), thousands_u64(amount), kind.product(), kind.plural()),
             Event::GathererBuilt { kind } => match day.gatherer(GathererId::from(self.subject)) {

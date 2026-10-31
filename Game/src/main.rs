@@ -34,6 +34,8 @@ mod hud;
 mod ids;
 mod newsreel;
 mod resource_hover;
+mod transfer;
+mod treasury;
 mod options;
 mod path;
 mod path_tool;
@@ -74,6 +76,7 @@ use city_popup::CityPopup;
 use city_view::CityRenderer;
 use day::DaySave;
 use country_menu::CountryMenu;
+use treasury::Treasury;
 use options::{Options, OptionsUi};
 use bridge::BRIDGE_COST;
 use bridge_tool::BridgeTool;
@@ -109,6 +112,8 @@ fn window_conf() -> macroquad::conf::Conf {
             window_title: "NWorld".to_owned(),
             window_width: 1600,
             window_height: 900,
+            // An ordinary bordered window, so it can be minimized, maximized and resized.
+            window_resizable: true,
             sample_count: 4,
             ..Default::default()
         },
@@ -215,6 +220,8 @@ async fn main() {
     let mut naming_place: Option<(Option<u32>, Vec2, Popup)> = None;
     // The popup for a note to add to the newsreel.
     let mut noting: Option<Popup> = None;
+    // The treasury of the country played, which is also where it sends money and resources to another.
+    let mut treasury = Treasury::default();
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
@@ -251,7 +258,9 @@ async fn main() {
         if is_key_pressed(KeyCode::Escape) {
             // Esc first backs out of the countries menu, or closes the options, or gives up on naming a
             // city, and only then quits.
-            if advance_popup.is_open() {
+            if treasury.is_open() {
+                treasury.escape();
+            } else if advance_popup.is_open() {
                 advance_popup.close();
             } else if city_popup.is_open() {
                 city_popup.escape();
@@ -302,7 +311,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || advance_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
@@ -529,6 +538,10 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 country_menu.open_info(&day);
+            } else if header.money.is_some_and(|b| b.contains(mouse)) {
+                options_ui.close();
+                overlays_ui.close();
+                treasury.open(&day);
             } else if header.compass.contains(mouse) {
                 // Turns the map to look straight down with north at the top.
                 camera.reset_view();
@@ -689,6 +702,18 @@ async fn main() {
                     country_menu.done(&choice, &day);
                 }
                 Err(message) => country_menu.fail(message),
+            }
+        }
+
+        if let Some(transfer) = treasury.show(&style, &day) {
+            // Only keep the transfer if it is saved too.
+            let mut updated = day.clone();
+            match transfer.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
+                Ok(()) => {
+                    day = updated;
+                    treasury.done();
+                }
+                Err(message) => treasury.fail(message),
             }
         }
 

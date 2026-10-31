@@ -15,6 +15,9 @@ use crate::ids::GathererId;
 /// How far from a part of it, as a fraction of how far away it is, the mouse can be and still be on it, so that the
 /// thin pole can be hit from far away.
 const HOVER_SLOP: f32 = 0.006;
+/// How far apart the points are along the edge of the ground a preview covers, and how high above the ground it is held.
+const FOOTPRINT_EVERY: f32 = 4.0;
+const FOOTPRINT_HOLD: f32 = 0.6;
 const POLE: Color = Color::new(0.82, 0.80, 0.74, 1.0);
 /// A country that can't be found (which can't happen while it owns one) is flown in gray.
 const NO_COUNTRY: Color = Color::new(0.6, 0.6, 0.6, 1.0);
@@ -135,16 +138,48 @@ fn hit((origin, direction): (Vec3, Vec3), middle: Vec3, size: Vec3, slop: f32) -
     Some(near)
 }
 
+/// Draws where a gatherer of `kind` would stand if it were built at `at`, so that its size can be seen against the
+/// region: a frame round each part of it, and the ground it covers marked out, in `color`. As seen by the camera that
+/// is set.
+pub fn preview(world: &World, kind: GathererKind, at: Vec2, color: Color) {
+    let parts = parts_at(world, kind, at.x, at.y, WHITE);
+    for part in &parts {
+        draw_cube_wires(part.middle, part.size * 1.04, color);
+    }
+    // The ground it covers, from the farthest its parts reach, held just over the ground along each side.
+    let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+    for part in &parts {
+        let half = vec2(part.size.x, part.size.z) * 0.5;
+        low = low.min(vec2(part.middle.x, part.middle.z) - half);
+        high = high.max(vec2(part.middle.x, part.middle.z) + half);
+    }
+    let corners = [low, vec2(high.x, low.y), high, vec2(low.x, high.y), low];
+    for pair in corners.windows(2) {
+        let steps = (pair[0].distance(pair[1]) / FOOTPRINT_EVERY).ceil().max(1.0) as usize;
+        let point = |k: usize| {
+            let p = pair[0].lerp(pair[1], k as f32 / steps as f32);
+            vec3(p.x, world.surface_height(p.x, p.y) + FOOTPRINT_HOLD, p.y)
+        };
+        for k in 0..steps {
+            draw_line_3d(point(k), point(k + 1), color);
+        }
+    }
+}
+
 /// The parts of one gatherer, flying `flag`. Each stands on the ground at its own place, so that the whole follows a
 /// slope. The last two are its flag pole and its flag.
 fn parts(world: &World, gatherer: &Gatherer, flag: Color) -> Vec<Part> {
-    let kind = gatherer.kind;
+    parts_at(world, gatherer.kind, gatherer.x, gatherer.z, flag)
+}
+
+/// The parts of a gatherer of `kind` standing at (`x`, `z`), flying `flag`.
+fn parts_at(world: &World, kind: GathererKind, x: f32, z: f32, flag: Color) -> Vec<Part> {
     let (look, s) = (Palette::of(kind), scale(kind));
-    let ground = |dx: f32, dz: f32| world.surface_height(gatherer.x + dx * s, gatherer.z + dz * s);
+    let ground = |dx: f32, dz: f32| world.surface_height(x + dx * s, z + dz * s);
     // A part standing `rise` above the ground at (`dx`, `dz`) from the gatherer, in life-size meters.
     let part = |dx: f32, dz: f32, rise: f32, size: Vec3, color: Color| {
         let size = size * s;
-        Part { middle: vec3(gatherer.x + dx * s, ground(dx, dz) + rise * s + size.y * 0.5, gatherer.z + dz * s), size, color }
+        Part { middle: vec3(x + dx * s, ground(dx, dz) + rise * s + size.y * 0.5, z + dz * s), size, color }
     };
     // The main building stands on the highest ground under it, so that none of it is buried.
     let (reach_x, reach_z) = if kind.greater() { (6.0, 4.5) } else { (2.5, 2.0) };

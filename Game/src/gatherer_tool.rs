@@ -14,6 +14,7 @@ use crate::day::DaySave;
 use crate::hud;
 use crate::path_tool::Scene;
 use crate::gatherer::{site_region, Deposits, Gatherer, GathererKind};
+use crate::gatherer_view;
 
 /// How big the marker is, as a fraction of how far away it is, and the least it is, in meters.
 const MARKER_SIZE: f32 = 0.009;
@@ -97,13 +98,16 @@ impl GathererTool {
             let lifted = vec3(at.x, scene.world.surface_height(at.x, at.y) + HOLD, at.y);
             let (origin, _) = mouse_ray(scene.eye, scene.mouse);
             let size = ((lifted - origin).length() * MARKER_SIZE).max(MARKER_LEAST);
-            match result {
-                Ok(_) => draw_sphere(lifted, size, None, Color::new(0.35, 0.80, 0.40, 1.0)),
+            let color = match result {
+                Ok(_) => Color::new(0.35, 0.80, 0.40, 1.0),
                 Err(problem) => {
                     self.hover_problem = Some(problem.clone());
-                    draw_sphere(lifted, size, None, RED);
+                    RED
                 }
-            }
+            };
+            draw_sphere(lifted, size, None, color);
+            // And the gatherer itself, in outline, so that its size can be seen against the region.
+            gatherer_view::preview(scene.world, self.kind, *at, color);
         }
 
         if !clicked {
