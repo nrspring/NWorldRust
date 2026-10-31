@@ -7,13 +7,14 @@
 //! Everything in it refers to everything else by id, never by name: a person belongs to a country by
 //! the country's [`CountryId`], and a news item names the thing it is about by its id.
 
+use nworld_map::world::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{Bridge, BridgeLink};
 use crate::calendar::Date;
 use crate::failure::Thing;
 use crate::city::{self, City, INITIAL_POPULATION};
-use crate::country::{self, Country, RegionOwner, STARTING_MONEY};
+use crate::country::{self, resource_name, Country, RegionOwner, Stock, STARTING_MONEY};
 use crate::ids::{CityId, CountryId, Guid, PersonId, TitleTypeId};
 use crate::newsreel::{Event, News};
 use crate::path::PathSegment;
@@ -25,6 +26,18 @@ use crate::river_name::RiverName;
 use crate::rgb::Rgb;
 use crate::saves::DAY_VERSION;
 use crate::title_type::{self, TitleType};
+
+/// How much a country has and owns, as [`DaySave::country_totals`] counts it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CountryTotals {
+    pub cities: usize,
+    /// The people living in its cities.
+    pub population: u64,
+    /// The regions it owns.
+    pub regions: usize,
+    /// The people who belong to the country, such as its rulers.
+    pub people: usize,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DaySave {
@@ -151,7 +164,7 @@ impl DaySave {
         let name = self.free_country_name(typed, None)?;
         let id = CountryId::new();
         let color = Rgb::random_distinct_from(&self.countries.iter().map(|c| c.color).collect::<Vec<_>>());
-        self.countries.push(Country { id, name, color, money: STARTING_MONEY });
+        self.countries.push(Country { id, name, color, money: STARTING_MONEY, stock: Stock::default() });
         self.player.get_or_insert(id);
         self.newsreel.push(News::about(id, Event::CountryFounded));
         Ok(())
@@ -176,6 +189,17 @@ impl DaySave {
         Ok(())
     }
 
+    /// What the country with this id has and owns, counted. Zero of everything for a country that isn't there.
+    pub fn country_totals(&self, id: CountryId) -> CountryTotals {
+        let cities = self.cities.iter().filter(|c| c.country == id);
+        CountryTotals {
+            cities: cities.clone().count(),
+            population: cities.map(|c| c.population as u64).sum(),
+            regions: self.region_owners.iter().filter(|o| o.country == id).count(),
+            people: self.people.iter().filter(|p| p.country == id).count(),
+        }
+    }
+
     /// Adds `amount` coins to the money of the country with this id, or takes them away if it is negative (the
     /// money can go below zero). An error says why it can't be done.
     // For income and spending, which nothing does yet.
@@ -183,6 +207,22 @@ impl DaySave {
     pub fn add_money(&mut self, id: CountryId, amount: i64) -> Result<(), String> {
         let country = self.countries.iter_mut().find(|c| c.id == id).ok_or("There is no such country.")?;
         country.money = country.money.checked_add(amount).ok_or("That is more money than there can be.")?;
+        Ok(())
+    }
+
+    /// Adds `amount` of `resource` to the stock of the country with this id, or takes some away if it is negative. A
+    /// stock can't go below zero. An error says why it can't be done.
+    // For gathering and using resources, which nothing does yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn add_resource(&mut self, id: CountryId, resource: Resource, amount: i64) -> Result<(), String> {
+        let country = self.countries.iter_mut().find(|c| c.id == id).ok_or("There is no such country.")?;
+        let slot = country.stock.slot(resource);
+        let name = resource_name(resource);
+        *slot = if amount >= 0 {
+            slot.checked_add(amount.unsigned_abs()).ok_or_else(|| format!("That is more {name} than there can be."))?
+        } else {
+            slot.checked_sub(amount.unsigned_abs()).ok_or_else(|| format!("{} doesn't have that much {name}.", country.name))?
+        };
         Ok(())
     }
 
@@ -559,6 +599,73 @@ mod tests {
         let json = serde_json::to_value(&day).unwrap();
         assert_eq!(json["countries"][0]["color"], "#0ac83c");
         assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
+    }
+
+    #[test]
+    fn a_countrys_totals_count_only_what_belongs_to_it() {
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        assert_eq!(day.country_totals(aldoria), CountryTotals::default());
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.found_city("Highmark", 50.0, 0.0, None).unwrap();
+        day.cities[1].population = 2_500;
+        day.set_city_country(day.cities[1].id, brevon).unwrap();
+        day.cities[0].population = 400;
+        assert_eq!(day.country_totals(aldoria), CountryTotals { cities: 1, population: 400, regions: 0, people: 0 });
+        assert_eq!(day.country_totals(brevon), CountryTotals { cities: 1, population: 2_500, regions: 0, people: 0 });
+        assert_eq!(day.country_totals(CountryId::new()), CountryTotals::default(), "no such country");
+    }
+
+    #[test]
+    fn every_country_starts_with_no_resources_and_keeps_its_own_stock() {
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        assert!(day.countries.iter().all(|c| c.stock == Stock::default()));
+        day.add_resource(aldoria, Resource::Forest, 120).unwrap();
+        day.add_resource(aldoria, Resource::Oil, 5).unwrap();
+        day.add_resource(brevon, Resource::Stone, 40).unwrap();
+        day.add_resource(aldoria, Resource::Forest, -20).unwrap();
+        assert_eq!(day.country(aldoria).unwrap().stock, Stock { wood: 100, oil: 5, ..Stock::default() });
+        assert_eq!(day.country(brevon).unwrap().stock, Stock { stone: 40, ..Stock::default() });
+    }
+
+    #[test]
+    fn a_stock_cannot_go_below_zero_or_past_the_most_there_can_be() {
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        let id = day.countries[0].id;
+        day.add_resource(id, Resource::Iron, 10).unwrap();
+        let before = day.clone();
+        assert!(day.add_resource(id, Resource::Iron, -11).unwrap_err().contains("have that much iron"));
+        assert!(day.add_resource(id, Resource::Copper, -1).is_err(), "none to take");
+        assert_eq!(day, before, "a refused change changes nothing");
+        day.add_resource(id, Resource::Iron, -10).unwrap();
+        assert_eq!(day.countries[0].stock.iron, 0);
+        day.add_resource(id, Resource::Sulphur, i64::MAX).unwrap();
+        day.add_resource(id, Resource::Sulphur, i64::MAX).unwrap();
+        day.add_resource(id, Resource::Sulphur, 1).unwrap();
+        assert_eq!(day.countries[0].stock.sulphur, u64::MAX);
+        assert!(day.add_resource(id, Resource::Sulphur, 1).is_err(), "more than a u64 holds");
+        assert!(day.add_resource(CountryId::new(), Resource::Oil, 1).is_err(), "no such country");
+    }
+
+    #[test]
+    fn a_stock_is_saved_with_its_country_and_a_country_saved_without_one_has_none() {
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        let id = day.countries[0].id;
+        day.add_resource(id, Resource::Forest, 7).unwrap();
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(json["countries"][0]["stock"]["wood"], 7);
+        assert_eq!(serde_json::from_value::<DaySave>(json.clone()).unwrap(), day);
+        assert_eq!(day.following(Date { year: 1, month: 1, day: 2 }).countries[0].stock.wood, 7, "carried forward");
+        let mut old = json;
+        old["countries"][0].as_object_mut().unwrap().remove("stock");
+        assert_eq!(serde_json::from_value::<DaySave>(old).unwrap().countries[0].stock, Stock::default());
     }
 
     #[test]

@@ -440,7 +440,7 @@ async fn main() {
             if header.country.is_some_and(|b| b.contains(mouse)) {
                 options_ui.close();
                 overlays_ui.close();
-                country_menu.open(&day);
+                country_menu.open_info(&day);
             } else if header.compass.contains(mouse) {
                 // Turns the map to look straight down with north at the top.
                 camera.reset_view();

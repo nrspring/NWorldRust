@@ -4,9 +4,12 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
+use nworld_map::world::Resource;
+
 use crate::city::City;
+use crate::country::{resource_name, Stock};
 use crate::day::DaySave;
-use crate::format::{money, thousands};
+use crate::format::{money, thousands, thousands_u64};
 
 /// Distance of the panels from the edges of the window.
 const MARGIN: f32 = 16.0;
@@ -96,8 +99,40 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
         style.text_mid(&money(country.money), x + 43.0, y, BAR_TEXT_SIZE, Weight::Semibold, color);
     }
     let compass = Rect::new(bar.right() - FOOTER_PADDING - 32.0, y - 14.0, 32.0, 28.0);
+    // Then its stock of each resource, if there is room before the compass.
+    if let Some(country) = day.player_country() {
+        let coin_end = x + 43.0 + style.measure(&money(country.money), BAR_TEXT_SIZE, Weight::Semibold).width;
+        draw_stock(style, &country.stock, coin_end + 22.0, y, compass.x - 16.0);
+    }
     draw_compass(compass, yaw, interactive && compass.contains(Vec2::from(mouse_position())));
     HeaderButtons { country: button, day: day_button, compass }
+}
+
+/// What `resource` is drawn as in the header: a dot of this color, like the resource looks on the map.
+pub fn resource_color(resource: Resource) -> Color {
+    match resource {
+        Resource::Forest => Color::new(0.35, 0.66, 0.30, 1.0),
+        Resource::Stone => Color::new(0.62, 0.64, 0.68, 1.0),
+        Resource::Iron => Color::new(0.72, 0.38, 0.28, 1.0),
+        Resource::Copper => Color::new(0.86, 0.55, 0.28, 1.0),
+        Resource::Sulphur => Color::new(0.93, 0.84, 0.28, 1.0),
+        Resource::Oil => Color::new(0.30, 0.31, 0.38, 1.0),
+    }
+}
+
+/// Draws how much of each resource there is in `stock`, from `x` along the line at `y`, each as a dot of its color, its
+/// name and the amount, as many as fit before `limit`.
+fn draw_stock(style: &Style, stock: &Stock, mut x: f32, y: f32, limit: f32) {
+    for resource in Resource::ALL {
+        let text = format!("{} {}", resource_name(resource), thousands_u64(stock.get(resource)));
+        let width = style.measure(&text, BAR_TEXT_SIZE, Weight::Regular).width;
+        if x + 14.0 + width > limit {
+            return;
+        }
+        draw_circle(x + 4.0, y, 4.0, resource_color(resource));
+        style.text_mid(&text, x + 14.0, y, BAR_TEXT_SIZE, Weight::Regular, if stock.get(resource) == 0 { style::TEXT_MUTED } else { style::TEXT });
+        x += 14.0 + width + 18.0;
+    }
 }
 
 /// A compass in `rect`: a ring with a needle whose red end points to north on the screen, as seen by a camera

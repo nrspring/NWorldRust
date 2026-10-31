@@ -5,6 +5,11 @@ pub fn thousands(n: u32) -> String {
     group(&n.to_string())
 }
 
+/// The same for a number that can be bigger: an amount of a resource.
+pub fn thousands_u64(n: u64) -> String {
+    group(&n.to_string())
+}
+
 /// An amount of money with commas, and a minus sign if it is below zero: 12,345 or -1,200.
 pub fn money(n: i64) -> String {
     format!("{}{}", if n < 0 { "-" } else { "" }, group(&n.unsigned_abs().to_string()))
@@ -33,6 +38,12 @@ mod tests {
         assert_eq!(money(-1_200), "-1,200");
         assert_eq!(money(1_234_567_890_123), "1,234,567,890,123");
         assert_eq!(money(i64::MIN), "-9,223,372,036,854,775,808");
+    }
+
+    #[test]
+    fn the_biggest_amounts_of_a_resource_get_commas_too() {
+        assert_eq!(thousands_u64(0), "0");
+        assert_eq!(thousands_u64(u64::MAX), "18,446,744,073,709,551,615");
     }
 
     #[test]

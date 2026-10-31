@@ -1,5 +1,6 @@
-//! The countries menu, opened by clicking the country in the header: choose the country to play,
-//! edit a country's name, change its color, delete one that has no cities, or add a new country. Each of
+//! The countries menu. Clicking the country in the header shows what the country has (its money, cities, people
+//! and stock of resources) with a button for the list of countries, where the player can choose the country to
+//! play, edit a country's name, change its color, delete one that has no cities, or add a new country. Each of
 //! those asks in a popup of its own, and comes back to the list when it is done.
 
 use macroquad::prelude::*;
@@ -7,7 +8,10 @@ use nworld_view::style::{self, Style, Weight};
 
 use crate::color_picker::{ColorPicker, Outcome};
 use crate::day::DaySave;
-use crate::format::money;
+use nworld_map::world::Resource;
+
+use crate::country::resource_name;
+use crate::format::{money, thousands, thousands_u64};
 use crate::hud;
 use crate::ids::CountryId;
 use crate::popup::{self, Icon, Popup};
@@ -22,6 +26,9 @@ const LIST_PADDING: f32 = 6.0;
 const BUTTON_HEIGHT: f32 = 40.0;
 /// Where the list starts, below the card's top: room for the title.
 const LIST_TOP: f32 = 84.0;
+/// How wide the card of what a country has is, and how tall each line of it.
+const INFO_WIDTH: f32 = 400.0;
+const INFO_ROW: f32 = 26.0;
 /// How long the menu takes to appear, in seconds.
 const FADE_IN: f64 = 0.22;
 
@@ -57,6 +64,8 @@ impl Choice {
 enum Screen {
     #[default]
     Closed,
+    /// What this country has, with a way to the list.
+    Info(CountryId),
     List,
     Adding(Popup),
     Renaming(CountryId, Popup),
@@ -83,10 +92,25 @@ impl CountryMenu {
         !matches!(self.screen, Screen::Closed)
     }
 
-    /// Opens the list of the countries of `day`, with the player's country picked.
-    pub fn open(&mut self, day: &DaySave) {
-        let current = day.player_country().map(|c| c.id);
-        self.open_at(day, current);
+    /// Opens what the country the player plays has, with a way to the list of countries to play another. Does nothing
+    /// if there is no country.
+    pub fn open_info(&mut self, day: &DaySave) {
+        self.open_info_at(day, get_time());
+    }
+
+    /// The same, as of the time `now`, in seconds, which the menu fades in from.
+    fn open_info_at(&mut self, day: &DaySave, now: f64) {
+        if let Some(country) = day.player_country() {
+            self.screen = Screen::Info(country.id);
+            self.fresh = true;
+            self.error = None;
+            self.opened_at = now;
+        }
+    }
+
+    /// From what a country has, on to the list of countries, with that country picked.
+    fn switch_country(&mut self, day: &DaySave, id: CountryId) {
+        self.show_list(day.countries.iter().position(|c| c.id == id).unwrap_or(0));
     }
 
     /// Opens the list of the countries of `day`, with `country` picked, which is in view.
@@ -108,7 +132,7 @@ impl CountryMenu {
     pub fn escape(&mut self) {
         match self.screen {
             Screen::Adding(_) | Screen::Renaming(..) | Screen::Coloring(_) | Screen::Deleting(_) => self.show_list(self.highlight),
-            Screen::List | Screen::Closed => self.screen = Screen::Closed,
+            Screen::Info(_) | Screen::List | Screen::Closed => self.screen = Screen::Closed,
         }
     }
 
@@ -159,8 +183,104 @@ impl CountryMenu {
                 let id = *id;
                 self.confirm_delete(style, day, id)
             }
+            Screen::Info(id) => {
+                let id = *id;
+                self.info(style, day, id)
+            }
             Screen::List => self.list(style, day),
         }
+    }
+
+    /// Shows what the country `id` has, and a button to go on to the list of countries.
+    fn info(&mut self, style: &Style, day: &DaySave, id: CountryId) -> Option<Choice> {
+        let Some(country) = day.country(id) else {
+            self.screen = Screen::Closed;
+            return None;
+        };
+        let mouse = Vec2::from(mouse_position());
+        let clicked = is_mouse_button_pressed(MouseButton::Left) && !std::mem::take(&mut self.fresh);
+
+        let t = (((get_time() - self.opened_at) / FADE_IN).clamp(0.0, 1.0)) as f32;
+        let ease = 1.0 - (1.0 - t) * (1.0 - t);
+        let (screen_w, screen_h) = (screen_width(), screen_height());
+        draw_rectangle(0.0, 0.0, screen_w, screen_h, Color::new(0.02, 0.03, 0.05, 0.6 * ease));
+
+        let totals = day.country_totals(id);
+        let facts = [
+            ("Money", money(country.money), true),
+            ("Cities", thousands(totals.cities as u32), false),
+            ("Population", thousands_u64(totals.population), false),
+            ("Regions owned", thousands(totals.regions as u32), false),
+            ("People", thousands(totals.people as u32), false),
+        ];
+        let resource_rows = Resource::COUNT.div_ceil(2);
+        let height = LIST_TOP - 8.0 + facts.len() as f32 * INFO_ROW + 14.0 + 22.0 + resource_rows as f32 * INFO_ROW + 18.0 + BUTTON_HEIGHT + PADDING;
+        let card = Rect::new((screen_w - INFO_WIDTH) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, INFO_WIDTH, height);
+        style::card(card, 18.0, style::PANEL);
+        let inner_x = card.x + PADDING;
+        let inner_w = card.w - PADDING * 2.0;
+
+        // The country's name and color, beside the icon.
+        let badge = Rect::new(inner_x, card.y + PADDING, 40.0, 40.0);
+        style::rounded_rect(badge, 10.0, style::ACCENT_SOFT);
+        popup::draw_icon(Icon::Flag, badge);
+        let text_x = badge.right() + 14.0;
+        let swatch = Rect::new(card.right() - PADDING - 16.0, card.y + PADDING + 5.0, 16.0, 16.0);
+        style::rounded_rect(swatch, 4.0, country.color.color());
+        style::rounded_rect_lines(swatch, 4.0, 1.0, style::BORDER_STRONG);
+        let name = fit(style, &country.name, 20, Weight::Semibold, swatch.x - 12.0 - text_x);
+        style.text(&name, text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
+        style.text("The country you play", text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
+
+        // What it has: a label at the left and the amount at the right of each line.
+        let mut y = card.y + LIST_TOP - 8.0;
+        for (label, value, is_money) in &facts {
+            let mid = y + INFO_ROW * 0.5;
+            style.text_mid(label, inner_x, mid, 13, Weight::Regular, style::TEXT_MUTED);
+            let width = style.measure(value, 14, Weight::Semibold).width;
+            let color = if *is_money && country.money < 0 { style::ERROR } else { style::TEXT };
+            style.text_mid(value, inner_x + inner_w - width, mid, 14, Weight::Semibold, color);
+            if *is_money {
+                hud::draw_coin(vec2(inner_x + inner_w - width - 12.0, mid), 5.5);
+            }
+            y += INFO_ROW;
+        }
+
+        // Its stock of each resource, two to a line.
+        y += 14.0;
+        draw_line(inner_x, y - 7.0, inner_x + inner_w, y - 7.0, 1.0, style::BORDER);
+        style.text_mid("RESOURCES", inner_x, y + 4.0, 11, Weight::Semibold, style::TEXT_MUTED);
+        y += 22.0;
+        let cell = (inner_w - 20.0) * 0.5;
+        for (i, resource) in Resource::ALL.into_iter().enumerate() {
+            let x = inner_x + (i % 2) as f32 * (cell + 20.0);
+            let mid = y + (i / 2) as f32 * INFO_ROW + INFO_ROW * 0.5;
+            let amount = country.stock.get(resource);
+            draw_circle(x + 5.0, mid, 4.5, hud::resource_color(resource));
+            let name = resource_name(resource);
+            let label: String = name.chars().next().map(|c| c.to_uppercase().chain(name.chars().skip(1)).collect()).unwrap_or_default();
+            style.text_mid(&label, x + 18.0, mid, 13, Weight::Regular, style::TEXT_MUTED);
+            let text = thousands_u64(amount);
+            let width = style.measure(&text, 14, Weight::Semibold).width;
+            style.text_mid(&text, x + cell - width, mid, 14, Weight::Semibold, if amount == 0 { style::TEXT_MUTED } else { style::TEXT });
+        }
+
+        // Close, and on to the other countries.
+        let top = card.bottom() - PADDING - BUTTON_HEIGHT;
+        let close = Rect::new(inner_x, top, 110.0, BUTTON_HEIGHT);
+        let switch = Rect::new(close.right() + 12.0, top, inner_w - 110.0 - 12.0, BUTTON_HEIGHT);
+        let (over_close, over_switch) = (close.contains(mouse), switch.contains(mouse));
+        style::rounded_rect(close, 8.0, if over_close { style::BORDER_STRONG } else { style::HOVER });
+        style.text_centered("Close", close, 14, Weight::Semibold, style::TEXT);
+        style::rounded_rect(switch, 8.0, if over_switch { style::ACCENT_HOVER } else { style::ACCENT });
+        style.text_centered("Switch country", switch, 14, Weight::Semibold, WHITE);
+
+        if clicked && over_switch {
+            self.switch_country(day, id);
+        } else if clicked && (over_close || !card.contains(mouse)) {
+            self.screen = Screen::Closed;
+        }
+        None
     }
 
     /// Asks whether to really delete the country `id`, and what goes with it.
@@ -421,6 +541,31 @@ mod tests {
         day.found_country("Aldoria").unwrap();
         day.found_country("Brevon").unwrap();
         day
+    }
+
+    #[test]
+    fn what_a_country_has_opens_for_the_country_played_and_goes_on_to_the_list_with_it_picked() {
+        let mut day = day();
+        day.select_country(day.countries[1].id).unwrap();
+        let mut menu = CountryMenu::default();
+        assert!(!menu.is_open());
+        menu.open_info_at(&day, 0.0);
+        assert!(menu.is_open());
+        assert!(matches!(menu.screen, Screen::Info(id) if id == day.countries[1].id));
+        menu.switch_country(&day, day.countries[1].id);
+        assert!(matches!(menu.screen, Screen::List));
+        assert_eq!(menu.highlight, 1, "the country played is the one picked");
+    }
+
+    #[test]
+    fn escape_closes_what_a_country_has_and_nothing_opens_without_a_country() {
+        let day = day();
+        let mut menu = CountryMenu::default();
+        menu.open_info_at(&day, 0.0);
+        menu.escape();
+        assert!(!menu.is_open());
+        menu.open_info_at(&DaySave::new(crate::calendar::Date::FIRST, "Assets/map.nworld"), 0.0);
+        assert!(!menu.is_open(), "there is no country to tell about");
     }
 
     #[test]
