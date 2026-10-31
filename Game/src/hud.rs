@@ -8,6 +8,7 @@ use nworld_map::world::Resource;
 
 use crate::city::City;
 use crate::country::{resource_name, Stock};
+use crate::resource_hover::Deposit;
 use crate::day::DaySave;
 use crate::format::{money, thousands, thousands_u64};
 
@@ -239,6 +240,22 @@ fn name_tooltip(style: &Style, title: &str, named: bool, what: &str) {
     for (k, line) in lines.iter().enumerate() {
         style.text_mid(line, panel.x + 16.0, panel.y + 14.0 + 22.0 + 18.0 * (k as f32 + 0.5), 12, Weight::Regular, style::TEXT_MUTED);
     }
+}
+
+/// A small note next to the mouse about the resource it is over: what it is, with a dot of its color, and how rich the
+/// deposit is.
+pub fn resource_tooltip(style: &Style, deposit: Deposit) {
+    let name = resource_name(deposit.resource);
+    let title = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+    let what = format!("{} deposit", deposit.richness());
+    let width = style.measure(&what, 12, Weight::Regular).width.max(style.measure(&title, 15, Weight::Semibold).width + 18.0) + 32.0;
+    let height = 14.0 + 22.0 + 18.0 + 8.0;
+    let mouse = Vec2::from(mouse_position());
+    let panel = Rect::new((mouse.x + 20.0).min(screen_width() - width - MARGIN), (mouse.y + 20.0).min(screen_height() - height - FOOTER_HEIGHT - 8.0), width, height);
+    style::card(panel, 10.0, style::GLASS);
+    draw_circle(panel.x + 16.0 + 4.0, panel.y + 14.0 + 10.0, 4.0, resource_color(deposit.resource));
+    style.text_mid(&title, panel.x + 16.0 + 18.0, panel.y + 14.0 + 10.0, 15, Weight::Semibold, style::TEXT);
+    style.text_mid(&what, panel.x + 16.0, panel.y + 14.0 + 22.0 + 9.0, 12, Weight::Regular, style::TEXT_MUTED);
 }
 
 /// The prompt for placing the first city, above the footer. `problem` says why the city can't go

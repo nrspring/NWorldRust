@@ -26,6 +26,7 @@ mod ground;
 mod hud;
 mod ids;
 mod newsreel;
+mod resource_hover;
 mod options;
 mod path;
 mod path_tool;
@@ -427,6 +428,13 @@ async fn main() {
         } else {
             None
         };
+        // The resource under the mouse, for a note about what it is, when nothing else has the mouse.
+        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+            let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 2.5, 40.0);
+            pick_terrain(&eye, &world, mouse).and_then(|at| resource_hover::deposit_near(&world, at.x, at.y, reach))
+        } else {
+            None
+        };
 
         set_default_camera();
         // The names of the regions and the rivers, over the map and under everything else.
@@ -515,6 +523,8 @@ async fn main() {
                 }
             } else if let Some(region) = region_hover {
                 hud::region_tooltip(&style, day.region_name(region.raw()), region_name::kind_text(region));
+            } else if let Some(deposit) = resource_hover {
+                hud::resource_tooltip(&style, deposit);
             }
             // Only one of the two menus is open at a time: the one that was just opened wins.
             let (options_was_open, overlays_was_open) = (options_ui.is_open(), overlays_ui.is_open());
