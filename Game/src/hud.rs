@@ -288,9 +288,16 @@ pub struct NewsreelPanel {
     first: usize,
     /// Where it was drawn last, so the mouse can be told it is over it.
     rect: Rect,
+    /// Whether the player clicked the button to add a note since it was last asked.
+    add_clicked: bool,
 }
 
 impl NewsreelPanel {
+    /// Whether the player has clicked the button to add a note, which it then forgets.
+    pub fn take_add_clicked(&mut self) -> bool {
+        std::mem::take(&mut self.add_clicked)
+    }
+
     /// Whether the mouse is over it, and so is not for the map.
     pub fn has_mouse(&self, mouse: Vec2) -> bool {
         self.rect.contains(mouse)
@@ -354,6 +361,18 @@ impl NewsreelPanel {
         let date = format!("Day {}", day.date);
         let date_w = style.measure(&date, 10, Weight::Regular).width;
         style.text_mid(&date, panel.right() - 12.0 - date_w, header_y, 10, Weight::Regular, style::TEXT_MUTED);
+        // A quiet plus for adding a note, left of the day: no box until the mouse is over it.
+        let add = Rect::new(panel.right() - 12.0 - date_w - 8.0 - 18.0, header_y - 9.0, 18.0, 18.0);
+        let over_add = add.contains(Vec2::from(mouse_position()));
+        if over_add {
+            style::rounded_rect(add, 5.0, style::HOVER);
+        }
+        let plus_color = if over_add { style::TEXT } else { style::TEXT_MUTED };
+        draw_line(add.center().x - 4.5, add.center().y, add.center().x + 4.5, add.center().y, 1.5, plus_color);
+        draw_line(add.center().x, add.center().y - 4.5, add.center().x, add.center().y + 4.5, 1.5, plus_color);
+        if over_add && is_mouse_button_pressed(MouseButton::Left) {
+            self.add_clicked = true;
+        }
         draw_line(panel.x + 12.0, header_y + 11.0, panel.right() - 12.0, header_y + 11.0, 1.0, style::BORDER);
 
         let mut y = header_y + 11.0 + 10.0;

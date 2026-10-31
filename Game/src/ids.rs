@@ -127,6 +127,10 @@ id_type!(
     /// The id of a bridge.
     BridgeId
 );
+id_type!(
+    /// The id of a note the player wrote in the newsreel.
+    NoteId
+);
 
 impl CityId {
     /// A number made from the id, for anything that should come out the same for the same city every

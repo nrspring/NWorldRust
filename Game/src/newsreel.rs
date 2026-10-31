@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
 use crate::format::{money, thousands};
-use crate::ids::{CityId, CountryId, Guid, PersonId};
+use crate::ids::{CityId, CountryId, Guid, NoteId, PersonId};
+use crate::text;
 
 /// One thing that happened, saved with the id of its subject and a `type`, so statistics can count
 /// and join the news by kind and by subject.
@@ -37,6 +38,39 @@ pub enum Event {
     /// The subject is a city, whose population went from `from` to `to` people, while it was or was not under
     /// siege.
     PopulationChanged { from: u32, to: u32, under_siege: bool },
+    /// The subject is the note itself, which the player wrote, and this is what it says.
+    Note { text: String },
+}
+
+/// The longest a note can be, in characters.
+pub const MAX_NOTE_CHARS: usize = 140;
+
+/// Whether `c` may be typed in a note: what a name allows, and the marks a sentence needs.
+pub fn is_note_char(c: char) -> bool {
+    text::is_text_char(c) || matches!(c, ',' | ';' | ':' | '!' | '?' | '"' | '(' | ')')
+}
+
+/// A note as typed, tidied up. An error says what is wrong with it.
+pub fn clean_note(typed: &str) -> Result<String, String> {
+    let text = typed.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        Err("Enter the note.".to_owned())
+    } else if text.chars().count() > MAX_NOTE_CHARS {
+        Err(format!("That's too long. Use {MAX_NOTE_CHARS} characters or fewer."))
+    } else if !text.chars().all(is_note_char) {
+        Err("Use only letters, numbers, spaces and ordinary punctuation.".to_owned())
+    } else {
+        Ok(text)
+    }
+}
+
+impl DaySave {
+    /// Adds a note saying `typed` to today's newsreel. An error says why it can't be done.
+    pub fn add_note(&mut self, typed: &str) -> Result<(), String> {
+        let text = clean_note(typed)?;
+        self.newsreel.push(News::about(NoteId::new(), Event::Note { text }));
+        Ok(())
+    }
 }
 
 impl News {
@@ -68,6 +102,7 @@ impl News {
                     (false, false) => format!("{name} loses {change} people and falls to {now}"),
                 }
             }
+            Event::Note { ref text } => text.clone(),
         }
     }
 }
@@ -124,6 +159,38 @@ mod tests {
         assert_eq!(News::about(CityId::new(), Event::CityFounded { population: 100 }).headline(&day), "A city of 100 people is founded");
         assert_eq!(News::about(CountryId::new(), Event::Income { amount: 5 }).headline(&day), "an unknown country earns 5 coins");
         assert_eq!(News::about(CityId::new(), Event::PopulationChanged { from: 100, to: 110, under_siege: false }).headline(&day), "A city grows by 10 to 110");
+    }
+
+    #[test]
+    fn a_note_is_tidied_and_added_to_the_newsreel_as_it_was_written() {
+        let mut day = day();
+        let before = day.newsreel.len();
+        day.add_note("  The  harvest, at last!  ").unwrap();
+        assert_eq!(day.newsreel.len(), before + 1);
+        let note = day.newsreel.last().unwrap();
+        assert_eq!(note.headline(&day), "The harvest, at last!");
+        assert!(matches!(note.event, Event::Note { .. }));
+    }
+
+    #[test]
+    fn a_bad_note_is_refused_and_changes_nothing() {
+        let mut day = day();
+        let before = day.clone();
+        assert!(day.add_note("   ").unwrap_err().contains("note"));
+        assert!(day.add_note("no <tags>").is_err());
+        assert!(day.add_note(&"a".repeat(MAX_NOTE_CHARS + 1)).unwrap_err().contains("too long"));
+        assert_eq!(day, before);
+        assert!(day.add_note(&"a".repeat(MAX_NOTE_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn a_note_is_saved_with_its_text_and_its_own_id_and_stays_with_its_day() {
+        let mut today = day();
+        today.add_note("Peace talks begin").unwrap();
+        let json = serde_json::to_string(today.newsreel.last().unwrap()).unwrap();
+        assert!(json.contains(r#""type":"note""#) && json.contains(r#""text":"Peace talks begin""#), "{json}");
+        assert_eq!(serde_json::from_str::<News>(&json).unwrap(), *today.newsreel.last().unwrap());
+        assert!(today.following(crate::calendar::Date { year: 1, month: 1, day: 2 }).newsreel.is_empty(), "like all news, it is for its day only");
     }
 
     #[test]

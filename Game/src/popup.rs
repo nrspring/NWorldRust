@@ -8,7 +8,7 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
-use crate::{city, country, person, place, region_name, text, title_type};
+use crate::{city, country, newsreel, person, place, region_name, text, title_type};
 
 const CARD_WIDTH: f32 = 520.0;
 const PADDING: f32 = 32.0;
@@ -37,12 +37,15 @@ pub enum Icon {
     City,
     Region,
     River,
+    Note,
 }
 
 struct Field {
     label: &'static str,
     placeholder: &'static str,
     max_chars: usize,
+    /// Which characters can be typed in it.
+    accepts: fn(char) -> bool,
     value: String,
     /// Whether it is a drop-down, a text field that also has a list of choices to pick from, and
     /// what is typed in it that isn't one of them is a new choice.
@@ -53,7 +56,12 @@ struct Field {
 
 impl Field {
     fn new(label: &'static str, placeholder: &'static str, max_chars: usize) -> Self {
-        Self { label, placeholder, max_chars, value: String::new(), drop_down: false, options: Vec::new() }
+        Self { label, placeholder, max_chars, accepts: text::is_text_char, value: String::new(), drop_down: false, options: Vec::new() }
+    }
+
+    /// The same, taking the characters `accepts` says yes to.
+    fn accepting(self, accepts: fn(char) -> bool) -> Self {
+        Self { accepts, ..self }
     }
 
     /// A drop-down with these choices, of which there may be none yet.
@@ -114,6 +122,10 @@ fn check_region(typed: &[String]) -> Result<Vec<String>, String> {
 
 fn check_place(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![place::clean_name(&typed[0])?])
+}
+
+fn check_note(typed: &[String]) -> Result<Vec<String>, String> {
+    Ok(vec![newsreel::clean_note(&typed[0])?])
 }
 
 fn check_city(typed: &[String]) -> Result<Vec<String>, String> {
@@ -198,6 +210,18 @@ impl Popup {
         );
         popup.fields[0].value = current.unwrap_or("").to_owned();
         popup
+    }
+
+    /// Asks for a note to put in today's newsreel.
+    pub fn note() -> Self {
+        Self::new(
+            "Add a note",
+            "It goes in today's newsreel, and stays with this day.".to_owned(),
+            Icon::Note,
+            "Add note",
+            vec![Field::new("NOTE", "e.g. The harvest festival begins", newsreel::MAX_NOTE_CHARS).accepting(newsreel::is_note_char)],
+            check_note,
+        )
     }
 
     /// Asks for the name of the city being founded.
@@ -449,7 +473,7 @@ impl Popup {
         let field = &mut self.fields[self.focus];
         let mut changed = false;
         while let Some(c) = get_char_pressed() {
-            if text::is_text_char(c) && field.value.chars().count() < field.max_chars {
+            if (field.accepts)(c) && field.value.chars().count() < field.max_chars {
                 field.value.push(c);
                 self.error = None;
                 changed = true;
@@ -557,6 +581,13 @@ pub fn draw_icon(icon: Icon, badge: Rect) {
             draw_circle(c.x, c.y - 4.0, 8.0, style::ACCENT);
             draw_triangle(vec2(c.x - 6.0, c.y + 1.0), vec2(c.x + 6.0, c.y + 1.0), vec2(c.x, c.y + 14.0), style::ACCENT);
             draw_circle(c.x, c.y - 4.0, 3.2, style::PANEL);
+        }
+        Icon::Note => {
+            // A page with lines of writing on it.
+            style::rounded_rect(Rect::new(c.x - 11.0, c.y - 14.0, 22.0, 28.0), 3.0, style::ACCENT);
+            for dy in [-7.0, -1.0, 5.0] {
+                draw_line(c.x - 6.0, c.y + dy, c.x + 6.0, c.y + dy, 2.0, style::PANEL);
+            }
         }
         Icon::Person => {
             draw_circle(c.x, c.y - 6.0, 7.0, style::ACCENT);

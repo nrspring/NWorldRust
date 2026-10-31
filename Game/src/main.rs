@@ -199,6 +199,8 @@ async fn main() {
     let mut naming_water: Option<(u32, bool, Popup)> = None;
     // The same for a place: its number if it is already there, where it goes if it is new, and the popup.
     let mut naming_place: Option<(Option<u32>, Vec2, Popup)> = None;
+    // The popup for a note to add to the newsreel.
+    let mut noting: Option<Popup> = None;
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
@@ -249,6 +251,8 @@ async fn main() {
                 naming_water = None;
             } else if naming_place.is_some() {
                 naming_place = None;
+            } else if noting.is_some() {
+                noting = None;
             } else if path_tool.is_active() {
                 path_tool.escape();
             } else if road_tool.is_active() {
@@ -270,7 +274,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || country_menu.is_open() || city_popup.is_open() || advance_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
@@ -470,6 +474,11 @@ async fn main() {
         }
         if !modal {
             let newsreel = newsreel_panel.show(&style, &day);
+            if newsreel_panel.take_add_clicked() {
+                options_ui.close();
+                overlays_ui.close();
+                noting = Some(Popup::note());
+            }
             // An alert shows what it is about: the countries menu at a country, or the region where something failed.
             if let Some(target) = alerts_ui.show(&style, &day, &day_failures, newsreel) {
                 match target {
@@ -669,6 +678,24 @@ async fn main() {
         }
         if named {
             naming_place = None;
+        }
+
+        let mut noted = false;
+        if let Some(popup) = noting.as_mut() {
+            if let Some(typed) = popup.show(&style) {
+                // Only keep the note if it is saved too.
+                let mut updated = day.clone();
+                match updated.add_note(&typed[0]).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        noted = true;
+                    }
+                    Err(message) => popup.fail(message),
+                }
+            }
+        }
+        if noted {
+            noting = None;
         }
         next_frame().await;
     }
