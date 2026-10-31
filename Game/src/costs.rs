@@ -98,7 +98,7 @@ impl Buildable {
     pub fn button_lines(self) -> Vec<(String, Color)> {
         let mut lines = vec![(format!("{}: {}.", self.label(), self.cost_text()), style::TEXT), (self.output(), style::TEXT_MUTED)];
         match self {
-            Self::Gatherer(kind) => lines.push((format!("Only one {} or {} to a region.", kind.same_resource()[0].noun(), kind.same_resource()[1].noun()), style::TEXT_MUTED)),
+            Self::Gatherer(kind) => lines.push((format!("Only one {} to a region.", kind.same_resource_text()), style::TEXT_MUTED)),
             _ => lines.push(("A failed one is mended by building it again, for the same.".to_owned(), style::TEXT_MUTED)),
         }
         lines

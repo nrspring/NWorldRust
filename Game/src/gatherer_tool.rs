@@ -128,7 +128,7 @@ impl GathererTool {
     /// it. Returns where the button is.
     pub fn show_button(&mut self, style: &Style, footer: Rect, right: f32, problem: Option<&str>) -> Rect {
         let mouse = Vec2::from(mouse_position());
-        let label = self.kind.label();
+        let label = self.kind.button_label();
         let label_width = style.measure(label, 13, Weight::Semibold).width;
         let width = 12.0 + 14.0 + 8.0 + label_width + 14.0;
         let button = Rect::new(right - width, footer.center().y - BUTTON_HEIGHT * 0.5, width, BUTTON_HEIGHT);
@@ -175,11 +175,11 @@ impl GathererTool {
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 112.0, width, 112.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
-        style.text_mid(&format!("Build a {}", self.kind.noun()), panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+        style.text_mid(&format!("Build {}", self.kind.a_noun()), panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
         match (&self.notice, &self.hover_problem) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(problem)) => style.text_mid(problem, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
-            (None, None) => style.text_mid(&format!("Click dry ground in a region with {}. One {} or {} per region.", self.kind.deposit(), self.kind.same_resource()[0].noun(), self.kind.same_resource()[1].noun()), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
+            (None, None) => style.text_mid(&format!("Click dry ground in a region with {}. One {} per region.", self.kind.deposit(), self.kind.same_resource_text()), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         let buildable = Buildable::Gatherer(self.kind);
         style.text_mid(&buildable.output(), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);

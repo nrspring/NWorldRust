@@ -240,11 +240,11 @@ impl DaySave {
     }
 
     /// Why the country with this id can't be deleted, or `None` if it can: it can't own anything, which is cities,
-    /// gatherers of any kind, and regions that it owns with no city of its in them. Its people don't count.
+    /// gatherers of any kind, and regions that it owns with no city or gatherer of its in them. Its people don't count.
     pub fn delete_problem(&self, id: CountryId) -> Option<String> {
         let country = self.country(id)?;
         let cities = self.cities.iter().filter(|c| c.country == id).count();
-        let regions = self.region_owners.iter().filter(|o| o.country == id && !self.cities.iter().any(|c| c.country == id && c.region == Some(o.region))).count();
+        let regions = self.region_owners.iter().filter(|o| o.country == id && !self.cities.iter().any(|c| c.country == id && c.region == Some(o.region)) && !self.gatherers.iter().any(|g| g.country == id && g.region == o.region)).count();
         let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let mut owned: Vec<String> = Vec::new();
         let mut counts = vec![(cities, "city", "cities".to_owned())];
@@ -356,16 +356,40 @@ impl DaySave {
         Some(format!("That region belongs to {}.", self.country_name(owner)))
     }
 
+    /// Why the owner of the region numbered `region` can't be changed, or `None` if it can: a city or any
+    /// infrastructure (a gatherer) in it keeps it with its country.
+    pub fn region_lock(&self, region: u16) -> Option<String> {
+        let owner = self.region_owner(region);
+        if let Some(city) = self.cities.iter().find(|c| c.region == Some(region)) {
+            return Some(format!("{} stands in that region, so it has to stay with {}.", city.name, self.country_name(owner.unwrap_or(city.country))));
+        }
+        let gatherer = self.gatherers.iter().find(|g| g.region == region)?;
+        Some(format!("{} of {} is in that region, so it has to stay with {}.", gatherer.kind.a_noun_capital(), self.country_name(gatherer.country), self.country_name(owner.unwrap_or(gatherer.country))))
+    }
+
+    /// Gives the region numbered `region` to the country called `named`, or to none if that is "No country": what
+    /// the region popup asks for. An error says why it can't be done (see [`set_region_owner`](Self::set_region_owner)).
+    pub fn assign_region(&mut self, region: u16, named: &str) -> Result<(), String> {
+        let owner = if named == crate::popup::NO_COUNTRY {
+            None
+        } else {
+            Some(self.countries.iter().find(|c| c.name.to_lowercase() == named.to_lowercase()).ok_or_else(|| format!("There is no country called {named}."))?.id)
+        };
+        self.set_region_owner(region, owner)
+    }
+
     /// Makes `owner` the owner of the region numbered `region`, or leaves it unowned if `owner` is `None`.
-    /// A region with a city in it can only belong to the city's country. An error says why it can't be
-    /// done.
-    #[allow(dead_code)] // For assigning regions by hand, which nothing does yet.
+    /// A region with a city or a gatherer in it can't be given to another country, or to none. An error says
+    /// why it can't be done.
     pub fn set_region_owner(&mut self, region: u16, owner: Option<CountryId>) -> Result<(), String> {
         if let Some(owner) = owner {
             self.country(owner).ok_or("There is no such country.")?;
         }
-        if let Some(city) = self.cities.iter().find(|c| c.region == Some(region) && Some(c.country) != owner) {
-            return Err(format!("{} stands in that region, so it has to belong to {}.", city.name, self.country_name(city.country)));
+        if self.region_owner(region) == owner {
+            return Ok(());
+        }
+        if let Some(problem) = self.region_lock(region) {
+            return Err(problem);
         }
         self.region_owners.retain(|o| o.region != region);
         if let Some(country) = owner {
@@ -817,6 +841,48 @@ mod tests {
         day.set_region_owner(0x4006, None).unwrap();
         assert_eq!(day.region_owner(0x4006), None);
         assert!(day.set_region_owner(0x4007, Some(CountryId::new())).is_err());
+    }
+
+    #[test]
+    fn an_empty_region_can_be_given_to_a_country_by_name_and_taken_back_or_given_on() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        assert_eq!(day.region_lock(0x4005), None);
+        day.assign_region(0x4005, "Aldoria").unwrap();
+        assert_eq!(day.region_owner(0x4005), Some(aldoria));
+        day.assign_region(0x4005, "brevon").unwrap();
+        assert_eq!(day.region_owner(0x4005), Some(brevon));
+        day.assign_region(0x4005, crate::popup::NO_COUNTRY).unwrap();
+        assert_eq!(day.region_owner(0x4005), None);
+        assert!(day.assign_region(0x4005, "Nowhere").unwrap_err().contains("no country called Nowhere"));
+    }
+
+    #[test]
+    fn a_region_with_a_city_or_a_gatherer_in_it_cannot_be_reassigned() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        day.add_money(day.countries[0].id, 5_000).unwrap();
+        let aldoria = day.countries[0].id;
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
+        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0x4006).unwrap();
+        let before = day.clone();
+        for region in [0x4005, 0x4006] {
+            assert!(day.region_lock(region).unwrap().contains("has to stay with Aldoria"));
+            assert!(day.assign_region(region, "Brevon").unwrap_err().contains("has to stay with Aldoria"));
+            assert!(day.assign_region(region, crate::popup::NO_COUNTRY).is_err());
+        }
+        assert!(day.region_lock(0x4006).unwrap().starts_with("A woodcutter of Aldoria"));
+        assert_eq!(day, before, "and nothing changes");
+        // Saying what it is already is fine, and a region with nothing in it is free again once the gatherer is gone.
+        day.assign_region(0x4006, "Aldoria").unwrap();
+        let cutter = day.gatherers[0].id;
+        day.destroy_gatherer(cutter).unwrap();
+        day.assign_region(0x4006, "Brevon").unwrap();
+        assert_eq!(day.region_owner(0x4006), Some(day.countries[1].id));
+        assert_eq!(day.region_owner(0x4005), Some(aldoria));
     }
 
     #[test]

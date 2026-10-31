@@ -32,7 +32,7 @@ pub const FOOTER_HEIGHT: f32 = 48.0;
 /// Distance of what is in the footer from its left edge. The options button keeps the same from the right.
 pub const FOOTER_PADDING: f32 = 12.0;
 /// Room kept at the right end of the footer for its buttons, before any reason that one of them is off.
-pub const BUTTONS_ROOM: f32 = 1100.0;
+pub const BUTTONS_ROOM: f32 = 1500.0;
 
 /// The size of the text in the header and the footer.
 const BAR_TEXT_SIZE: u16 = 13;

@@ -2,7 +2,9 @@
 //! gather beside it, in logs or in gray stone. A sawmill and a quarry, the greater ones, are bigger and have more to
 //! them: a sawmill is a long hall with a tall chimney, a lean-to, stacks of logs and of planks, and a quarry is a
 //! stepped pit of stone with a crane over it, a hut and stacks of cut blocks. Each flies a flag in the color of the
-//! country it belongs to on a pole. All are built bigger than life, so that they can be seen over the trees. This is the
+//! country it belongs to on a pole. The iron mine, the copper mine, the sulphur pit and the oil well are the size of the
+//! greater ones, and each has its own look: a headframe over a shaft, a hall under a green roof, a stepped yellow pit,
+//! and a derrick over a pump house and tanks. All are built bigger than life, so that they can be seen over the trees. This is the
 //! game's own drawing, and not part of drawing the map.
 
 use macroquad::prelude::*;
@@ -66,6 +68,14 @@ impl Palette {
             GathererKind::Sawmill => Self { wall: c(0.47, 0.31, 0.19), roof: c(0.52, 0.21, 0.16), pile: c(0.68, 0.50, 0.30), trim: c(0.86, 0.72, 0.50) },
             // Pale stone in steps, with a slate roof, and a timber crane.
             GathererKind::Quarry => Self { wall: c(0.62, 0.59, 0.54), roof: c(0.22, 0.25, 0.30), pile: c(0.82, 0.82, 0.84), trim: c(0.45, 0.33, 0.20) },
+            // Dark rock round the shaft, rust-red ore, and timber for the headframe.
+            GathererKind::IronMine => Self { wall: c(0.36, 0.37, 0.41), roof: c(0.45, 0.22, 0.15), pile: c(0.58, 0.30, 0.20), trim: c(0.55, 0.42, 0.28) },
+            // Copper-brown walls under a green roof of verdigris, with bright copper ore.
+            GathererKind::CopperMine => Self { wall: c(0.55, 0.35, 0.22), roof: c(0.25, 0.55, 0.48), pile: c(0.82, 0.47, 0.26), trim: c(0.55, 0.40, 0.25) },
+            // Yellow rock in steps, and bright heaps of sulphur.
+            GathererKind::SulphurPit => Self { wall: c(0.78, 0.70, 0.25), roof: c(0.40, 0.36, 0.22), pile: c(0.94, 0.86, 0.30), trim: c(0.45, 0.33, 0.20) },
+            // A dark pad and pump house, steel tanks, and a yellow derrick.
+            GathererKind::OilWell => Self { wall: c(0.20, 0.21, 0.23), roof: c(0.62, 0.20, 0.14), pile: c(0.42, 0.45, 0.50), trim: c(0.78, 0.66, 0.20) },
         }
     }
 }
@@ -229,6 +239,73 @@ fn parts_at(world: &World, kind: GathererKind, x: f32, z: f32, flag: Color) -> V
             part(5.4, 2.4, 1.2, vec3(1.8, 1.0, 1.8), look.pile),
             part(-2.4, 4.2, 0.0, vec3(3.0, 1.0, 1.6), look.pile),
         ],
+        GathererKind::IronMine => vec![
+            // The rock the shaft is cut into, with a timbered mouth in front of it.
+            part(0.0, 0.0, lift, vec3(10.0, 3.0, 7.0), look.wall),
+            part(0.0, -3.7, 0.0, vec3(3.2, 2.2, 0.6), shade(look.wall, 0.3)),
+            part(-1.8, -3.8, 0.0, vec3(0.5, 2.4, 0.7), look.trim),
+            part(1.8, -3.8, 0.0, vec3(0.5, 2.4, 0.7), look.trim),
+            part(0.0, -3.8, 2.2, vec3(4.2, 0.5, 0.7), look.trim),
+            // A headframe over the shaft, with its wheel.
+            part(-1.5, 3.6, 0.0, vec3(0.6, 7.0, 0.6), look.trim),
+            part(1.5, 3.6, 0.0, vec3(0.6, 7.0, 0.6), look.trim),
+            part(0.0, 3.6, 7.0, vec3(4.2, 0.6, 0.6), look.trim),
+            part(0.0, 3.6, 6.2, vec3(1.6, 1.6, 0.3), shade(look.wall, 0.7)),
+            // A hut under a rusty roof, and heaps of ore.
+            part(-6.4, 0.5, 0.0, vec3(3.4, 2.4, 3.6), shade(look.wall, 0.9)),
+            part(-6.4, 0.5, 2.4, vec3(4.0, 0.5, 4.2), look.roof),
+            part(6.2, 1.0, 0.0, vec3(2.8, 1.2, 3.0), look.pile),
+            part(6.2, 1.0, 1.2, vec3(2.0, 0.9, 2.0), look.pile),
+        ],
+        GathererKind::CopperMine => vec![
+            // A hall under a green roof of two tiers, with a chimney.
+            part(0.0, 0.0, lift, vec3(8.0, 3.2, 6.0), look.wall),
+            part(0.0, 0.0, lift + 3.2, vec3(9.2, 0.6, 7.2), look.roof),
+            part(0.0, 0.0, lift + 3.8, vec3(6.4, 0.7, 4.4), look.roof),
+            part(2.8, 1.2, lift + 3.8, vec3(1.1, 4.2, 1.1), shade(look.roof, 0.5)),
+            // A shed where the ore is carted in.
+            part(-6.4, 1.0, 0.0, vec3(3.4, 2.2, 4.0), shade(look.wall, 0.85)),
+            part(-6.4, 1.0, 2.2, vec3(4.0, 0.4, 4.6), look.roof),
+            // Heaps of ore, and a long bin.
+            part(6.4, -1.0, 0.0, vec3(3.0, 1.2, 3.4), look.pile),
+            part(6.4, -1.0, 1.2, vec3(2.2, 1.0, 2.4), look.pile),
+            part(0.0, 4.4, 0.0, vec3(5.0, 1.0, 1.4), look.pile),
+            part(0.0, 4.4, 1.0, vec3(4.0, 0.8, 1.2), look.trim),
+        ],
+        GathererKind::SulphurPit => vec![
+            // The pit, in three steps going up.
+            part(0.0, 0.0, lift, vec3(11.0, 1.0, 8.0), shade(look.wall, 0.8)),
+            part(0.0, 0.0, lift + 1.0, vec3(8.4, 1.0, 6.0), look.wall),
+            part(0.0, 0.0, lift + 2.0, vec3(5.8, 1.0, 4.0), shade(look.wall, 1.15)),
+            // A stack to let the fumes out.
+            part(3.0, -2.6, 0.0, vec3(1.0, 6.0, 1.0), shade(look.roof, 0.7)),
+            part(3.0, -2.6, 6.0, vec3(1.6, 0.5, 1.6), shade(look.roof, 0.5)),
+            // A hut for the workers.
+            part(-6.4, -1.0, 0.0, vec3(3.4, 2.4, 3.6), shade(look.wall, 0.7)),
+            part(-6.4, -1.0, 2.4, vec3(4.0, 0.5, 4.2), look.roof),
+            // Heaps of sulphur.
+            part(5.8, 2.8, 0.0, vec3(2.6, 1.2, 2.6), look.pile),
+            part(5.8, 2.8, 1.2, vec3(1.8, 1.0, 1.8), look.pile),
+            part(-2.4, 4.4, 0.0, vec3(3.0, 1.0, 1.6), look.pile),
+        ],
+        GathererKind::OilWell => vec![
+            // A pad, with a derrick standing on it: four legs, a crown, and braces between them.
+            part(0.0, 0.0, lift, vec3(8.0, 0.6, 8.0), shade(look.wall, 1.3)),
+            part(-1.6, -1.6, lift + 0.6, vec3(0.5, 7.2, 0.5), look.trim),
+            part(1.6, -1.6, lift + 0.6, vec3(0.5, 7.2, 0.5), look.trim),
+            part(-1.6, 1.6, lift + 0.6, vec3(0.5, 7.2, 0.5), look.trim),
+            part(1.6, 1.6, lift + 0.6, vec3(0.5, 7.2, 0.5), look.trim),
+            part(0.0, 0.0, lift + 7.8, vec3(2.4, 0.6, 2.4), look.trim),
+            part(0.0, -1.6, lift + 2.6, vec3(3.2, 0.3, 0.3), look.trim),
+            part(0.0, 1.6, lift + 5.0, vec3(3.2, 0.3, 0.3), look.trim),
+            // A pump house under a red roof.
+            part(-5.8, 0.5, 0.0, vec3(3.4, 2.4, 3.6), look.wall),
+            part(-5.8, 0.5, 2.4, vec3(4.0, 0.5, 4.2), look.roof),
+            // Two tanks, and the pipe to them.
+            part(6.4, -1.4, 0.0, vec3(3.2, 2.6, 3.2), look.pile),
+            part(6.4, 2.4, 0.0, vec3(3.2, 2.6, 3.2), look.pile),
+            part(3.4, 0.0, 0.4, vec3(3.0, 0.35, 0.35), look.wall),
+        ],
     };
     // The flag pole, away from the rest, and the flag hung from the top of it.
     let (pole_x, pole_z) = if kind.greater() { (-6.8, -5.2) } else { (-3.8, -2.4) };
@@ -306,6 +383,20 @@ mod tests {
         // The hall of the sawmill, which stands in the middle.
         let hall = parts(&world, &of_kind(GathererKind::Sawmill), WHITE)[0].size;
         assert!((hall - vec3(27.0, 10.2, 18.0)).abs().max_element() < 1e-3, "{hall:?}");
+    }
+
+    #[test]
+    fn the_mines_the_pit_and_the_well_are_the_size_of_the_greater_ones_and_stand_on_the_ground_under_their_poles() {
+        let world = world();
+        for kind in [GathererKind::IronMine, GathererKind::CopperMine, GathererKind::SulphurPit, GathererKind::OilWell] {
+            assert_eq!(scale(kind), 3.0);
+            let parts = parts(&world, &of_kind(kind), WHITE);
+            assert!(parts.len() >= 12, "{kind:?} has {} parts", parts.len());
+            assert!(parts.iter().all(|p| p.middle.y - p.size.y * 0.5 >= 10.0 - 1e-3), "{kind:?} is not buried");
+            let tallest = parts.iter().map(|p| p.middle.y + p.size.y * 0.5 - 10.0).fold(f32::MIN, f32::max);
+            assert!((tallest - height(kind)).abs() < 1e-3, "{kind:?}: {tallest} against {}", height(kind));
+            assert_eq!(parts.last().unwrap().color, WHITE, "the flag is last, in its country's color");
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ use macroquad::prelude::*;
 use nworld_map::world::{Resource, WaterClass, World};
 use serde::{Deserialize, Serialize};
 
+use crate::country::RegionOwner;
 use crate::day::DaySave;
 use crate::format;
 use crate::ids::{CountryId, GathererId};
@@ -34,39 +35,96 @@ pub enum GathererKind {
     Stonecutter,
     /// Gathers stone, a great deal of it.
     Quarry,
+    /// Gathers iron. There is no lesser one.
+    IronMine,
+    /// Gathers copper. There is no lesser one.
+    CopperMine,
+    /// Gathers sulphur. There is no lesser one.
+    SulphurPit,
+    /// Gathers oil. There is no lesser one.
+    OilWell,
 }
 
 impl GathererKind {
-    /// Every kind, in the order the footer has them: each of wood and then each of stone, the lesser first.
-    pub const ALL: [GathererKind; 4] = [GathererKind::Woodcutter, GathererKind::Sawmill, GathererKind::Stonecutter, GathererKind::Quarry];
+    /// Every kind, in the order the footer has them: each of wood and then each of stone, the lesser first, and then
+    /// iron, copper, sulphur and oil.
+    pub const ALL: [GathererKind; 8] = [
+        GathererKind::Woodcutter,
+        GathererKind::Sawmill,
+        GathererKind::Stonecutter,
+        GathererKind::Quarry,
+        GathererKind::IronMine,
+        GathererKind::CopperMine,
+        GathererKind::SulphurPit,
+        GathererKind::OilWell,
+    ];
 
-    /// What to call one, in lower case: "woodcutter", "sawmill", "stonecutter" or "quarry".
+    /// What to call one, in lower case: "woodcutter", "sawmill", "stonecutter", "quarry", "iron mine", "copper mine",
+    /// "sulphur pit" or "oil well".
     pub fn noun(self) -> &'static str {
         match self {
             Self::Woodcutter => "woodcutter",
             Self::Sawmill => "sawmill",
             Self::Stonecutter => "stonecutter",
             Self::Quarry => "quarry",
+            Self::IronMine => "iron mine",
+            Self::CopperMine => "copper mine",
+            Self::SulphurPit => "sulphur pit",
+            Self::OilWell => "oil well",
         }
     }
 
-    /// What to call several of them: "woodcutters", "sawmills", "stonecutters" or "quarries".
+    /// What to call one with "a" or "an" before it: "a woodcutter", "an iron mine".
+    pub fn a_noun(self) -> String {
+        let noun = self.noun();
+        format!("{} {noun}", if noun.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" })
+    }
+
+    /// [`a_noun`](Self::a_noun) to start a sentence: "A woodcutter", "An iron mine".
+    pub fn a_noun_capital(self) -> String {
+        let text = self.a_noun();
+        format!("{}{}", text[..1].to_uppercase(), &text[1..])
+    }
+
+    /// What to call several of them: "woodcutters", "sawmills", "stonecutters", "quarries", "iron mines", "copper
+    /// mines", "sulphur pits" or "oil wells".
     pub fn plural(self) -> &'static str {
         match self {
             Self::Woodcutter => "woodcutters",
             Self::Sawmill => "sawmills",
             Self::Stonecutter => "stonecutters",
             Self::Quarry => "quarries",
+            Self::IronMine => "iron mines",
+            Self::CopperMine => "copper mines",
+            Self::SulphurPit => "sulphur pits",
+            Self::OilWell => "oil wells",
         }
     }
 
-    /// What to call it where a name starts something: "Woodcutter", "Sawmill", "Stonecutter" or "Quarry".
+    /// What to call it where a name starts something: "Woodcutter", "Sawmill", "Stonecutter", "Quarry", "Iron mine",
+    /// "Copper mine", "Sulphur pit" or "Oil well".
     pub fn label(self) -> &'static str {
         match self {
             Self::Woodcutter => "Woodcutter",
             Self::Sawmill => "Sawmill",
             Self::Stonecutter => "Stonecutter",
             Self::Quarry => "Quarry",
+            Self::IronMine => "Iron mine",
+            Self::CopperMine => "Copper mine",
+            Self::SulphurPit => "Sulphur pit",
+            Self::OilWell => "Oil well",
+        }
+    }
+
+    /// What its button in the footer says, which is short for the ones that are new, to leave room: their whole name is
+    /// said when the mouse is on them.
+    pub fn button_label(self) -> &'static str {
+        match self {
+            Self::IronMine => "Iron",
+            Self::CopperMine => "Copper",
+            Self::SulphurPit => "Sulphur",
+            Self::OilWell => "Oil",
+            _ => self.label(),
         }
     }
 
@@ -75,36 +133,58 @@ impl GathererKind {
         match self {
             Self::Woodcutter | Self::Sawmill => Resource::Forest,
             Self::Stonecutter | Self::Quarry => Resource::Stone,
+            Self::IronMine => Resource::Iron,
+            Self::CopperMine => Resource::Copper,
+            Self::SulphurPit => Resource::Sulphur,
+            Self::OilWell => Resource::Oil,
         }
     }
 
-    /// What the resource it gathers is called as it lies on the map: "forest" or "stone".
+    /// What the resource it gathers is called as it lies on the map: "forest", "stone", "iron", "copper", "sulphur" or
+    /// "oil".
     pub fn deposit(self) -> &'static str {
         match self {
             Self::Woodcutter | Self::Sawmill => "forest",
             Self::Stonecutter | Self::Quarry => "stone",
+            Self::IronMine => "iron",
+            Self::CopperMine => "copper",
+            Self::SulphurPit => "sulphur",
+            Self::OilWell => "oil",
         }
     }
 
-    /// The two kinds that gather the same resource, the lesser first, which can't both be in a region.
-    pub fn same_resource(self) -> [GathererKind; 2] {
-        match self.resource() {
-            Resource::Forest => [Self::Woodcutter, Self::Sawmill],
-            _ => [Self::Stonecutter, Self::Quarry],
+    /// The kinds that gather the same resource as this one does, the lesser first, of which there can be only one in a
+    /// region. Iron, copper, sulphur and oil have the one kind each.
+    pub fn same_resource(self) -> &'static [GathererKind] {
+        match self {
+            Self::Woodcutter | Self::Sawmill => &[Self::Woodcutter, Self::Sawmill],
+            Self::Stonecutter | Self::Quarry => &[Self::Stonecutter, Self::Quarry],
+            Self::IronMine => &[Self::IronMine],
+            Self::CopperMine => &[Self::CopperMine],
+            Self::SulphurPit => &[Self::SulphurPit],
+            Self::OilWell => &[Self::OilWell],
         }
     }
 
-    /// Whether it is one of the greater ones, a sawmill or a quarry, which are built bigger, cost more and provide more.
+    /// The kinds that gather the same resource, named for there being only one of them to a region: "woodcutter or
+    /// sawmill", or for a kind that is on its own, just "iron mine".
+    pub fn same_resource_text(self) -> String {
+        self.same_resource().iter().map(|kind| kind.noun()).collect::<Vec<_>>().join(" or ")
+    }
+
+    /// Whether it is one of the greater ones, which are built bigger, cost more and provide more: a sawmill, a quarry, and
+    /// every kind that has no lesser one.
     pub fn greater(self) -> bool {
-        matches!(self, Self::Sawmill | Self::Quarry)
+        !matches!(self, Self::Woodcutter | Self::Stonecutter)
     }
 
-    /// What the country gets of it: "wood" or "stone".
+    /// What the country gets of it: "wood", "stone", "iron", "copper", "sulphur" or "oil".
     pub fn product(self) -> &'static str {
         crate::country::resource_name(self.resource())
     }
 
-    /// What one costs to build, in coins.
+    /// What one costs to build, in coins: 1,000 for a woodcutter or a stonecutter, and 10,000 for any other. (The new
+    /// kinds cost the same as the greater ones for now, until each has a cost of its own.)
     pub fn cost(self) -> i64 {
         if self.greater() {
             10_000
@@ -114,7 +194,7 @@ impl GathererKind {
     }
 
     /// What one takes to build besides coins: nothing for a woodcutter or a stonecutter, and 1,000 wood and 1,000 stone for
-    /// a sawmill or a quarry.
+    /// any other.
     pub fn materials(self) -> &'static [(Resource, u64)] {
         if self.greater() {
             &[(Resource::Forest, 1_000), (Resource::Stone, 1_000)]
@@ -134,7 +214,7 @@ impl GathererKind {
     }
 
     /// Draws its icon, centered on `c` and about 16 pixels across times `s`, in `color`, with `accent` for what is
-    /// marked on it: a pine, a sawblade, a rock, or steps of stone.
+    /// marked on it: a pine, a sawblade, a rock, steps of stone, an ingot, a coin, a crystal or a drop.
     pub fn draw_icon(self, c: Vec2, s: f32, color: Color, accent: Color) {
         match self {
             Self::Woodcutter => {
@@ -157,6 +237,30 @@ impl GathererKind {
                 draw_rectangle(c.x - 3.0 * s, c.y - 8.0 * s, 6.0 * s, 5.0 * s, color);
                 draw_line(c.x - 8.0 * s, c.y + 2.0 * s, c.x + 8.0 * s, c.y + 2.0 * s, 1.0 * s, accent);
                 draw_line(c.x - 5.5 * s, c.y - 3.0 * s, c.x + 5.5 * s, c.y - 3.0 * s, 1.0 * s, accent);
+            }
+            // An ingot: a block wider at the foot than at the top.
+            Self::IronMine => {
+                draw_triangle(vec2(c.x - 5.0 * s, c.y - 5.0 * s), vec2(c.x + 5.0 * s, c.y - 5.0 * s), vec2(c.x - 8.0 * s, c.y + 6.0 * s), color);
+                draw_triangle(vec2(c.x + 5.0 * s, c.y - 5.0 * s), vec2(c.x + 8.0 * s, c.y + 6.0 * s), vec2(c.x - 8.0 * s, c.y + 6.0 * s), color);
+                draw_line(c.x - 4.0 * s, c.y - 1.0 * s, c.x + 4.0 * s, c.y - 1.0 * s, 1.4 * s, accent);
+            }
+            // A coin.
+            Self::CopperMine => {
+                draw_circle(c.x, c.y, 8.0 * s, color);
+                draw_circle(c.x, c.y, 4.6 * s, accent);
+                draw_circle(c.x, c.y, 2.4 * s, color);
+            }
+            // A crystal.
+            Self::SulphurPit => {
+                draw_poly(c.x, c.y, 4, 9.0 * s, 0.0, color);
+                draw_line(c.x, c.y - 9.0 * s, c.x, c.y + 9.0 * s, 1.2 * s, accent);
+                draw_line(c.x - 9.0 * s, c.y, c.x + 9.0 * s, c.y, 1.2 * s, accent);
+            }
+            // A drop.
+            Self::OilWell => {
+                draw_triangle(vec2(c.x, c.y - 9.0 * s), vec2(c.x - 5.5 * s, c.y + 1.0 * s), vec2(c.x + 5.5 * s, c.y + 1.0 * s), color);
+                draw_circle(c.x, c.y + 2.5 * s, 5.5 * s, color);
+                draw_circle(c.x - 1.8 * s, c.y + 1.5 * s, 1.4 * s, accent);
             }
         }
     }
@@ -219,11 +323,11 @@ pub fn site_region(world: &World, deposits: &Deposits, kind: GathererKind, at: V
         return Err("That is off the map.".to_owned());
     }
     if world.water_class(at.x, at.y) != WaterClass::Dry {
-        return Err(format!("A {} has to stand on dry land.", kind.noun()));
+        return Err(format!("{} has to stand on dry land.", kind.a_noun_capital()));
     }
-    let region = world.region_at(at.x, at.y).ok_or_else(|| format!("This map has no regions to put a {} in.", kind.noun()))?.raw();
+    let region = world.region_at(at.x, at.y).ok_or_else(|| format!("This map has no regions to put {} in.", kind.a_noun()))?.raw();
     if !deposits.has(kind, region) {
-        return Err(format!("A {} can only go in a region that has some {}.", kind.noun(), kind.deposit()));
+        return Err(format!("{} can only go in a region that has some {}.", kind.a_noun_capital(), kind.deposit()));
     }
     Ok(region)
 }
@@ -243,14 +347,14 @@ impl DaySave {
     /// able to pay for it, in coins, and for a greater one in wood and stone too.
     pub fn gatherer_problem(&self, kind: GathererKind) -> Option<String> {
         match self.player_country() {
-            None => Some(format!("There is no country yet to own a {}.", kind.noun())),
+            None => Some(format!("There is no country yet to own {}.", kind.a_noun())),
             Some(country) if country.money < kind.cost() => {
-                Some(format!("Not enough coin: a {} costs {} coins, and {} has {}.", kind.noun(), format::money(kind.cost()), country.name, format::money(country.money)))
+                Some(format!("Not enough coin: {} costs {} coins, and {} has {}.", kind.a_noun(), format::money(kind.cost()), country.name, format::money(country.money)))
             }
             // Then the wood and the stone a greater one takes, whichever is short first.
             Some(country) => kind.materials().iter().find(|(resource, needed)| country.stock.get(*resource) < *needed).map(|(resource, needed)| {
                 let name = crate::country::resource_name(*resource);
-                format!("Not enough {name}: a {} needs {} {name} as well as its coins, and {} has {}.", kind.noun(), format::thousands_u64(*needed), country.name, format::thousands_u64(country.stock.get(*resource)))
+                format!("Not enough {name}: {} needs {} {name} as well as its coins, and {} has {}.", kind.a_noun(), format::thousands_u64(*needed), country.name, format::thousands_u64(country.stock.get(*resource)))
             }),
         }
     }
@@ -260,7 +364,7 @@ impl DaySave {
     /// of either kind: a sawmill can't go where there is a woodcutter, nor a woodcutter where there is a sawmill.
     pub fn gatherer_region_problem(&self, region: u16, kind: GathererKind) -> Option<String> {
         let country = self.player_country()?.id;
-        self.city_region_problem(country, Some(region)).or_else(|| self.gatherer_in(region, kind.resource()).map(|there| format!("There is already a {} in this region.", there.kind.noun())))
+        self.city_region_problem(country, Some(region)).or_else(|| self.gatherer_in(region, kind.resource()).map(|there| format!("There is already {} in this region.", there.kind.a_noun())))
     }
 
     /// Builds a gatherer of `kind` at (`x`, `z`) in the region numbered `region` for the country being played, which
@@ -277,15 +381,48 @@ impl DaySave {
         if let Some(problem) = self.gatherer_region_problem(region, kind) {
             return Err(problem);
         }
-        let country = self.player_country().ok_or_else(|| format!("There is no country yet to own a {}.", kind.noun()))?.id;
+        let country = self.player_country().ok_or_else(|| format!("There is no country yet to own {}.", kind.a_noun()))?.id;
         self.add_money(country, -kind.cost())?;
         for (resource, needed) in kind.materials() {
             self.add_resource(country, *resource, -(*needed as i64))?;
         }
         let id = GathererId::new();
         self.gatherers.push(Gatherer { id, kind, country, x, z, region, operating: false });
+        self.settle_region_owner(region);
         self.newsreel.push(News::about(id, Event::GathererBuilt { kind }));
         Ok(())
+    }
+
+    /// Makes the region numbered `region` belong to the one country that has anything in it, which is a city or a
+    /// gatherer, or leaves it as it is when there are two countries' things in it. A region that has nothing in it
+    /// any more belongs to nobody. A country has the region of its gatherers just as it has the region of its cities.
+    pub fn settle_region_owner(&mut self, region: u16) {
+        let mut countries: Vec<CountryId> = Vec::new();
+        let there = self.cities.iter().filter(|c| c.region == Some(region)).map(|c| c.country).chain(self.gatherers.iter().filter(|g| g.region == region).map(|g| g.country));
+        for country in there {
+            if !countries.contains(&country) {
+                countries.push(country);
+            }
+        }
+        match countries.as_slice() {
+            [only] if self.region_owner(region) != Some(*only) => {
+                self.region_owners.retain(|o| o.region != region);
+                self.region_owners.push(RegionOwner { region, country: *only });
+            }
+            [] => self.region_owners.retain(|o| o.region != region),
+            _ => {}
+        }
+    }
+
+    /// Settles the owner of every region that has a gatherer in it (see [`settle_region_owner`](Self::settle_region_owner)),
+    /// for a game saved before gatherers made their region their country's.
+    pub fn claim_regions(&mut self) {
+        let mut regions: Vec<u16> = self.gatherers.iter().map(|g| g.region).collect();
+        regions.sort_unstable();
+        regions.dedup();
+        for region in regions {
+            self.settle_region_owner(region);
+        }
     }
 
     /// Transfers the gatherer with this id to `country`, which is reported in the newsreel unless it belonged to it
@@ -297,12 +434,16 @@ impl DaySave {
         if from == country {
             return Ok(());
         }
-        if let Some(problem) = self.city_region_problem(country, Some(region)) {
-            return Err(problem);
+        // The region goes with it, unless it is another country's, or still has something of the old country's in it.
+        let others_of_old = self.cities.iter().any(|c| c.region == Some(region) && c.country == from) || self.gatherers.iter().any(|g| g.id != id && g.region == region && g.country == from);
+        match self.region_owner(region) {
+            Some(owner) if owner != country && (owner != from || others_of_old) => return Err(format!("That region belongs to {}.", self.country_name(owner))),
+            _ => {}
         }
         if let Some(gatherer) = self.gatherers.iter_mut().find(|g| g.id == id) {
             gatherer.country = country;
         }
+        self.settle_region_owner(region);
         self.newsreel.push(News::about(id, Event::GathererTransferred { from, to: country, kind }));
         Ok(())
     }
@@ -312,6 +453,7 @@ impl DaySave {
     pub fn destroy_gatherer(&mut self, id: GathererId) -> Result<(), String> {
         let Gatherer { kind, country, region, .. } = *self.gatherer(id).ok_or("There is no such gatherer to destroy.")?;
         self.gatherers.retain(|g| g.id != id);
+        self.settle_region_owner(region);
         self.newsreel.push(News::about(id, Event::GathererDestroyed { country, region, kind }));
         Ok(())
     }
@@ -442,7 +584,7 @@ mod tests {
         assert_eq!(day.countries[0].money, paid, "it costs nothing");
         assert_eq!((day.gatherer(id).unwrap().x, day.gatherer(id).unwrap().region), (0.0, 0xC001), "and it stays where it is");
         // Its region being Cardell's, only Cardell can have it.
-        day.set_region_owner(0xC001, Some(cardell)).unwrap();
+        day.region_owners = vec![RegionOwner { region: 0xC001, country: cardell }];
         let before = day.clone();
         assert!(day.set_gatherer_country(id, aldoria).unwrap_err().contains("belongs to Cardell"));
         assert_eq!(day, before);
@@ -596,12 +738,15 @@ mod tests {
         day.add_resource(id, Resource::Forest, 10_000).unwrap();
         day.add_resource(id, Resource::Stone, 10_000).unwrap();
         for kind in GathererKind::ALL {
-            let (lesser, greater) = (kind.same_resource()[0], kind.same_resource()[1]);
-            assert_eq!(kind.resource(), lesser.resource());
-            assert!(kind == lesser || kind == greater);
-            assert!(!lesser.greater() && greater.greater());
+            let same = kind.same_resource();
+            assert!(same.contains(&kind) && same.iter().all(|other| other.resource() == kind.resource()));
+            match same {
+                [lesser, greater] => assert!(!lesser.greater() && greater.greater()),
+                [only] => assert!(only.greater(), "a kind on its own is a greater one"),
+                _ => panic!("{kind:?} is neither on its own nor one of a pair"),
+            }
         }
-        // Nothing is in region 1: all four can go. A woodcutter goes in, and then neither it nor a sawmill can.
+        // Nothing is in region 1: all of them can go. A woodcutter goes in, and then neither it nor a sawmill can.
         assert!(GathererKind::ALL.iter().all(|kind| day.gatherer_region_problem(1, *kind).is_none()));
         day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 1).unwrap();
         assert_eq!(day.gatherer_region_problem(1, GathererKind::Woodcutter).unwrap(), "There is already a woodcutter in this region.");
@@ -630,7 +775,7 @@ mod tests {
         assert_eq!((GathererKind::Woodcutter.resource(), GathererKind::Stonecutter.resource()), (Resource::Forest, Resource::Stone));
         assert_eq!((GathererKind::Woodcutter.product(), GathererKind::Stonecutter.product()), ("wood", "stone"));
         assert_eq!((GathererKind::Woodcutter.deposit(), GathererKind::Stonecutter.deposit()), ("forest", "stone"));
-        assert_eq!(GathererKind::ALL, [GathererKind::Woodcutter, GathererKind::Sawmill, GathererKind::Stonecutter, GathererKind::Quarry]);
+        assert_eq!(GathererKind::ALL[..4], [GathererKind::Woodcutter, GathererKind::Sawmill, GathererKind::Stonecutter, GathererKind::Quarry]);
         assert_eq!((GathererKind::Sawmill.noun(), GathererKind::Quarry.noun()), ("sawmill", "quarry"));
         assert_eq!((GathererKind::Sawmill.plural(), GathererKind::Quarry.plural()), ("sawmills", "quarries"));
         assert_eq!((GathererKind::Sawmill.label(), GathererKind::Quarry.label()), ("Sawmill", "Quarry"));
@@ -647,6 +792,102 @@ mod tests {
             assert_eq!(kind.materials(), &[(Resource::Forest, 1_000), (Resource::Stone, 1_000)]);
         }
         assert_eq!(GathererKind::default(), GathererKind::Woodcutter);
+    }
+
+    #[test]
+    fn iron_copper_sulphur_and_oil_each_have_one_kind_of_gatherer_that_costs_what_a_greater_one_does() {
+        let kinds = [GathererKind::IronMine, GathererKind::CopperMine, GathererKind::SulphurPit, GathererKind::OilWell];
+        assert_eq!(GathererKind::ALL[4..], kinds);
+        let resources = [Resource::Iron, Resource::Copper, Resource::Sulphur, Resource::Oil];
+        let nouns = ["iron mine", "copper mine", "sulphur pit", "oil well"];
+        let plurals = ["iron mines", "copper mines", "sulphur pits", "oil wells"];
+        let products = ["iron", "copper", "sulphur", "oil"];
+        for (n, kind) in kinds.into_iter().enumerate() {
+            assert_eq!((kind.resource(), kind.noun(), kind.plural(), kind.product(), kind.deposit()), (resources[n], nouns[n], plurals[n], products[n], products[n]));
+            assert_eq!(kind.same_resource(), [kind], "there is no lesser one");
+            assert_eq!(kind.same_resource_text(), nouns[n]);
+            // All cost the same for now: 10,000 coins and a thousand each of wood and stone, and give 1,000 a day.
+            assert!(kind.greater() && kind.cost() == 10_000 && kind.daily_yield() == 1_000);
+            assert_eq!(kind.materials(), &[(Resource::Forest, 1_000), (Resource::Stone, 1_000)]);
+            assert!(kind.button_label().len() < kind.label().len() + 1);
+        }
+        assert_eq!((GathererKind::IronMine.a_noun(), GathererKind::OilWell.a_noun(), GathererKind::CopperMine.a_noun()), ("an iron mine".to_owned(), "an oil well".to_owned(), "a copper mine".to_owned()));
+        assert_eq!(GathererKind::IronMine.a_noun_capital(), "An iron mine");
+        assert_eq!(GathererKind::Woodcutter.a_noun_capital(), "A woodcutter");
+        assert_eq!(GathererKind::Woodcutter.same_resource_text(), "woodcutter or sawmill");
+    }
+
+    #[test]
+    fn an_iron_mine_is_built_and_named_with_an_an_and_a_second_resource_can_share_its_region() {
+        let mut day = day_with_money(20_000);
+        let id = day.countries[0].id;
+        day.add_resource(id, Resource::Forest, 2_000).unwrap();
+        day.add_resource(id, Resource::Stone, 2_000).unwrap();
+        day.build_gatherer(GathererKind::IronMine, 0.0, 0.0, 1).unwrap();
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds an iron mine in region 1");
+        assert_eq!(day.gatherer_region_problem(1, GathererKind::IronMine).unwrap(), "There is already an iron mine in this region.");
+        assert_eq!(day.gatherer_region_problem(1, GathererKind::OilWell), None, "another resource is another matter");
+        assert_eq!(day.delete_problem(id).unwrap(), "Aldoria owns 1 iron mine, so it can't be deleted.");
+        assert!(serde_json::to_string(day.newsreel.last().unwrap()).unwrap().contains(r#""kind":"iron_mine""#));
+        // Short of coin or of materials it says what an iron mine takes.
+        let poor = day_with_money(500);
+        assert_eq!(poor.gatherer_problem(GathererKind::OilWell).unwrap(), "Not enough coin: an oil well costs 10,000 coins, and Aldoria has 500.");
+    }
+
+    #[test]
+    fn a_region_with_a_gatherer_in_it_and_nothing_of_another_country_belongs_to_its_country() {
+        let mut day = day_with_money(5_000);
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        assert_eq!(day.region_owner(0xC001), None);
+        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        assert_eq!(day.region_owner(0xC001), Some(aldoria));
+        assert_eq!(day.region_owners.len(), 1);
+        // A second of its own there changes nothing, and another country's can't join it.
+        day.build_gatherer(GathererKind::Stonecutter, 10.0, 0.0, 0xC001).unwrap();
+        assert_eq!(day.region_owners.len(), 1);
+        day.select_country(brevon).unwrap();
+        day.add_money(brevon, 5_000).unwrap();
+        assert!(day.build_gatherer(GathererKind::Woodcutter, 20.0, 0.0, 0xC001).unwrap_err().contains("belongs to Aldoria"));
+        // Destroying one of the two leaves the region hers, and the last one frees it.
+        let (first, second) = (day.gatherers[0].id, day.gatherers[1].id);
+        day.destroy_gatherer(first).unwrap();
+        assert_eq!(day.region_owner(0xC001), Some(aldoria));
+        day.destroy_gatherer(second).unwrap();
+        assert_eq!(day.region_owner(0xC001), None);
+        day.build_gatherer(GathererKind::Woodcutter, 20.0, 0.0, 0xC001).unwrap();
+        assert_eq!(day.region_owner(0xC001), Some(brevon), "and another country can have it now");
+    }
+
+    #[test]
+    fn a_region_with_a_city_stays_its_countrys_when_its_gatherer_goes_and_a_transfer_moves_the_region_with_it() {
+        let mut day = day_with_money(5_000);
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
+        day.build_gatherer(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
+        let cutter = day.gatherers[0].id;
+        // The city is hers too, so the gatherer can't go to Brevon, and destroying it leaves the region.
+        assert!(day.set_gatherer_country(cutter, brevon).unwrap_err().contains("belongs to Aldoria"));
+        day.destroy_gatherer(cutter).unwrap();
+        assert_eq!(day.region_owner(0xC001), Some(aldoria));
+        // On its own in another region, a gatherer takes the region with it to its new country.
+        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
+        let lone = day.gatherers[0].id;
+        assert_eq!(day.region_owner(0xC002), Some(aldoria));
+        day.set_gatherer_country(lone, brevon).unwrap();
+        assert_eq!(day.region_owner(0xC002), Some(brevon));
+        assert_eq!(day.region_owners.len(), 2);
+    }
+
+    #[test]
+    fn claiming_regions_gives_a_game_saved_before_this_the_regions_of_its_gatherers() {
+        let mut day = day_with_money(5_000);
+        let aldoria = day.countries[0].id;
+        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        day.region_owners.clear();
+        day.claim_regions();
+        assert_eq!(day.region_owners, [RegionOwner { region: 0xC001, country: aldoria }]);
     }
 
     #[test]

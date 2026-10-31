@@ -197,6 +197,8 @@ async fn main() {
             return;
         }
     };
+    // A game saved before gatherers made their region their country's: the autosave keeps the change.
+    day.claim_regions();
 
     // Where the regions are and how they meet, for the paths.
     let region_map = RegionMap::build(&world);
@@ -492,7 +494,9 @@ async fn main() {
                 if let Some(region) = pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y)) {
                     options_ui.close();
                     overlays_ui.close();
-                    naming_region = Some((region.raw(), Popup::region(day.region_name(region.raw()).unwrap_or(""), region_name::kind_text(region))));
+                    let owner = day.region_owner(region.raw()).map_or("", |id| day.country_name(id));
+                    let countries = day.countries.iter().map(|c| c.name.clone()).collect();
+                    naming_region = Some((region.raw(), Popup::region(day.region_name(region.raw()).unwrap_or(""), region_name::kind_text(region), owner, countries, day.region_lock(region.raw()).as_deref())));
                 }
             } else if options.show_named_places {
                 // Anywhere else on the map, with the named places showing, a click is for adding a place there.
@@ -774,7 +778,7 @@ async fn main() {
             if let Some(typed) = popup.show(&style) {
                 // Only keep the name if it is saved too.
                 let mut updated = day.clone();
-                match updated.set_region_name(*region, &typed[0]).and_then(|()| autosave.save_now(&saves, &updated)) {
+                match updated.set_region_name(*region, &typed[0]).and_then(|()| updated.assign_region(*region, &typed[1])).and_then(|()| autosave.save_now(&saves, &updated)) {
                     Ok(()) => {
                         day = updated;
                         named = true;

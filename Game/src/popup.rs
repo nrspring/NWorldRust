@@ -98,6 +98,9 @@ impl Field {
 /// them if nothing is typed.
 fn matching(options: &[String], typed: &str) -> Vec<usize> {
     let typed = typed.trim().to_lowercase();
+    // What is typed being a whole choice, as when a field starts on its answer, is not narrowing the list: that shows
+    // all the choices, to pick another from.
+    let typed = if options.iter().any(|o| o.to_lowercase() == typed) { String::new() } else { typed };
     (0..options.len()).filter(|&i| options[i].to_lowercase().contains(&typed)).collect()
 }
 
@@ -125,7 +128,18 @@ fn check_country(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![country::clean_name(&typed[0])?])
 }
 
+/// What the country of a region says when it belongs to none.
+pub const NO_COUNTRY: &str = "No country";
+
 fn check_region(typed: &[String]) -> Result<Vec<String>, String> {
+    let owner = typed[1].split_whitespace().collect::<Vec<_>>().join(" ");
+    if owner.is_empty() {
+        return Err("Choose a country, or No country.".to_owned());
+    }
+    Ok(vec![region_name::clean_name(&typed[0])?, owner])
+}
+
+fn check_water(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![region_name::clean_name(&typed[0])?])
 }
 
@@ -183,17 +197,28 @@ impl Popup {
     }
 
     /// Asks for the name of a region of `kind` (land, shallow water and so on), which starts as `current`, and can be
-    /// left blank, for no name.
-    pub fn region(current: &str, kind: &str) -> Self {
+    /// left blank, for no name, and which of the countries `countries` it belongs to, which starts as `owner`: one of
+    /// them or `NO_COUNTRY`. `locked` is why it can't be given to another, if it can't.
+    pub fn region(current: &str, kind: &str, owner: &str, countries: Vec<String>, locked: Option<&str>) -> Self {
+        let mut options = vec![NO_COUNTRY.to_owned()];
+        options.extend(countries);
+        let about = match locked {
+            Some(reason) => format!("A region of {kind}. {reason}"),
+            None => format!("A region of {kind}. Leave the name blank for none."),
+        };
         let mut popup = Self::new(
-            "Name this region",
-            format!("A region of {kind}. Leave the name blank for none."),
+            "Edit this region",
+            about,
             Icon::Region,
-            "Save name",
-            vec![Field::new("REGION NAME", "Leave blank for no name", region_name::MAX_NAME_CHARS)],
+            "Save",
+            vec![
+                Field::new("REGION NAME", "Leave blank for no name", region_name::MAX_NAME_CHARS),
+                Field::pick_from("COUNTRY", "Choose a country", country::MAX_NAME_CHARS.max(NO_COUNTRY.len()), options),
+            ],
             check_region,
         );
         popup.fields[0].value = current.to_owned();
+        popup.fields[1].value = if owner.is_empty() { NO_COUNTRY.to_owned() } else { owner.to_owned() };
         popup
     }
 
@@ -206,7 +231,7 @@ impl Popup {
             Icon::River,
             "Save name",
             vec![Field::new(if lake { "LAKE NAME" } else { "RIVER NAME" }, "Leave blank for no name", region_name::MAX_NAME_CHARS)],
-            check_region,
+            check_water,
         );
         popup.fields[0].value = current.to_owned();
         popup
@@ -656,9 +681,11 @@ mod tests {
 
     #[test]
     fn the_region_check_tidies_the_name_and_allows_none() {
-        assert_eq!(check_region(&typed(&["  The   Marches "])).unwrap(), typed(&["The Marches"]));
-        assert_eq!(check_region(&typed(&["  "])).unwrap(), typed(&[""]), "blank means no name");
-        assert!(check_region(&typed(&["Bad!"])).is_err());
+        assert_eq!(check_region(&typed(&["  The   Marches ", "Aldoria"])).unwrap(), typed(&["The Marches", "Aldoria"]));
+        assert_eq!(check_region(&typed(&["  ", " Aldoria "])).unwrap(), typed(&["", "Aldoria"]), "blank means no name");
+        assert!(check_region(&typed(&["Bad!", "Aldoria"])).is_err());
+        assert!(check_region(&typed(&["The Marches", "  "])).is_err(), "a country, or No country, has to be chosen");
+        assert_eq!(check_water(&typed(&["  The   Marches "])).unwrap(), typed(&["The Marches"]));
     }
 
     #[test]
@@ -708,6 +735,9 @@ mod tests {
         assert_eq!(matching(&kinds(), "head"), [2, 3]);
         assert_eq!(matching(&kinds(), "OF ST"), [2]);
         assert_eq!(matching(&kinds(), "xyz"), Vec::<usize>::new());
+        // A whole choice typed, or already there as the answer, still lists them all.
+        let kinds = kinds();
+        assert_eq!(matching(&kinds, &kinds[1].to_uppercase()), [0, 1, 2, 3]);
     }
 
     #[test]

@@ -136,21 +136,21 @@ impl News {
             }
             Event::Gathered { amount, kind } => format!("{} gathers {} {} from its {}", day.country_name(CountryId::from(self.subject)), thousands_u64(amount), kind.product(), kind.plural()),
             Event::GathererBuilt { kind } => match day.gatherer(GathererId::from(self.subject)) {
-                Some(gatherer) => format!("{} builds a {} in {}", day.country_name(gatherer.country), kind.noun(), day.region_label(gatherer.region)),
-                None => format!("A {} is built", kind.noun()),
+                Some(gatherer) => format!("{} builds {} in {}", day.country_name(gatherer.country), kind.a_noun(), day.region_label(gatherer.region)),
+                None => format!("{} is built", kind.a_noun_capital()),
             },
             Event::GathererDestroyed { country, region, kind } => format!("{}'s {} in {} is destroyed", day.country_name(country), kind.noun(), day.region_label(region)),
             Event::GathererTransferred { from, to, kind } => match day.gatherer(GathererId::from(self.subject)) {
                 Some(gatherer) => format!("The {} in {} is transferred from {} to {}", kind.noun(), day.region_label(gatherer.region), day.country_name(from), day.country_name(to)),
-                None => format!("A {} is transferred from {} to {}", kind.noun(), day.country_name(from), day.country_name(to)),
+                None => format!("{} is transferred from {} to {}", kind.a_noun_capital(), day.country_name(from), day.country_name(to)),
             },
             Event::GathererStopped { kind } => match day.gatherer(GathererId::from(self.subject)) {
                 Some(gatherer) => format!("{}'s {} in {} stops operating, with no route to a city", day.country_name(gatherer.country), kind.noun(), day.region_label(gatherer.region)),
-                None => format!("A {} stops operating", kind.noun()),
+                None => format!("{} stops operating", kind.a_noun_capital()),
             },
             Event::GathererStarted { kind } => match day.gatherer(GathererId::from(self.subject)) {
                 Some(gatherer) => format!("{}'s {} in {} starts operating", day.country_name(gatherer.country), kind.noun(), day.region_label(gatherer.region)),
-                None => format!("A {} starts operating", kind.noun()),
+                None => format!("{} starts operating", kind.a_noun_capital()),
             },
             Event::Note { ref text } => text.clone(),
         }

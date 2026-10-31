@@ -195,7 +195,7 @@ impl DestroyTool {
         draw_line(icon.x - 5.0, icon.y + 5.0, icon.x + 5.0, icon.y - 5.0, 2.0, color);
         style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
         if hovered {
-            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge, woodcutter, sawmill, stonecutter or quarry for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
+            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge or gatherer for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
         }
         button
     }
