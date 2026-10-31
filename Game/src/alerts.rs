@@ -15,7 +15,7 @@ use crate::bridge::End;
 use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::hud;
-use crate::ids::{BridgeId, CountryId};
+use crate::ids::{BridgeId, CountryId, WoodcutterId};
 use crate::path::PathPiece;
 use crate::{path_view, region_labels};
 
@@ -32,6 +32,8 @@ const NOTE_HEIGHT: f32 = 26.0;
 const FLASH_PERIOD: f32 = 2.4;
 /// How high above the ground the warning icon is held, in meters, and how big it is, in pixels.
 const MARK_HOLD: f32 = 3.0;
+/// The same over a woodcutter, which is tall: above the top of its flag.
+const WOODCUTTER_MARK_HOLD: f32 = 27.0;
 const MARK_WIDTH: f32 = 24.0;
 const MARK_HEIGHT: f32 = 21.0;
 
@@ -41,6 +43,8 @@ pub enum Alert {
     CountryWithoutCities(CountryId),
     /// A path, a road or a bridge that has failed.
     Failed(Thing),
+    /// A woodcutter that has no unbroken route to a city of its country, and so isn't operating.
+    WoodcutterCutOff(WoodcutterId),
 }
 
 /// What clicking an alert shows: the thing the alert is about.
@@ -48,6 +52,8 @@ pub enum Alert {
 pub enum AlertTarget {
     /// A country, in the countries menu.
     Country(CountryId),
+    /// A woodcutter, which the camera goes to.
+    Woodcutter(WoodcutterId),
     /// The region, by its number, that something failed in, which the camera goes to.
     Region(u16),
     /// A bridge, which the camera goes to the region of.
@@ -55,10 +61,12 @@ pub enum AlertTarget {
 }
 
 impl Alert {
-    /// Every alert there is in `day`, in a steady order: the countries that have no cities, then what failed when the
-    /// last day ended (`failures`, in the order it did), as long as it is still ruined.
+    /// Every alert there is in `day`, in a steady order: the countries that have no cities, then the woodcutters that
+    /// are cut off from a city, then what failed when the last day ended (`failures`, in the order it did), as long as
+    /// it is still ruined.
     pub fn current(day: &DaySave, failures: &[Thing]) -> Vec<Alert> {
         let mut alerts: Vec<Alert> = day.countries.iter().filter(|c| !day.cities.iter().any(|city| city.country == c.id)).map(|c| Alert::CountryWithoutCities(c.id)).collect();
+        alerts.extend(day.cut_off_woodcutters().into_iter().map(Alert::WoodcutterCutOff));
         alerts.extend(failures.iter().filter(|thing| day.is_failed(**thing)).map(|thing| Alert::Failed(*thing)));
         alerts
     }
@@ -72,6 +80,7 @@ impl Alert {
     pub fn target(&self) -> AlertTarget {
         match self {
             Alert::CountryWithoutCities(id) => AlertTarget::Country(*id),
+            Alert::WoodcutterCutOff(id) => AlertTarget::Woodcutter(*id),
             // A segment of path or road is in the region it is named for.
             Alert::Failed(Thing::Path(segment) | Thing::Road(segment)) => AlertTarget::Region(segment.region),
             Alert::Failed(Thing::PathLink(link) | Thing::RoadLink(link)) => AlertTarget::Region(link.region),
@@ -84,22 +93,31 @@ impl Alert {
         match self {
             Alert::CountryWithoutCities(id) => format!("{} has no cities", day.country_name(*id)),
             Alert::Failed(thing) => format!("A {} has failed", thing.name()),
+            Alert::WoodcutterCutOff(id) => match day.woodcutter(*id) {
+                Some(w) => {
+                    let region = day.region_name(w.region).map_or_else(|| format!("region {}", w.region & 0x3FFF), str::to_owned);
+                    format!("The woodcutter in {region} has no path, road or bridge to a city of {}", day.country_name(w.country))
+                }
+                None => "A woodcutter has no path to a city".to_owned(),
+            },
         }
     }
 
-    /// Where the thing the alert is about is on the map, in world x and z: the middle of a failed path, road or bridge.
+    /// Where the thing the alert is about is on the map, in world x and z, and how high above the ground to hold the
+    /// icon, in meters: the middle of a failed path, road or bridge, or a woodcutter, which is held high to clear it.
     /// A country with no cities is nowhere on the map, so that has none.
-    pub fn place(&self, day: &DaySave, map: &RegionMap) -> Option<Vec2> {
+    pub fn place(&self, day: &DaySave, map: &RegionMap) -> Option<(Vec2, f32)> {
         let piece = match self {
             Alert::CountryWithoutCities(_) => return None,
+            Alert::WoodcutterCutOff(id) => return day.woodcutter(*id).map(|w| (vec2(w.x, w.z), WOODCUTTER_MARK_HOLD)),
             Alert::Failed(Thing::Path(segment) | Thing::Road(segment)) => PathPiece::Segment(*segment),
             Alert::Failed(Thing::PathLink(link) | Thing::RoadLink(link)) => PathPiece::Link(*link),
             Alert::Failed(Thing::Bridge(id)) => {
                 let bridge = day.bridge(*id)?;
-                return Some((bridge.end(End::First) + bridge.end(End::Second)) * 0.5);
+                return Some(((bridge.end(End::First) + bridge.end(End::Second)) * 0.5, MARK_HOLD));
             }
         };
-        path_view::piece_ends(map, &day.bridges, piece).map(|(from, to)| (from + to) * 0.5)
+        path_view::piece_ends(map, &day.bridges, piece).map(|(from, to)| ((from + to) * 0.5, MARK_HOLD))
     }
 }
 
@@ -109,8 +127,8 @@ pub fn draw_marks(day: &DaySave, failures: &[Thing], map: &RegionMap, world: &Wo
     // Fading in and out, never quite gone, so that it is always there to be found.
     let flash = 0.5 + 0.5 * (time * std::f32::consts::TAU / FLASH_PERIOD).sin();
     let strength = 0.25 + 0.75 * flash;
-    for at in Alert::current(day, failures).iter().filter_map(|alert| alert.place(day, map)) {
-        let Some(at) = region_labels::to_screen(camera, vec3(at.x, world.surface_height(at.x, at.y) + MARK_HOLD, at.y)) else { continue };
+    for (at, hold) in Alert::current(day, failures).iter().filter_map(|alert| alert.place(day, map)) {
+        let Some(at) = region_labels::to_screen(camera, vec3(at.x, world.surface_height(at.x, at.y) + hold, at.y)) else { continue };
         if at.x < -MARK_WIDTH || at.x > screen_width() + MARK_WIDTH || at.y < 0.0 || at.y > screen_height() + MARK_HEIGHT {
             continue;
         }
@@ -318,9 +336,49 @@ mod tests {
         day.build_bridge(Spot { x: -30.0, z: 10.0 }, Spot { x: 30.0, z: 20.0 }).unwrap();
         let map = RegionMap::default();
         assert_eq!(Alert::CountryWithoutCities(day.countries[0].id).place(&day, &map), None);
-        assert_eq!(Alert::Failed(Thing::Bridge(day.bridges[0].id)).place(&day, &map), Some(vec2(0.0, 15.0)));
+        assert_eq!(Alert::Failed(Thing::Bridge(day.bridges[0].id)).place(&day, &map), Some((vec2(0.0, 15.0), MARK_HOLD)));
         // A path on a map with no regions is nowhere either.
         assert_eq!(Alert::Failed(Thing::Path(PathSegment::to_edge(1, 2))).place(&day, &map), None);
+    }
+
+    #[test]
+    fn a_woodcutter_with_no_route_to_a_city_is_an_alert_held_high_over_it_until_a_route_is_built() {
+        use crate::path::{Kind, PathSegment};
+        const CITY: u16 = 0xC001;
+        const CUTTER: u16 = 0xC002;
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.add_money(day.countries[0].id, 5_000).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, Some(CITY)).unwrap();
+        day.build_woodcutter(100.0, 0.0, CUTTER).unwrap();
+        let id = day.woodcutters[0].id;
+
+        let alerts = Alert::current(&day, &[]);
+        assert_eq!(alerts, [Alert::WoodcutterCutOff(id)]);
+        assert_eq!(alerts[0].text(&day), "The woodcutter in region 2 has no path, road or bridge to a city of Aldoria");
+        assert_eq!(alerts[0].target(), AlertTarget::Woodcutter(id));
+        assert_eq!(alerts[0].place(&day, &RegionMap::default()), Some((vec2(100.0, 0.0), WOODCUTTER_MARK_HOLD)));
+        assert!(WOODCUTTER_MARK_HOLD > 24.0, "above the top of its flag pole");
+        day.set_region_name(CUTTER, "The Marches").unwrap();
+        assert_eq!(Alert::current(&day, &[])[0].text(&day), "The woodcutter in The Marches has no path, road or bridge to a city of Aldoria");
+
+        // After the countries that have no city, and before what failed.
+        day.found_country("Brevon").unwrap();
+        let brevon = day.countries[1].id;
+        assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(brevon), Alert::WoodcutterCutOff(id)]);
+
+        // A route from the woodcutter's region to the city's, of path in part and road in part, ends the alert.
+        day.select_country(day.countries[0].id).unwrap();
+        // Through a region between them, ending at the border of the city's.
+        const BETWEEN: u16 = 0xC003;
+        day.build_segment(Kind::Path, PathSegment::to_edge(CUTTER, BETWEEN)).unwrap();
+        day.build_segment(Kind::Path, PathSegment::to_edge(BETWEEN, CUTTER)).unwrap();
+        day.build_segment(Kind::Road, PathSegment::to_edge(BETWEEN, CITY)).unwrap();
+        assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(brevon)]);
+        // And it is back when part of that fails.
+        let failed = Thing::Path(PathSegment::to_edge(BETWEEN, CUTTER));
+        day.fail(failed);
+        assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(brevon), Alert::WoodcutterCutOff(id)]);
     }
 
     #[test]

@@ -26,6 +26,7 @@ use crate::river_name::RiverName;
 use crate::rgb::Rgb;
 use crate::saves::DAY_VERSION;
 use crate::title_type::{self, TitleType};
+use crate::woodcutter::Woodcutter;
 
 /// How much a country has and owns, as [`DaySave::country_totals`] counts it.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -100,6 +101,9 @@ pub struct DaySave {
     /// The segments of road that start at one end of a bridge. Carried forward from day to day.
     #[serde(default)]
     pub road_links: Vec<BridgeLink>,
+    /// The woodcutters that have been built, each owned by a country. Carried forward from day to day.
+    #[serde(default)]
+    pub woodcutters: Vec<Woodcutter>,
     /// What happened today. Not carried forward.
     #[serde(default)]
     pub newsreel: Vec<News>,
@@ -107,7 +111,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), woodcutters: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.
@@ -233,8 +237,8 @@ impl DaySave {
         Ok(())
     }
 
-    /// Removes the country with this id, which can only be done if it has no cities. Its people and the regions
-    /// it owns go with it (the regions become unowned), and so does the news of any of them. If it was the
+    /// Removes the country with this id, which can only be done if it has no cities. Its people, its woodcutters
+    /// and the regions it owns go with it (the regions become unowned), and so does the news of any of them. If it was the
     /// country the player plays, the first country left is. An error says why it can't be done.
     pub fn delete_country(&mut self, id: CountryId) -> Result<(), String> {
         let country = self.country(id).ok_or("There is no such country.")?;
@@ -245,6 +249,7 @@ impl DaySave {
         self.countries.retain(|c| c.id != id);
         self.people.retain(|p| p.country != id);
         self.region_owners.retain(|o| o.country != id);
+        self.woodcutters.retain(|w| w.country != id);
         self.newsreel.retain(|n| !gone.contains(&n.subject));
         if self.player == Some(id) {
             self.player = self.countries.first().map(|c| c.id);

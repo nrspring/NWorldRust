@@ -8,6 +8,10 @@ mod autosave;
 mod bridge;
 mod bridge_tool;
 mod destroy_tool;
+mod connection;
+mod woodcutter;
+mod woodcutter_tool;
+mod woodcutter_view;
 mod bridge_view;
 mod calendar;
 mod camera;
@@ -72,6 +76,7 @@ use options::{Options, OptionsUi};
 use bridge::BRIDGE_COST;
 use bridge_tool::BridgeTool;
 use destroy_tool::DestroyTool;
+use woodcutter_tool::WoodcutterTool;
 use bridge_view::BridgeRenderer;
 use path::Kind;
 use path_tool::{PathTool, Scene};
@@ -186,6 +191,8 @@ async fn main() {
 
     // Where the regions are and how they meet, for the paths.
     let region_map = RegionMap::build(&world);
+    // The regions with forest in them, which is where a woodcutter can go.
+    let forest_regions = woodcutter::forest_regions(&world);
     let water_bodies = WaterBodies::build(&world);
     let mut camera = GameCamera::new(&world);
     let mut view = MapView::new(&world, camera.camera(&world).position);
@@ -217,6 +224,7 @@ async fn main() {
     let mut roads = PathRenderer::new(Kind::Road);
     let mut bridge_tool = BridgeTool::default();
     let mut destroy_tool = DestroyTool::default();
+    let mut woodcutter_tool = WoodcutterTool::default();
     let mut bridges = BridgeRenderer::default();
     // The popup that asks whether to end the day.
     let mut advance_popup = AdvancePopup::default();
@@ -265,6 +273,8 @@ async fn main() {
                 bridge_tool.escape();
             } else if destroy_tool.is_active() {
                 destroy_tool.escape();
+            } else if woodcutter_tool.is_active() {
+                woodcutter_tool.escape();
             } else {
                 break;
             }
@@ -284,7 +294,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse);
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || woodcutter_tool.has_mouse(mouse);
         if modal {
             camera.skip_frame();
         } else {
@@ -317,7 +327,13 @@ async fn main() {
         if bridge_problem.is_some() {
             bridge_tool.deactivate();
         }
-        let placing = !modal && day.cities.is_empty() && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active();
+        let woodcutter_problem = day.woodcutter_problem();
+        if woodcutter_problem.is_some() {
+            woodcutter_tool.deactivate();
+        }
+        // Whether one of the tools is on, and so the map is not for anything else.
+        let tool_on = path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() || woodcutter_tool.is_active();
+        let placing = !modal && day.cities.is_empty() && !tool_on;
         let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
         // Why the city can't go there: the ground, or the region belonging to another country.
         let problem = site.and_then(|at| {
@@ -330,21 +346,25 @@ async fn main() {
         paths.draw(&world, &region_map, &day);
         roads.draw(&world, &region_map, &day);
         bridges.draw(&world, &day);
+        woodcutter_view::draw(&world, &day);
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
         // The city under the mouse, if there is one, which the tooltip tells about.
-        let hovered = if modal || naming_city.is_some() || over_interface || path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
+        let hovered = if modal || naming_city.is_some() || over_interface || tool_on { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
+
+        // The woodcutter under the mouse, if there is one and no city is in front of it, which the tooltip tells about.
+        let woodcutter_hover = if modal || over_interface || tool_on || hovered.is_some() { None } else { woodcutter_view::under_ray(mouse_ray(&eye, mouse), &world, &day.woodcutters) };
 
         // The label of a place under the mouse while the named places are showing.
-        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active() {
+        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && woodcutter_hover.is_none() && !placing && !tool_on {
             region_labels::place_under(&style, &day, &world, &eye, mouse)
         } else {
             None
         };
         // The river or lake under the mouse while the named places are showing, with a little give so that a thin river can be
         // hit when the camera is far away.
-        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active() {
+        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && woodcutter_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 1.5, 40.0);
             pick_terrain(&eye, &world, mouse).and_then(|at| water_bodies.near(at.x, at.y, reach))
         } else {
@@ -384,6 +404,20 @@ async fn main() {
                         bridge_tool.built();
                     }
                     Err(message) => bridge_tool.fail(message),
+                }
+            }
+        } else if !modal && woodcutter_tool.is_active() {
+            // With the woodcutter tool on, a click is for building one where the mouse is.
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            if let Some((at, region)) = woodcutter_tool.update(&scene, &day, &forest_regions, clicked) {
+                // Only keep the woodcutter if it is saved too.
+                let mut updated = day.clone();
+                match updated.build_woodcutter(at.x, at.y, region).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        woodcutter_tool.built();
+                    }
+                    Err(message) => woodcutter_tool.fail(message),
                 }
             }
         } else if !modal && destroy_tool.is_active() {
@@ -443,13 +477,13 @@ async fn main() {
 
         // The region under the mouse, for a note about it while the region names are showing, unless it is a river or
         // lake that is under the mouse and the named places are showing.
-        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active() {
+        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && woodcutter_hover.is_none() && !placing && !tool_on {
             pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y))
         } else {
             None
         };
         // The resource under the mouse, for a note about what it is, when nothing else has the mouse.
-        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active() {
+        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && woodcutter_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 2.5, 40.0);
             pick_terrain(&eye, &world, mouse).and_then(|at| resource_hover::deposit_near(&world, at.x, at.y, reach))
         } else {
@@ -517,6 +551,11 @@ async fn main() {
                         overlays_ui.close();
                         country_menu.open_at(&day, Some(country));
                     }
+                    AlertTarget::Woodcutter(id) => {
+                        if let Some(woodcutter) = day.woodcutter(id) {
+                            camera.fly_to(vec2(woodcutter.x, woodcutter.z), REGION_VIEW_DISTANCE);
+                        }
+                    }
                     AlertTarget::Region(number) => {
                         if let Some(center) = RegionId::from_raw(number).and_then(|r| region_map.center(r)) {
                             camera.fly_to(center, REGION_VIEW_DISTANCE);
@@ -537,6 +576,8 @@ async fn main() {
             }
             if let Some(city) = hovered.and_then(|id| day.city(id)) {
                 hud::city_tooltip(&style, &day, city);
+            } else if let Some(woodcutter) = woodcutter_hover.and_then(|id| day.woodcutter(id)) {
+                woodcutter_tool::tooltip(&style, &day, woodcutter, day.woodcutter_operating(woodcutter.id));
             } else if let Some(id) = water_hover {
                 if water_bodies.body(id).is_some_and(|b| b.lake) {
                     hud::river_tooltip(&style, day.lake_name(id.0), "lake");
@@ -553,12 +594,13 @@ async fn main() {
             options_ui.show(&style, footer, &mut options, view.has_regions());
             overlays_ui.show(&style, footer, &mut options, view.has_regions());
             // Only one of the tools is on at a time: the one that was just turned on wins.
-            let was_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
+            let was_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active(), woodcutter_tool.is_active()];
             let destroy_button = destroy_tool.show_button(&style, footer, overlays_ui.button().x - 8.0);
-            let path_button = path_tool.show_button(&style, footer, destroy_button.x - 8.0, path_problem.as_ref(), no_regions);
+            let woodcutter_button = woodcutter_tool.show_button(&style, footer, destroy_button.x - 8.0, woodcutter_problem.as_deref());
+            let path_button = path_tool.show_button(&style, footer, woodcutter_button.x - 8.0, path_problem.as_ref(), no_regions);
             let road_button = road_tool.show_button(&style, footer, path_button.x - 8.0, road_problem.as_ref(), no_regions);
             bridge_tool.show_button(&style, footer, road_button.x - 8.0, bridge_problem.as_ref(), tool_reason.as_deref());
-            let now_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
+            let now_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active(), woodcutter_tool.is_active()];
             if now_on.iter().filter(|on| **on).count() > 1 {
                 // The one that was already on gives way.
                 if was_on[0] && now_on[0] {
@@ -573,11 +615,15 @@ async fn main() {
                 if was_on[3] && now_on[3] {
                     destroy_tool.deactivate();
                 }
+                if was_on[4] && now_on[4] {
+                    woodcutter_tool.deactivate();
+                }
             }
             path_tool.show_prompt(&style, &day);
             road_tool.show_prompt(&style, &day);
             bridge_tool.show_prompt(&style, &day);
             destroy_tool.show_prompt(&style, &day);
+            woodcutter_tool.show_prompt(&style, &day);
             if overlays_ui.is_open() && !overlays_was_open {
                 options_ui.close();
             } else if options_ui.is_open() && !options_was_open {
