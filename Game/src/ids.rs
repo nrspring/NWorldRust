@@ -132,8 +132,8 @@ id_type!(
     NoteId
 );
 id_type!(
-    /// The id of a woodcutter.
-    WoodcutterId
+    /// The id of a gatherer.
+    GathererId
 );
 
 impl CityId {

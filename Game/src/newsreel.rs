@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
 use crate::format::{money, thousands, thousands_u64};
-use crate::ids::{CityId, CountryId, Guid, NoteId, PersonId, WoodcutterId};
+use crate::gatherer::GathererKind;
+use crate::ids::{CityId, CountryId, GathererId, Guid, NoteId, PersonId};
 use crate::text;
 
 /// One thing that happened, saved with the id of its subject and a `type`, so statistics can count
@@ -38,19 +39,27 @@ pub enum Event {
     /// The subject is a city, whose population went from `from` to `to` people, while it was or was not under
     /// siege.
     PopulationChanged { from: u32, to: u32, under_siege: bool },
-    /// The subject is a country, and its woodcutters that were operating provided this much wood.
-    WoodGathered { amount: u64 },
-    /// The subject is a woodcutter, and it was built.
-    WoodcutterBuilt,
-    /// The subject is a woodcutter, which belonged to the country `country`, and it was destroyed in the region
+    /// The subject is a country, and its gatherers of `kind` that were operating provided this much of what they
+    /// gather. News saved before there were kinds is of wood, and so is that of a gatherer, from when they were all
+    /// woodcutters, under the names it had then.
+    #[serde(alias = "wood_gathered")]
+    Gathered { amount: u64, #[serde(default)] kind: GathererKind },
+    /// The subject is a gatherer of `kind`, and it was built.
+    #[serde(alias = "woodcutter_built")]
+    GathererBuilt { #[serde(default)] kind: GathererKind },
+    /// The subject is a gatherer of `kind`, which belonged to the country `country`, and it was destroyed in the region
     /// numbered `region`. It is gone, so what the news says of it is kept here.
-    WoodcutterDestroyed { country: CountryId, region: u16 },
-    /// The subject is a woodcutter, and it was transferred from the country `from` to the country `to`.
-    WoodcutterTransferred { from: CountryId, to: CountryId },
-    /// The subject is a woodcutter, and it stopped operating because it lost its route to a city.
-    WoodcutterStopped,
-    /// The subject is a woodcutter, and it started operating, because it has a route to a city.
-    WoodcutterStarted,
+    #[serde(alias = "woodcutter_destroyed")]
+    GathererDestroyed { country: CountryId, region: u16, #[serde(default)] kind: GathererKind },
+    /// The subject is a gatherer of `kind`, and it was transferred from the country `from` to the country `to`.
+    #[serde(alias = "woodcutter_transferred")]
+    GathererTransferred { from: CountryId, to: CountryId, #[serde(default)] kind: GathererKind },
+    /// The subject is a gatherer of `kind`, and it stopped operating because it lost its route to a city.
+    #[serde(alias = "woodcutter_stopped")]
+    GathererStopped { #[serde(default)] kind: GathererKind },
+    /// The subject is a gatherer of `kind`, and it started operating, because it has a route to a city.
+    #[serde(alias = "woodcutter_started")]
+    GathererStarted { #[serde(default)] kind: GathererKind },
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -115,23 +124,23 @@ impl News {
                     (false, false) => format!("{name} loses {change} people and falls to {now}"),
                 }
             }
-            Event::WoodGathered { amount } => format!("{} gathers {} wood from its woodcutters", day.country_name(CountryId::from(self.subject)), thousands_u64(amount)),
-            Event::WoodcutterBuilt => match day.woodcutter(WoodcutterId::from(self.subject)) {
-                Some(woodcutter) => format!("{} builds a woodcutter in {}", day.country_name(woodcutter.country), day.region_label(woodcutter.region)),
-                None => "A woodcutter is built".to_owned(),
+            Event::Gathered { amount, kind } => format!("{} gathers {} {} from its {}s", day.country_name(CountryId::from(self.subject)), thousands_u64(amount), kind.product(), kind.noun()),
+            Event::GathererBuilt { kind } => match day.gatherer(GathererId::from(self.subject)) {
+                Some(gatherer) => format!("{} builds a {} in {}", day.country_name(gatherer.country), kind.noun(), day.region_label(gatherer.region)),
+                None => format!("A {} is built", kind.noun()),
             },
-            Event::WoodcutterDestroyed { country, region } => format!("{}'s woodcutter in {} is destroyed", day.country_name(country), day.region_label(region)),
-            Event::WoodcutterTransferred { from, to } => match day.woodcutter(WoodcutterId::from(self.subject)) {
-                Some(woodcutter) => format!("The woodcutter in {} is transferred from {} to {}", day.region_label(woodcutter.region), day.country_name(from), day.country_name(to)),
-                None => format!("A woodcutter is transferred from {} to {}", day.country_name(from), day.country_name(to)),
+            Event::GathererDestroyed { country, region, kind } => format!("{}'s {} in {} is destroyed", day.country_name(country), kind.noun(), day.region_label(region)),
+            Event::GathererTransferred { from, to, kind } => match day.gatherer(GathererId::from(self.subject)) {
+                Some(gatherer) => format!("The {} in {} is transferred from {} to {}", kind.noun(), day.region_label(gatherer.region), day.country_name(from), day.country_name(to)),
+                None => format!("A {} is transferred from {} to {}", kind.noun(), day.country_name(from), day.country_name(to)),
             },
-            Event::WoodcutterStopped => match day.woodcutter(WoodcutterId::from(self.subject)) {
-                Some(woodcutter) => format!("{}'s woodcutter in {} stops operating, with no route to a city", day.country_name(woodcutter.country), day.region_label(woodcutter.region)),
-                None => "A woodcutter stops operating".to_owned(),
+            Event::GathererStopped { kind } => match day.gatherer(GathererId::from(self.subject)) {
+                Some(gatherer) => format!("{}'s {} in {} stops operating, with no route to a city", day.country_name(gatherer.country), kind.noun(), day.region_label(gatherer.region)),
+                None => format!("A {} stops operating", kind.noun()),
             },
-            Event::WoodcutterStarted => match day.woodcutter(WoodcutterId::from(self.subject)) {
-                Some(woodcutter) => format!("{}'s woodcutter in {} starts operating", day.country_name(woodcutter.country), day.region_label(woodcutter.region)),
-                None => "A woodcutter starts operating".to_owned(),
+            Event::GathererStarted { kind } => match day.gatherer(GathererId::from(self.subject)) {
+                Some(gatherer) => format!("{}'s {} in {} starts operating", day.country_name(gatherer.country), kind.noun(), day.region_label(gatherer.region)),
+                None => format!("A {} starts operating", kind.noun()),
             },
             Event::Note { ref text } => text.clone(),
         }

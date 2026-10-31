@@ -26,7 +26,7 @@ use crate::river_name::RiverName;
 use crate::rgb::Rgb;
 use crate::saves::DAY_VERSION;
 use crate::title_type::{self, TitleType};
-use crate::woodcutter::Woodcutter;
+use crate::gatherer::{Gatherer, GathererKind};
 
 /// How much a country has and owns, as [`DaySave::country_totals`] counts it.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -101,9 +101,9 @@ pub struct DaySave {
     /// The segments of road that start at one end of a bridge. Carried forward from day to day.
     #[serde(default)]
     pub road_links: Vec<BridgeLink>,
-    /// The woodcutters that have been built, each owned by a country. Carried forward from day to day.
-    #[serde(default)]
-    pub woodcutters: Vec<Woodcutter>,
+    /// The gatherers that have been built, each owned by a country. Carried forward from day to day.
+    #[serde(default, alias = "woodcutters")]
+    pub gatherers: Vec<Gatherer>,
     /// What happened today. Not carried forward.
     #[serde(default)]
     pub newsreel: Vec<News>,
@@ -111,7 +111,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), woodcutters: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), gatherers: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.
@@ -132,12 +132,12 @@ impl DaySave {
     }
 
     /// The day after this one, as it starts: everything that carries forward (see [`following`](Self::following)),
-    /// with the day's rules run on it (see [`crate::rules`]), and the woodcutters that the rules cut off from a city
+    /// with the day's rules run on it (see [`crate::rules`]), and the gatherers that the rules cut off from a city
     /// reported.
     pub fn next_day(&self) -> Self {
         let mut next = self.following(self.date.next());
         crate::rules::run(&mut next);
-        next.update_woodcutter_operation();
+        next.update_gatherer_operation();
         next
     }
 
@@ -240,17 +240,21 @@ impl DaySave {
     }
 
     /// Why the country with this id can't be deleted, or `None` if it can: it can't own anything, which is cities,
-    /// woodcutters, and regions that it owns with no city of its in them. Its people don't count.
+    /// gatherers of any kind, and regions that it owns with no city of its in them. Its people don't count.
     pub fn delete_problem(&self, id: CountryId) -> Option<String> {
         let country = self.country(id)?;
         let cities = self.cities.iter().filter(|c| c.country == id).count();
-        let woodcutters = self.woodcutters.iter().filter(|w| w.country == id).count();
         let regions = self.region_owners.iter().filter(|o| o.country == id && !self.cities.iter().any(|c| c.country == id && c.region == Some(o.region))).count();
         let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let mut owned: Vec<String> = Vec::new();
-        for (n, one, many) in [(cities, "city", "cities"), (woodcutters, "woodcutter", "woodcutters"), (regions, "region", "regions")] {
+        let mut counts = vec![(cities, "city", "cities".to_owned())];
+        for kind in GathererKind::ALL {
+            counts.push((self.gatherers.iter().filter(|g| g.country == id && g.kind == kind).count(), kind.noun(), format!("{}s", kind.noun())));
+        }
+        counts.push((regions, "region", "regions".to_owned()));
+        for (n, one, many) in counts {
             if n > 0 {
-                owned.push(plural(n, one, many));
+                owned.push(plural(n, one, &many));
             }
         }
         let list = match owned.as_slice() {
@@ -400,6 +404,7 @@ impl DaySave {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gatherer::GathererKind;
 
     fn day() -> DaySave {
         DaySave::new(Date::FIRST, "Assets/map.nworld")
@@ -973,11 +978,11 @@ mod tests {
         let before = day.clone();
         assert!(day.delete_country(brevon).unwrap_err().contains("owns 1 region"));
         assert_eq!(day, before, "and nothing is lost");
-        // A woodcutter, and cities and a region together.
+        // A gatherer, and cities and a region together.
         day.add_money(aldoria, 5_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(0x4001)).unwrap();
         day.found_city("Farhold", 10.0, 0.0, Some(0x4002)).unwrap();
-        day.build_woodcutter(5.0, 5.0, 0x4003).unwrap();
+        day.build_gatherer(GathererKind::Woodcutter, 5.0, 5.0, 0x4003).unwrap();
         day.set_region_owner(0x4004, Some(aldoria)).unwrap();
         assert_eq!(day.delete_problem(aldoria).unwrap(), "Aldoria owns 2 cities, 1 woodcutter and 1 region, so it can't be deleted.");
         // Letting go of the region it owns by itself is what lets it go.

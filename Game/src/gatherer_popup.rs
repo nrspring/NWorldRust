@@ -1,11 +1,12 @@
-//! The woodcutter popup, opened by clicking a woodcutter: what there is to know of it, a way to change which country
+//! The gatherer popup, opened by clicking a gatherer: what there is to know of it, a way to change which country
 //! it belongs to.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
 use crate::day::DaySave;
-use crate::ids::{CountryId, WoodcutterId};
+use crate::gatherer::GathererKind;
+use crate::ids::{CountryId, GathererId};
 
 const CARD_WIDTH: f32 = 380.0;
 const PADDING: f32 = 24.0;
@@ -20,26 +21,26 @@ const MAX_LIST_ROWS: usize = 6;
 /// How long the popup takes to appear, in seconds.
 const FADE_IN: f64 = 0.22;
 
-/// What the player changed about the woodcutter in the popup.
+/// What the player changed about the gatherer in the popup.
 #[derive(Debug, PartialEq)]
 pub enum Change {
-    /// The woodcutter now belongs to this country.
-    Country(WoodcutterId, CountryId),
+    /// The gatherer now belongs to this country.
+    Country(GathererId, CountryId),
 }
 
 impl Change {
     /// Does it to `day`. An error says why it can't be done.
     pub fn apply(&self, day: &mut DaySave) -> Result<(), String> {
         match self {
-            Self::Country(woodcutter, country) => day.set_woodcutter_country(*woodcutter, *country),
+            Self::Country(gatherer, country) => day.set_gatherer_country(*gatherer, *country),
         }
     }
 }
 
 #[derive(Default)]
-pub struct WoodcutterPopup {
-    /// The woodcutter being shown, while the popup is up.
-    woodcutter: Option<WoodcutterId>,
+pub struct GathererPopup {
+    /// The gatherer being shown, while the popup is up.
+    gatherer: Option<GathererId>,
     opened_at: f64,
     /// Set when the popup has just come up, so the click that did it isn't also a click on the popup.
     fresh: bool,
@@ -50,13 +51,13 @@ pub struct WoodcutterPopup {
     error: Option<String>,
 }
 
-impl WoodcutterPopup {
+impl GathererPopup {
     pub fn is_open(&self) -> bool {
-        self.woodcutter.is_some()
+        self.gatherer.is_some()
     }
 
-    pub fn open(&mut self, woodcutter: WoodcutterId) {
-        *self = Self { woodcutter: Some(woodcutter), opened_at: get_time(), fresh: true, ..Self::default() };
+    pub fn open(&mut self, gatherer: GathererId) {
+        *self = Self { gatherer: Some(gatherer), opened_at: get_time(), fresh: true, ..Self::default() };
     }
 
     /// What Esc does: closes the list of countries if it is showing, and otherwise the popup.
@@ -64,7 +65,7 @@ impl WoodcutterPopup {
         if self.choosing {
             self.choosing = false;
         } else {
-            self.woodcutter = None;
+            self.gatherer = None;
         }
     }
 
@@ -74,11 +75,11 @@ impl WoodcutterPopup {
         self.error = Some(message);
     }
 
-    /// Takes the mouse and Enter for this frame and draws the popup over everything. A woodcutter that is not in `day`
-    /// is not shown. Returns what the player changed about the woodcutter, if they did.
+    /// Takes the mouse and Enter for this frame and draws the popup over everything. A gatherer that is not in `day`
+    /// is not shown. Returns what the player changed about the gatherer, if they did.
     pub fn show(&mut self, style: &Style, day: &DaySave) -> Option<Change> {
-        let Some(woodcutter) = self.woodcutter.and_then(|id| day.woodcutter(id)) else {
-            self.woodcutter = None;
+        let Some(gatherer) = self.gatherer.and_then(|id| day.gatherer(id)) else {
+            self.gatherer = None;
             return None;
         };
         let mouse = Vec2::from(mouse_position());
@@ -90,7 +91,7 @@ impl WoodcutterPopup {
         let (screen_w, screen_h) = (screen_width(), screen_height());
         draw_rectangle(0.0, 0.0, screen_w, screen_h, Color::new(0.02, 0.03, 0.05, 0.6 * ease));
 
-        let country = day.country(woodcutter.country);
+        let country = day.country(gatherer.country);
         let error_height = if self.error.is_some() { 24.0 } else { 0.0 };
         let height = ROWS_TOP + ROW_HEIGHT * 3.0 + 16.0 + error_height + BUTTON_HEIGHT + PADDING;
         let card = Rect::new((screen_w - CARD_WIDTH) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, CARD_WIDTH, height);
@@ -100,11 +101,21 @@ impl WoodcutterPopup {
         let badge = Rect::new(card.x + PADDING, card.y + PADDING, 40.0, 40.0);
         style::rounded_rect(badge, 10.0, style::ACCENT_SOFT);
         let c = badge.center();
-        draw_triangle(vec2(c.x, c.y - 12.0), vec2(c.x - 9.0, c.y + 5.0), vec2(c.x + 9.0, c.y + 5.0), style::ACCENT_HOVER);
-        draw_line(c.x, c.y + 5.0, c.x, c.y + 12.0, 2.5, style::ACCENT_HOVER);
+        match gatherer.kind {
+            // A little pine, or a little rock.
+            GathererKind::Woodcutter => {
+                draw_triangle(vec2(c.x, c.y - 12.0), vec2(c.x - 9.0, c.y + 5.0), vec2(c.x + 9.0, c.y + 5.0), style::ACCENT_HOVER);
+                draw_line(c.x, c.y + 5.0, c.x, c.y + 12.0, 2.5, style::ACCENT_HOVER);
+            }
+            GathererKind::Stonecutter => {
+                draw_poly(c.x, c.y + 1.0, 6, 12.0, 0.0, style::ACCENT_HOVER);
+                draw_line(c.x - 4.0, c.y - 6.0, c.x + 1.0, c.y + 1.0, 2.0, style::ACCENT_SOFT);
+                draw_line(c.x + 1.0, c.y + 1.0, c.x - 2.0, c.y + 8.0, 2.0, style::ACCENT_SOFT);
+            }
+        }
         let text_x = badge.right() + 14.0;
-        style.text("Woodcutter", text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
-        style.text(&day.region_label(woodcutter.region), text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text(gatherer.kind.label(), text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
+        style.text(&day.region_label(gatherer.region), text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
 
         // What there is to know, a row each. The country's can be clicked, to change it.
         let inner_x = card.x + PADDING;
@@ -137,12 +148,12 @@ impl WoodcutterPopup {
             style::rounded_rect(Rect::new(name_x - 18.0, middle - 6.0, 12.0, 12.0), 3.0, country.color.color());
         }
 
-        let region = day.region_name(woodcutter.region).map_or_else(|| format!("Region {}", woodcutter.region & 0x3FFF), str::to_owned);
+        let region = day.region_name(gatherer.region).map_or_else(|| format!("Region {}", gatherer.region & 0x3FFF), str::to_owned);
         style.text_mid("Region", inner_x, region_row.center().y, 13, Weight::Regular, style::TEXT_MUTED);
         let region_x = region_row.right() - style.measure(&region, 14, Weight::Semibold).width;
         style.text_mid(&region, region_x, region_row.center().y, 14, Weight::Semibold, style::TEXT);
 
-        let (status, status_color) = if day.woodcutter_operating(woodcutter.id) { ("Operating", style::TEXT) } else { ("No route to a city", style::ERROR) };
+        let (status, status_color) = if day.gatherer_operating(gatherer.id) { ("Operating", style::TEXT) } else { ("No route to a city", style::ERROR) };
         style.text_mid("Status", inner_x, status_row.center().y, 13, Weight::Regular, style::TEXT_MUTED);
         let status_x = status_row.right() - style.measure(status, 14, Weight::Semibold).width;
         style.text_mid(status, status_x, status_row.center().y, 14, Weight::Semibold, status_color);
@@ -177,7 +188,7 @@ impl WoodcutterPopup {
                     style::rounded_rect(rect, 6.0, style::HOVER);
                 }
                 let mark = vec2(rect.x + 14.0, rect.center().y);
-                if listed.id == woodcutter.country {
+                if listed.id == gatherer.country {
                     draw_circle(mark.x, mark.y, 6.0, style::ACCENT);
                     draw_circle(mark.x, mark.y, 2.4, WHITE);
                 } else {
@@ -187,8 +198,8 @@ impl WoodcutterPopup {
                 style.text_mid(&listed.name, rect.x + 50.0, rect.center().y, 14, Weight::Regular, style::TEXT);
                 if clicked && rect.contains(mouse) {
                     // The country it is already in is no change, so there is nothing to save.
-                    if listed.id != woodcutter.country {
-                        change = Some(Change::Country(woodcutter.id, listed.id));
+                    if listed.id != gatherer.country {
+                        change = Some(Change::Country(gatherer.id, listed.id));
                     }
                     self.choosing = false;
                 }
@@ -207,14 +218,14 @@ impl WoodcutterPopup {
         } else if clicked && over_country {
             self.choosing = true;
             self.error = None;
-            self.scroll = day.countries.iter().position(|c| c.id == woodcutter.country).unwrap_or(0).saturating_sub(MAX_LIST_ROWS - 1);
+            self.scroll = day.countries.iter().position(|c| c.id == gatherer.country).unwrap_or(0).saturating_sub(MAX_LIST_ROWS - 1);
             used_click = true;
         }
 
         // A click on Close, or on the dimmed window outside the card, or Enter, closes the popup.
         let enter = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter);
         if change.is_none() && !used_click && ((enter && !self.choosing) || (clicked && (over_close || !card.contains(mouse)))) {
-            self.woodcutter = None;
+            self.gatherer = None;
         }
         change
     }
@@ -223,6 +234,7 @@ impl WoodcutterPopup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gatherer::GathererKind;
     use crate::calendar::Date;
 
     fn day() -> DaySave {
@@ -230,15 +242,15 @@ mod tests {
         day.found_country("Aldoria").unwrap();
         day.found_country("Brevon").unwrap();
         day.add_money(day.countries[0].id, 5_000).unwrap();
-        day.build_woodcutter(0.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
         day
     }
 
     #[test]
     fn it_is_closed_until_opened_and_esc_closes_the_list_first() {
-        assert!(!WoodcutterPopup::default().is_open());
+        assert!(!GathererPopup::default().is_open());
         // (Opening it reads the game's clock, which a test doesn't have, so it is made as open.)
-        let mut popup = WoodcutterPopup { woodcutter: Some(WoodcutterId::new()), choosing: true, ..WoodcutterPopup::default() };
+        let mut popup = GathererPopup { gatherer: Some(GathererId::new()), choosing: true, ..GathererPopup::default() };
         assert!(popup.is_open());
         popup.escape();
         assert!(popup.is_open() && !popup.choosing);
@@ -248,7 +260,7 @@ mod tests {
 
     #[test]
     fn a_failure_closes_the_list_and_is_kept_to_show() {
-        let mut popup = WoodcutterPopup { woodcutter: Some(WoodcutterId::new()), choosing: true, ..WoodcutterPopup::default() };
+        let mut popup = GathererPopup { gatherer: Some(GathererId::new()), choosing: true, ..GathererPopup::default() };
         popup.fail("no".to_owned());
         assert!(!popup.choosing && popup.error.as_deref() == Some("no"));
     }
@@ -256,10 +268,10 @@ mod tests {
     #[test]
     fn a_change_does_what_it_says_to_the_day() {
         let mut day = day();
-        let (id, brevon) = (day.woodcutters[0].id, day.countries[1].id);
+        let (id, brevon) = (day.gatherers[0].id, day.countries[1].id);
         Change::Country(id, brevon).apply(&mut day).unwrap();
-        assert_eq!(day.woodcutter(id).unwrap().country, brevon);
+        assert_eq!(day.gatherer(id).unwrap().country, brevon);
         assert!(Change::Country(id, CountryId::new()).apply(&mut day).is_err());
-        assert!(Change::Country(WoodcutterId::new(), brevon).apply(&mut day).is_err(), "it is not there");
+        assert!(Change::Country(GathererId::new(), brevon).apply(&mut day).is_err(), "it is not there");
     }
 }

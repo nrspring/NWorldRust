@@ -9,8 +9,7 @@ use crate::city::{MAX_POPULATION, MIN_POPULATION};
 use crate::day::DaySave;
 use crate::ids;
 use crate::newsreel::{Event, News};
-use crate::woodcutter::WOODCUTTER_WOOD;
-use nworld_map::world::Resource;
+use crate::gatherer::GathererKind;
 
 /// A rule that runs on a day switch.
 pub struct Rule {
@@ -39,7 +38,7 @@ pub const DAY_RULES: &[Rule] = &[
         description: "A path has a 2% chance of failing, a road 0.1% and a bridge 0.05%. What fails is ruined and is listed in the alerts until it is built again.",
         apply: failures,
     },
-    Rule { description: "Each woodcutter that has a path, road or bridge route to a city of its country provides 100 wood to the country.", apply: wood },
+    Rule { description: "Each woodcutter or stonecutter that has a path, road or bridge route to a city of its country provides 100 wood or stone to the country.", apply: gather },
 ];
 
 /// Runs every rule, in order, on `day`, which has just started.
@@ -63,16 +62,19 @@ fn income(day: &mut DaySave) {
     }
 }
 
-/// Each woodcutter that is operating, which is to say that has a route to a city of its country (see
-/// [`DaySave::cut_off_woodcutters`]), adds `WOODCUTTER_WOOD` to the wood the country has. This is after the failures,
-/// so a woodcutter whose route broke today doesn't count. A country that gathered some is in the newsreel.
-fn wood(day: &mut DaySave) {
-    let cut_off = day.cut_off_woodcutters();
+/// Each gatherer that is operating, which is to say that has a route to a city of its country (see
+/// [`DaySave::cut_off_gatherers`]), adds what its kind provides in a day (`GathererKind::daily_yield`) to what the
+/// country has of what it gathers: wood from a woodcutter, stone from a stonecutter. This is after the failures, so a
+/// gatherer whose route broke today doesn't count. A country that gathered some of a kind is in the newsreel.
+fn gather(day: &mut DaySave) {
+    let cut_off = day.cut_off_gatherers();
     for country in day.countries.iter().map(|c| c.id).collect::<Vec<_>>() {
-        let operating = day.woodcutters.iter().filter(|w| w.country == country && !cut_off.contains(&w.id)).count() as u64;
-        let amount = operating * WOODCUTTER_WOOD;
-        if amount > 0 && day.add_resource(country, Resource::Forest, amount as i64).is_ok() {
-            day.newsreel.push(News::about(country, Event::WoodGathered { amount }));
+        for kind in GathererKind::ALL {
+            let operating = day.gatherers.iter().filter(|g| g.country == country && g.kind == kind && !cut_off.contains(&g.id)).count() as u64;
+            let amount = operating * kind.daily_yield();
+            if amount > 0 && day.add_resource(country, kind.resource(), amount as i64).is_ok() {
+                day.newsreel.push(News::about(country, Event::Gathered { amount, kind }));
+            }
         }
     }
 }
@@ -129,6 +131,7 @@ fn next_population(population: u32, under_siege: bool, unit: f32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gatherer::GathererKind;
     use crate::calendar::Date;
     use crate::bridge::Spot;
     use crate::failure::{Thing, PATH_FAILURE};
@@ -435,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn each_woodcutter_with_a_route_to_a_city_provides_100_wood_to_its_country_and_one_without_provides_none() {
+    fn each_gatherer_with_a_route_to_a_city_provides_100_wood_to_its_country_and_one_without_provides_none() {
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         day.found_country("Aldoria").unwrap();
         day.found_country("Brevon").unwrap();
@@ -443,42 +446,69 @@ mod tests {
         for id in [aldoria, brevon] {
             day.add_money(id, 5_000).unwrap();
         }
-        // Aldoria has a city and a woodcutter in the same region, and another woodcutter in a region with no route.
+        // Aldoria has a city and a gatherer in the same region, and another gatherer in a region with no route.
         day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
-        day.build_woodcutter(10.0, 0.0, 0xC001).unwrap();
-        day.build_woodcutter(50.0, 0.0, 0xC002).unwrap();
-        // Brevon has a woodcutter but no city at all.
+        day.build_gatherer(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
+        // Brevon has a gatherer but no city at all.
         day.select_country(brevon).unwrap();
-        day.build_woodcutter(90.0, 0.0, 0xC003).unwrap();
+        day.build_gatherer(GathererKind::Woodcutter, 90.0, 0.0, 0xC003).unwrap();
         day.select_country(aldoria).unwrap();
 
-        wood(&mut day);
+        gather(&mut day);
         assert_eq!(day.country(aldoria).unwrap().stock.wood, 100, "one woodcutter that operates");
         assert_eq!(day.country(brevon).unwrap().stock.wood, 0, "none that does");
-        let news: Vec<String> = day.newsreel.iter().filter(|n| matches!(n.event, Event::WoodGathered { .. })).map(|n| n.headline(&day)).collect();
+        let news: Vec<String> = day.newsreel.iter().filter(|n| matches!(n.event, Event::Gathered { .. })).map(|n| n.headline(&day)).collect();
         assert_eq!(news, ["Aldoria gathers 100 wood from its woodcutters"], "and nothing is said of a country that got none");
 
         // A route to the city makes the second operate, and the wood adds up from day to day.
         day.build_segment(Kind::Path, PathSegment::to_edge(0xC002, 0xC001)).unwrap();
-        wood(&mut day);
+        gather(&mut day);
         assert_eq!(day.country(aldoria).unwrap().stock.wood, 300);
         assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria gathers 200 wood from its woodcutters");
 
-        // A route that broke today, as the failures ran, is no route: the woodcutter provides nothing.
+        // A route that broke today, as the failures ran, is no route: the gatherer provides nothing.
         day.fail(Thing::Path(PathSegment::to_edge(0xC002, 0xC001)));
-        wood(&mut day);
+        gather(&mut day);
         assert_eq!(day.country(aldoria).unwrap().stock.wood, 400);
     }
 
     #[test]
-    fn the_wood_comes_after_the_failures_in_the_rules_and_a_day_with_no_woodcutters_gathers_none() {
-        let wood_at = DAY_RULES.iter().position(|r| r.description.contains("provides 100 wood")).unwrap();
+    fn a_stonecutter_provides_100_stone_and_each_kind_is_counted_and_reported_apart() {
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        let aldoria = day.countries[0].id;
+        day.add_money(aldoria, 9_000).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
+        // A woodcutter and a stonecutter in the region of the city, and a stonecutter in another with no route.
+        day.build_gatherer(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer(GathererKind::Stonecutter, 20.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer(GathererKind::Stonecutter, 60.0, 0.0, 0xC002).unwrap();
+
+        gather(&mut day);
+        let stock = day.country(aldoria).unwrap().stock;
+        assert_eq!((stock.wood, stock.stone), (100, 100), "one of each operates");
+        let news: Vec<String> = day.newsreel.iter().filter(|n| matches!(n.event, Event::Gathered { .. })).map(|n| n.headline(&day)).collect();
+        assert_eq!(news, ["Aldoria gathers 100 wood from its woodcutters", "Aldoria gathers 100 stone from its stonecutters"]);
+
+        // A route for the other stonecutter doubles the stone, and the wood is as it was.
+        day.build_segment(Kind::Path, PathSegment::to_edge(0xC002, 0xC001)).unwrap();
+        gather(&mut day);
+        let stock = day.country(aldoria).unwrap().stock;
+        assert_eq!((stock.wood, stock.stone), (200, 300));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria gathers 200 stone from its stonecutters");
+        assert!(day.country(aldoria).unwrap().stock.iron == 0 && day.country(aldoria).unwrap().stock.oil == 0, "nothing else is touched");
+    }
+
+    #[test]
+    fn the_wood_comes_after_the_failures_in_the_rules_and_a_day_with_no_gatherers_gathers_none() {
+        let wood_at = DAY_RULES.iter().position(|r| r.description.contains("provides 100 wood or stone")).unwrap();
         let failures_at = DAY_RULES.iter().position(|r| r.description.contains("chance of failing")).unwrap();
         assert!(wood_at > failures_at);
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         day.found_country("Aldoria").unwrap();
         let before = day.clone();
-        wood(&mut day);
+        gather(&mut day);
         assert_eq!(day, before);
     }
 

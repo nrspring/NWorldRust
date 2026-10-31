@@ -1,4 +1,4 @@
-//! Whether a woodcutter is connected to a city: it only operates when the region it stands in has an unbroken route of
+//! Whether a gatherer is connected to a city: it only operates when the region it stands in has an unbroken route of
 //! paths, roads and bridges to the region of a city of its country. Some of the route can be path and some road. A
 //! path, road or bridge that has failed is broken, and so isn't part of a route until it is built again.
 //!
@@ -12,10 +12,10 @@ use std::collections::{HashMap, HashSet};
 use crate::bridge::End;
 use crate::day::DaySave;
 use crate::failure::Thing;
-use crate::ids::{BridgeId, WoodcutterId};
+use crate::ids::{BridgeId, GathererId};
 use crate::newsreel::{Event, News};
 use crate::path::{Kind, PathPiece};
-use crate::woodcutter::Woodcutter;
+use crate::gatherer::Gatherer;
 
 /// A point a route can pass through.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -115,34 +115,35 @@ impl Network {
 }
 
 impl DaySave {
-    /// The woodcutters that have no unbroken route to a city of their country, and so aren't operating, in the order
+    /// The gatherers that have no unbroken route to a city of their country, and so aren't operating, in the order
     /// they were built.
-    pub fn cut_off_woodcutters(&self) -> Vec<WoodcutterId> {
-        if self.woodcutters.is_empty() {
+    pub fn cut_off_gatherers(&self) -> Vec<GathererId> {
+        if self.gatherers.is_empty() {
             return Vec::new();
         }
         let mut network = Network::of(self);
-        self.woodcutters.iter().filter(|w| !self.reaches_a_city(&mut network, w)).map(|w| w.id).collect()
+        self.gatherers.iter().filter(|w| !self.reaches_a_city(&mut network, w)).map(|w| w.id).collect()
     }
 
-    /// Whether the woodcutter with this id is operating: it has a route to a city of its country.
-    pub fn woodcutter_operating(&self, id: WoodcutterId) -> bool {
-        self.woodcutter(id).is_some() && !self.cut_off_woodcutters().contains(&id)
+    /// Whether the gatherer with this id is operating: it has a route to a city of its country.
+    pub fn gatherer_operating(&self, id: GathererId) -> bool {
+        self.gatherer(id).is_some() && !self.cut_off_gatherers().contains(&id)
     }
 
-    /// Brings what each woodcutter says of whether it is operating up to date with whether it has a route to a city,
+    /// Brings what each gatherer says of whether it is operating up to date with whether it has a route to a city,
     /// and reports each one that stopped or started in the newsreel. Returns whether any changed.
-    pub fn update_woodcutter_operation(&mut self) -> bool {
-        if self.woodcutters.is_empty() {
+    pub fn update_gatherer_operation(&mut self) -> bool {
+        if self.gatherers.is_empty() {
             return false;
         }
-        let cut_off = self.cut_off_woodcutters();
+        let cut_off = self.cut_off_gatherers();
         let mut news = Vec::new();
-        for woodcutter in &mut self.woodcutters {
-            let operating = !cut_off.contains(&woodcutter.id);
-            if woodcutter.operating != operating {
-                woodcutter.operating = operating;
-                news.push(News::about(woodcutter.id, if operating { Event::WoodcutterStarted } else { Event::WoodcutterStopped }));
+        for gatherer in &mut self.gatherers {
+            let operating = !cut_off.contains(&gatherer.id);
+            if gatherer.operating != operating {
+                gatherer.operating = operating;
+                let kind = gatherer.kind;
+                news.push(News::about(gatherer.id, if operating { Event::GathererStarted { kind } } else { Event::GathererStopped { kind } }));
             }
         }
         let changed = !news.is_empty();
@@ -150,14 +151,15 @@ impl DaySave {
         changed
     }
 
-    fn reaches_a_city(&self, network: &mut Network, woodcutter: &Woodcutter) -> bool {
-        self.cities.iter().filter(|c| c.country == woodcutter.country).filter_map(|c| c.region).any(|region| network.connects(woodcutter.region, region))
+    fn reaches_a_city(&self, network: &mut Network, gatherer: &Gatherer) -> bool {
+        self.cities.iter().filter(|c| c.country == gatherer.country).filter_map(|c| c.region).any(|region| network.connects(gatherer.region, region))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gatherer::GathererKind;
     use crate::bridge::{BridgeLink, Spot};
     use crate::calendar::Date;
     use crate::path::PathSegment;
@@ -166,14 +168,14 @@ mod tests {
     const B: u16 = 2;
     const C: u16 = 3;
 
-    /// A day with a country, Aldoria, with a city in region `A`, and a woodcutter of it in region `B`.
-    fn day() -> (DaySave, WoodcutterId) {
+    /// A day with a country, Aldoria, with a city in region `A`, and a gatherer of it in region `B`.
+    fn day() -> (DaySave, GathererId) {
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         day.found_country("Aldoria").unwrap();
         day.add_money(day.countries[0].id, 10_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(A)).unwrap();
-        day.build_woodcutter(100.0, 0.0, B).unwrap();
-        let id = day.woodcutters[0].id;
+        day.build_gatherer(GathererKind::Woodcutter, 100.0, 0.0, B).unwrap();
+        let id = day.gatherers[0].id;
         (day, id)
     }
 
@@ -184,47 +186,47 @@ mod tests {
     }
 
     #[test]
-    fn a_woodcutter_with_no_route_is_cut_off() {
+    fn a_gatherer_with_no_route_is_cut_off() {
         let (day, id) = day();
-        assert_eq!(day.cut_off_woodcutters(), [id]);
-        assert!(!day.woodcutter_operating(id));
+        assert_eq!(day.cut_off_gatherers(), [id]);
+        assert!(!day.gatherer_operating(id));
     }
 
     #[test]
-    fn a_woodcutter_in_the_region_of_a_city_needs_no_route() {
+    fn a_gatherer_in_the_region_of_a_city_needs_no_route() {
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         day.found_country("Aldoria").unwrap();
         day.add_money(day.countries[0].id, 10_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(A)).unwrap();
-        day.build_woodcutter(10.0, 10.0, A).unwrap();
-        assert!(day.cut_off_woodcutters().is_empty());
-        assert!(day.woodcutter_operating(day.woodcutters[0].id));
+        day.build_gatherer(GathererKind::Woodcutter, 10.0, 10.0, A).unwrap();
+        assert!(day.cut_off_gatherers().is_empty());
+        assert!(day.gatherer_operating(day.gatherers[0].id));
     }
 
     #[test]
     fn a_path_between_the_two_regions_makes_it_operate() {
         let (mut day, id) = day();
         join(&mut day, Kind::Path, A, B);
-        assert!(day.woodcutter_operating(id));
+        assert!(day.gatherer_operating(id));
     }
 
     #[test]
     fn a_route_that_ends_at_the_border_of_the_cities_region_has_reached_it() {
-        // From the woodcutter's center to the middle of its border with the city's region, and no further.
+        // From the gatherer's center to the middle of its border with the city's region, and no further.
         let (mut day, id) = day();
         day.build_segment(Kind::Path, PathSegment::to_edge(B, A)).unwrap();
-        assert!(day.woodcutter_operating(id));
-        // The other way round, from the city's center to the border, reaches the woodcutter's region just the same.
+        assert!(day.gatherer_operating(id));
+        // The other way round, from the city's center to the border, reaches the gatherer's region just the same.
         let (mut other, id) = self::day();
         other.build_segment(Kind::Path, PathSegment::to_edge(A, B)).unwrap();
-        assert!(other.woodcutter_operating(id));
+        assert!(other.gatherer_operating(id));
         // A route that reaches neither region doesn't.
         let (mut far, id) = self::day();
         far.build_segment(Kind::Path, PathSegment::to_edge(C, 9)).unwrap();
-        assert!(!far.woodcutter_operating(id));
-        // One that reaches only the woodcutter's region doesn't either.
+        assert!(!far.gatherer_operating(id));
+        // One that reaches only the gatherer's region doesn't either.
         far.build_segment(Kind::Path, PathSegment::to_edge(B, C)).unwrap();
-        assert!(!far.woodcutter_operating(id));
+        assert!(!far.gatherer_operating(id));
     }
 
     #[test]
@@ -232,9 +234,9 @@ mod tests {
         let (mut day, id) = day();
         // B to C by road, across C by path, and so to the border with A.
         join(&mut day, Kind::Road, B, C);
-        assert!(!day.woodcutter_operating(id), "it reaches C, and no further");
+        assert!(!day.gatherer_operating(id), "it reaches C, and no further");
         day.build_segment(Kind::Path, PathSegment::across(C, B, A)).unwrap();
-        assert!(day.woodcutter_operating(id));
+        assert!(day.gatherer_operating(id));
     }
 
     /// The route from `B` through `C` to the border with `A`, three segments.
@@ -248,105 +250,121 @@ mod tests {
     fn a_broken_piece_cuts_the_route_until_it_is_built_again() {
         let (mut day, id) = day();
         route(&mut day);
-        assert!(day.woodcutter_operating(id));
+        assert!(day.gatherer_operating(id));
         let piece = Thing::Path(PathSegment::to_edge(C, B));
         day.fail(piece);
-        assert!(!day.woodcutter_operating(id));
+        assert!(!day.gatherer_operating(id));
         day.build_segment(Kind::Path, PathSegment::to_edge(C, B)).unwrap();
-        assert!(!day.is_failed(piece) && day.woodcutter_operating(id));
+        assert!(!day.is_failed(piece) && day.gatherer_operating(id));
         // A road that has failed cuts it too, and destroying a piece of it does.
         day.fail(Thing::Road(PathSegment::to_edge(C, A)));
-        assert!(!day.woodcutter_operating(id));
+        assert!(!day.gatherer_operating(id));
         day.repair(Thing::Road(PathSegment::to_edge(C, A)));
         day.destroy(piece).unwrap();
-        assert!(!day.woodcutter_operating(id));
+        assert!(!day.gatherer_operating(id));
     }
 
-    /// The news of the woodcutter's operation in the day's newsreel, as headlines, after the one that it was built.
+    /// The news of the gatherer's operation in the day's newsreel, as headlines, after the one that it was built.
     fn operation_news(day: &DaySave) -> Vec<String> {
-        day.newsreel.iter().filter(|n| matches!(n.event, Event::WoodcutterStarted | Event::WoodcutterStopped)).map(|n| n.headline(day)).collect()
+        day.newsreel.iter().filter(|n| matches!(n.event, Event::GathererStarted { .. } | Event::GathererStopped { .. })).map(|n| n.headline(day)).collect()
     }
 
     #[test]
-    fn a_woodcutter_that_gets_a_route_starts_operating_and_it_is_news_once() {
+    fn a_gatherer_that_gets_a_route_starts_operating_and_it_is_news_once() {
         let (mut day, id) = day();
-        assert!(!day.woodcutters[0].operating, "it starts off not operating");
+        assert!(!day.gatherers[0].operating, "it starts off not operating");
         // Still no route, so nothing to report.
-        assert!(!day.update_woodcutter_operation());
+        assert!(!day.update_gatherer_operation());
         assert!(operation_news(&day).is_empty());
         route(&mut day);
-        assert!(day.update_woodcutter_operation());
-        assert!(day.woodcutters[0].operating);
+        assert!(day.update_gatherer_operation());
+        assert!(day.gatherers[0].operating);
         assert_eq!(operation_news(&day), ["Aldoria's woodcutter in region 2 starts operating"]);
         assert_eq!(day.newsreel.last().unwrap().subject, id.into());
         // Looking again says nothing more.
-        assert!(!day.update_woodcutter_operation());
+        assert!(!day.update_gatherer_operation());
         assert_eq!(operation_news(&day).len(), 1);
     }
 
     #[test]
-    fn a_woodcutter_that_loses_its_route_stops_and_it_starts_again_when_it_is_mended_each_is_news() {
+    fn a_gatherer_that_loses_its_route_stops_and_it_starts_again_when_it_is_mended_each_is_news() {
         let (mut day, _) = day();
         route(&mut day);
-        day.update_woodcutter_operation();
+        day.update_gatherer_operation();
         let piece = Thing::Path(PathSegment::to_edge(C, B));
         day.fail(piece);
-        assert!(day.update_woodcutter_operation());
-        assert!(!day.woodcutters[0].operating);
+        assert!(day.update_gatherer_operation());
+        assert!(!day.gatherers[0].operating);
         assert_eq!(operation_news(&day).last().unwrap(), "Aldoria's woodcutter in region 2 stops operating, with no route to a city");
-        assert!(!day.update_woodcutter_operation(), "and it is only said once");
-        // Built again, it is mended, and the woodcutter starts again.
+        assert!(!day.update_gatherer_operation(), "and it is only said once");
+        // Built again, it is mended, and the gatherer starts again.
         day.build_segment(Kind::Path, PathSegment::to_edge(C, B)).unwrap();
-        assert!(day.update_woodcutter_operation());
-        assert!(day.woodcutters[0].operating);
+        assert!(day.update_gatherer_operation());
+        assert!(day.gatherers[0].operating);
         assert_eq!(operation_news(&day).len(), 3, "started, stopped, started");
         assert_eq!(operation_news(&day).last().unwrap(), "Aldoria's woodcutter in region 2 starts operating");
     }
 
     #[test]
-    fn each_woodcutter_is_reported_on_its_own() {
+    fn a_stonecutter_operates_by_the_same_route_and_its_news_says_it_is_one() {
+        let (mut day, wood) = day();
+        day.build_gatherer(GathererKind::Stonecutter, 120.0, 0.0, B).unwrap();
+        let stone = day.gatherers[1].id;
+        assert_eq!(day.cut_off_gatherers(), [wood, stone]);
+        route(&mut day);
+        assert!(day.update_gatherer_operation());
+        assert!(day.gatherer_operating(wood) && day.gatherer_operating(stone));
+        assert_eq!(operation_news(&day), ["Aldoria's woodcutter in region 2 starts operating", "Aldoria's stonecutter in region 2 starts operating"]);
+        day.fail(Thing::Path(PathSegment::to_edge(C, B)));
+        day.update_gatherer_operation();
+        assert_eq!(operation_news(&day).len(), 4);
+        assert_eq!(operation_news(&day)[3], "Aldoria's stonecutter in region 2 stops operating, with no route to a city");
+    }
+
+    #[test]
+    fn each_gatherer_is_reported_on_its_own() {
         let (mut day, first) = day();
-        day.build_woodcutter(150.0, 0.0, C).unwrap();
-        let second = day.woodcutters[1].id;
+        day.build_gatherer(GathererKind::Woodcutter, 150.0, 0.0, C).unwrap();
+        let second = day.gatherers[1].id;
         // The route from B reaches C, where the second one is, but the city is in A: neither has a route to it until the
         // route goes on to A, and then they start together.
         day.build_segment(Kind::Path, PathSegment::to_edge(B, C)).unwrap();
         day.build_segment(Kind::Path, PathSegment::to_edge(C, B)).unwrap();
-        assert!(!day.update_woodcutter_operation());
+        assert!(!day.update_gatherer_operation());
         day.build_segment(Kind::Road, PathSegment::to_edge(C, A)).unwrap();
-        assert!(day.update_woodcutter_operation());
-        let started: Vec<_> = day.newsreel.iter().filter(|n| n.event == Event::WoodcutterStarted).map(|n| n.subject).collect();
+        assert!(day.update_gatherer_operation());
+        let started: Vec<_> = day.newsreel.iter().filter(|n| matches!(n.event, Event::GathererStarted { .. })).map(|n| n.subject).collect();
         assert_eq!(started, [first.into(), second.into()]);
         // Cutting the last piece stops both.
         day.fail(Thing::Road(PathSegment::to_edge(C, A)));
-        day.update_woodcutter_operation();
-        assert_eq!(day.newsreel.iter().filter(|n| n.event == Event::WoodcutterStopped).count(), 2);
+        day.update_gatherer_operation();
+        assert_eq!(day.newsreel.iter().filter(|n| matches!(n.event, Event::GathererStopped { .. })).count(), 2);
     }
 
     #[test]
     fn what_happens_as_the_day_ends_is_reported_in_the_new_days_news() {
         let (mut day, _) = day();
         route(&mut day);
-        day.update_woodcutter_operation();
+        day.update_gatherer_operation();
         // The route is lost as the day ends, and the new day begins with the news and with it recorded.
         day.destroy(Thing::Road(PathSegment::to_edge(C, A))).unwrap();
         let next = day.next_day();
         assert!(operation_news(&next).contains(&"Aldoria's woodcutter in region 2 stops operating, with no route to a city".to_owned()));
-        assert!(!next.woodcutters[0].operating);
-        assert!(day.woodcutters[0].operating, "the day that ended is as it was");
+        assert!(!next.gatherers[0].operating);
+        assert!(day.gatherers[0].operating, "the day that ended is as it was");
         // A day with nothing lost carries it on with nothing to report.
         let (mut kept, _) = self::day();
         route(&mut kept);
-        kept.update_woodcutter_operation();
-        assert!(kept.following(crate::calendar::Date { year: 1, month: 1, day: 2 }).woodcutters[0].operating);
+        kept.update_gatherer_operation();
+        assert!(kept.following(crate::calendar::Date { year: 1, month: 1, day: 2 }).gatherers[0].operating);
     }
 
     #[test]
-    fn an_old_save_with_a_woodcutter_that_says_nothing_of_operating_has_it_not_operating() {
+    fn an_old_save_with_a_gatherer_that_says_nothing_of_operating_has_it_not_operating() {
         let (day, _) = day();
         let mut json = serde_json::to_value(&day).unwrap();
-        json["woodcutters"][0].as_object_mut().unwrap().remove("operating");
-        assert!(!serde_json::from_value::<DaySave>(json).unwrap().woodcutters[0].operating);
+        json["gatherers"][0].as_object_mut().unwrap().remove("operating");
+        assert!(!serde_json::from_value::<DaySave>(json).unwrap().gatherers[0].operating);
     }
 
     #[test]
@@ -357,14 +375,14 @@ mod tests {
         let at_a = BridgeLink { bridge, end: End::First, region: A, to: None };
         let at_b = BridgeLink { bridge, end: End::Second, region: B, to: Some(C) };
         day.build_link_of(Kind::Path, at_a).unwrap();
-        assert!(!day.woodcutter_operating(id), "only the city's end is reached");
+        assert!(!day.gatherer_operating(id), "only the city's end is reached");
         day.build_link_of(Kind::Road, at_b).unwrap();
-        assert!(day.woodcutter_operating(id));
+        assert!(day.gatherer_operating(id));
         day.fail(Thing::Bridge(bridge));
-        assert!(!day.woodcutter_operating(id), "a bridge that has failed carries nothing");
+        assert!(!day.gatherer_operating(id), "a bridge that has failed carries nothing");
         day.repair(Thing::Bridge(bridge));
         day.fail(Thing::RoadLink(at_b));
-        assert!(!day.woodcutter_operating(id), "nor does a path from it that has failed");
+        assert!(!day.gatherer_operating(id), "nor does a path from it that has failed");
     }
 
     #[test]
@@ -375,11 +393,11 @@ mod tests {
         let brevon = day.countries[1].id;
         day.select_country(brevon).unwrap();
         day.found_city("Brevonport", 50.0, 0.0, Some(C)).unwrap();
-        assert!(!day.woodcutter_operating(id), "the route reaches Brevon's city, and the woodcutter is Aldoria's");
+        assert!(!day.gatherer_operating(id), "the route reaches Brevon's city, and the gatherer is Aldoria's");
         // A route on to the city of its own country does.
         day.select_country(day.countries[0].id).unwrap();
         join(&mut day, Kind::Path, C, A);
-        assert!(day.woodcutter_operating(id));
+        assert!(day.gatherer_operating(id));
     }
 
     #[test]
@@ -387,7 +405,7 @@ mod tests {
         let (mut day, id) = day();
         join(&mut day, Kind::Path, A, B);
         day.cities.clear();
-        assert!(!day.woodcutter_operating(id));
+        assert!(!day.gatherer_operating(id));
     }
 
     #[test]
@@ -395,13 +413,13 @@ mod tests {
         let (mut day, id) = day();
         day.found_city("Farhold", 80.0, 0.0, Some(C)).unwrap();
         join(&mut day, Kind::Road, B, C);
-        assert!(day.woodcutter_operating(id));
+        assert!(day.gatherer_operating(id));
     }
 
     #[test]
-    fn nothing_is_cut_off_when_there_are_no_woodcutters_and_an_unknown_one_does_not_operate() {
+    fn nothing_is_cut_off_when_there_are_no_gatherers_and_an_unknown_one_does_not_operate() {
         let day = DaySave::new(Date::FIRST, "Assets/map.nworld");
-        assert!(day.cut_off_woodcutters().is_empty());
-        assert!(!day.woodcutter_operating(WoodcutterId::new()));
+        assert!(day.cut_off_gatherers().is_empty());
+        assert!(!day.gatherer_operating(GathererId::new()));
     }
 }
