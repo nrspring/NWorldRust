@@ -1,5 +1,5 @@
 //! The woodcutter popup, opened by clicking a woodcutter: what there is to know of it, a way to change which country
-//! it belongs to, and a way to destroy it.
+//! it belongs to.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -19,16 +19,12 @@ const LIST_PADDING: f32 = 6.0;
 const MAX_LIST_ROWS: usize = 6;
 /// How long the popup takes to appear, in seconds.
 const FADE_IN: f64 = 0.22;
-/// The red of the Destroy button, a little softer than the one for errors.
-const DESTROY: Color = Color::new(0.80, 0.27, 0.27, 0.85);
 
 /// What the player changed about the woodcutter in the popup.
 #[derive(Debug, PartialEq)]
 pub enum Change {
     /// The woodcutter now belongs to this country.
     Country(WoodcutterId, CountryId),
-    /// The woodcutter is destroyed.
-    Destroy(WoodcutterId),
 }
 
 impl Change {
@@ -36,7 +32,6 @@ impl Change {
     pub fn apply(&self, day: &mut DaySave) -> Result<(), String> {
         match self {
             Self::Country(woodcutter, country) => day.set_woodcutter_country(*woodcutter, *country),
-            Self::Destroy(woodcutter) => day.destroy_woodcutter(*woodcutter),
         }
     }
 }
@@ -156,14 +151,9 @@ impl WoodcutterPopup {
             style.text(error, inner_x, status_row.bottom() + 24.0, 12, Weight::Regular, style::ERROR);
         }
 
-        // The buttons, side by side: Destroy, and Close, which closes it.
-        let top = card.bottom() - PADDING - BUTTON_HEIGHT;
-        let destroy = Rect::new(inner_x, top, (inner_w - 12.0) * 0.5, BUTTON_HEIGHT);
-        let close = Rect::new(destroy.right() + 12.0, top, destroy.w, BUTTON_HEIGHT);
-        let over_destroy = destroy.contains(mouse) && !self.choosing;
+        // The button that closes it.
+        let close = Rect::new(inner_x, card.bottom() - PADDING - BUTTON_HEIGHT, inner_w, BUTTON_HEIGHT);
         let over_close = close.contains(mouse) && !self.choosing;
-        style::rounded_rect(destroy, 8.0, if over_destroy { style::ERROR } else { DESTROY });
-        style.text_centered("Destroy", destroy, 14, Weight::Semibold, WHITE);
         style::rounded_rect(close, 8.0, if over_close { style::BORDER_STRONG } else { style::HOVER });
         style.text_centered("Close", close, 14, Weight::Semibold, style::TEXT);
 
@@ -214,9 +204,6 @@ impl WoodcutterPopup {
                 self.choosing = false;
                 used_click = true;
             }
-        } else if clicked && over_destroy {
-            change = Some(Change::Destroy(woodcutter.id));
-            used_click = true;
         } else if clicked && over_country {
             self.choosing = true;
             self.error = None;
@@ -273,8 +260,6 @@ mod tests {
         Change::Country(id, brevon).apply(&mut day).unwrap();
         assert_eq!(day.woodcutter(id).unwrap().country, brevon);
         assert!(Change::Country(id, CountryId::new()).apply(&mut day).is_err());
-        Change::Destroy(id).apply(&mut day).unwrap();
-        assert!(day.woodcutters.is_empty());
-        assert!(Change::Destroy(id).apply(&mut day).is_err(), "it is already gone");
+        assert!(Change::Country(WoodcutterId::new(), brevon).apply(&mut day).is_err(), "it is not there");
     }
 }
