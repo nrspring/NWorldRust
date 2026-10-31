@@ -203,6 +203,8 @@ async fn main() {
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
     let mut alerts_ui = AlertsUi::default();
+    // What failed when the last day ended, which the alerts report. Not saved: a game opened again has none.
+    let mut day_failures: Vec<failure::Thing> = Vec::new();
     let mut newsreel_panel = hud::NewsreelPanel::default();
     let mut path_tool = PathTool::new(Kind::Path);
     let mut paths = PathRenderer::new(Kind::Path);
@@ -469,7 +471,7 @@ async fn main() {
         if !modal {
             let newsreel = newsreel_panel.show(&style, &day);
             // An alert shows what it is about: the countries menu at a country, or the region where something failed.
-            if let Some(target) = alerts_ui.show(&style, &day, newsreel) {
+            if let Some(target) = alerts_ui.show(&style, &day, &day_failures, newsreel) {
                 match target {
                     AlertTarget::Country(country) => {
                         options_ui.close();
@@ -571,6 +573,9 @@ async fn main() {
             // The day that ended is saved as it was, and the game goes on to the next.
             match saves.advance(&day) {
                 Ok(next) => {
+                    // The alerts about the day that ended are cleared, and those about the new day begin.
+                    day_failures = alerts::Alert::new_failures(&day, &next);
+                    alerts_ui.reset();
                     day = next;
                     autosave.reset(&day, get_time());
                     advance_popup.close();

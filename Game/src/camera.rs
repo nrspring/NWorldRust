@@ -36,15 +36,16 @@ pub struct GameCamera {
 }
 
 impl GameCamera {
-    /// A camera over the middle of `world`, high enough to see all of it.
+    /// A camera over the middle of `world`, high enough to see all of it, looking straight down with north up, as
+    /// [`GameCamera::reset_view`] leaves it.
     pub fn new(world: &World) -> Self {
         let size = world.size();
         Self {
             focus: Vec2::ZERO,
             focus_height: 0.0,
             distance: size.max_element() * 0.55,
-            yaw: 0.0,
-            pitch: 1.15,
+            yaw: NORTH,
+            pitch: MAX_PITCH,
             max_distance: size.max_element() * 1.2,
             last_mouse: Vec2::ZERO,
             grabbing: false,
@@ -199,6 +200,13 @@ mod tests {
                 camera.facing_goal = camera.turn_towards(goal, 1.0 / 60.0);
             }
         }
+    }
+
+    #[test]
+    fn the_camera_starts_looking_straight_down_with_north_up() {
+        let camera = camera();
+        assert_eq!((camera.yaw, camera.pitch), (NORTH, MAX_PITCH));
+        assert!(camera.facing_goal.is_none(), "it starts there, so there is no turning to do");
     }
 
     #[test]

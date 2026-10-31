@@ -1,6 +1,10 @@
 //! Alerts: things in the game the player ought to know about or deal with. They are worked out from the
 //! game as it is, again each frame, so they come and go as it changes and are never saved. They show in
 //! a panel under the newsreel that is collapsed to an icon until the player opens it.
+//!
+//! Some are about how things are (a country has no cities), and last as long as that is so. Others are about what
+//! happened on the last day to end (something failed), and are cleared when the next day ends: the things that failed
+//! before stay ruined, but are no longer news.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -40,12 +44,17 @@ pub enum AlertTarget {
 }
 
 impl Alert {
-    /// Every alert there is in `day`, in a steady order: the countries that have no cities, then what has failed in
-    /// the order it did.
-    pub fn current(day: &DaySave) -> Vec<Alert> {
+    /// Every alert there is in `day`, in a steady order: the countries that have no cities, then what failed when the
+    /// last day ended (`failures`, in the order it did), as long as it is still ruined.
+    pub fn current(day: &DaySave, failures: &[Thing]) -> Vec<Alert> {
         let mut alerts: Vec<Alert> = day.countries.iter().filter(|c| !day.cities.iter().any(|city| city.country == c.id)).map(|c| Alert::CountryWithoutCities(c.id)).collect();
-        alerts.extend(day.failed.iter().map(|thing| Alert::Failed(*thing)));
+        alerts.extend(failures.iter().filter(|thing| day.is_failed(**thing)).map(|thing| Alert::Failed(*thing)));
         alerts
+    }
+
+    /// What failed in going from `before` to `after`, the day that ended and the day that followed it.
+    pub fn new_failures(before: &DaySave, after: &DaySave) -> Vec<Thing> {
+        after.failed.iter().filter(|thing| !before.is_failed(**thing)).copied().collect()
     }
 
     /// What clicking the alert shows.
@@ -84,13 +93,18 @@ impl AlertsUi {
         self.rect.contains(mouse)
     }
 
+    /// Goes back to the first alert, for when the alerts have been cleared by a new day.
+    pub fn reset(&mut self) {
+        self.first = 0;
+    }
+
     /// Draws it under `newsreel`, at the right edge, and opens or closes it when the player clicks it.
     /// Returns what the alert the player clicked is about, if they clicked one. When there are more alerts than fit
     /// under the newsreel, the mouse wheel over the panel scrolls through them.
-    pub fn show(&mut self, style: &Style, day: &DaySave, newsreel: Rect) -> Option<AlertTarget> {
+    pub fn show(&mut self, style: &Style, day: &DaySave, failures: &[Thing], newsreel: Rect) -> Option<AlertTarget> {
         let mouse = Vec2::from(mouse_position());
         let clicked = is_mouse_button_pressed(MouseButton::Left);
-        let alerts = Alert::current(day);
+        let alerts = Alert::current(day, failures);
         let color = if alerts.is_empty() { style::TEXT_MUTED } else { AMBER };
 
         if !self.expanded {
@@ -237,14 +251,14 @@ mod tests {
 
     #[test]
     fn there_are_no_alerts_when_there_are_no_countries() {
-        assert!(Alert::current(&day()).is_empty());
+        assert!(Alert::current(&day(), &[]).is_empty());
     }
 
     #[test]
     fn an_alert_is_about_its_country() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
-        assert_eq!(Alert::current(&day)[0].target(), AlertTarget::Country(day.countries[0].id));
+        assert_eq!(Alert::current(&day, &[])[0].target(), AlertTarget::Country(day.countries[0].id));
     }
 
     #[test]
@@ -253,8 +267,8 @@ mod tests {
         day.found_country("Aldoria").unwrap();
         day.found_country("Brevon").unwrap();
         let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
-        assert_eq!(Alert::current(&day), [Alert::CountryWithoutCities(aldoria), Alert::CountryWithoutCities(brevon)]);
-        assert_eq!(Alert::current(&day)[0].text(&day), "Aldoria has no cities");
+        assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(aldoria), Alert::CountryWithoutCities(brevon)]);
+        assert_eq!(Alert::current(&day, &[])[0].text(&day), "Aldoria has no cities");
     }
 
     #[test]
@@ -264,14 +278,14 @@ mod tests {
         day.found_country("Brevon").unwrap();
         let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
         day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
-        assert_eq!(Alert::current(&day), [Alert::CountryWithoutCities(brevon)]);
+        assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(brevon)]);
         // Giving the only city to Brevon leaves Aldoria without one.
         day.set_city_country(day.cities[0].id, brevon).unwrap();
-        assert_eq!(Alert::current(&day), [Alert::CountryWithoutCities(aldoria)]);
+        assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(aldoria)]);
         day.set_city_country(day.cities[0].id, aldoria).unwrap();
         day.found_country("Cardell").unwrap();
         day.found_city("Highmark", 5.0, 0.0, None).unwrap();
-        assert_eq!(Alert::current(&day).len(), 2, "Brevon and Cardell have none");
+        assert_eq!(Alert::current(&day, &[]).len(), 2, "Brevon and Cardell have none");
     }
 
     #[test]
@@ -282,13 +296,33 @@ mod tests {
         let (road, path) = (Thing::Road(PathSegment::to_edge(3, 4)), Thing::Path(PathSegment::to_edge(1, 2)));
         day.fail(road);
         day.fail(path);
-        let alerts = Alert::current(&day);
+        let failures = [road, path];
+        let alerts = Alert::current(&day, &failures);
         assert_eq!(alerts, [Alert::CountryWithoutCities(day.countries[0].id), Alert::Failed(road), Alert::Failed(path)], "in the order they failed");
         assert_eq!(alerts[1].text(&day), "A road has failed");
         assert_eq!(alerts[2].text(&day), "A path has failed");
         // Built again, it is mended, and the alert goes.
         day.repair(road);
-        assert_eq!(Alert::current(&day).len(), 2);
+        assert_eq!(Alert::current(&day, &failures).len(), 2);
+    }
+
+    #[test]
+    fn what_failed_on_an_earlier_day_is_still_ruined_but_no_longer_an_alert() {
+        use crate::path::PathSegment;
+        let mut yesterday = day();
+        let old = Thing::Path(PathSegment::to_edge(1, 2));
+        yesterday.fail(old);
+        // The next day begins with the same ruins, and one more thing fails as it begins.
+        let mut today = yesterday.clone();
+        let new = Thing::Road(PathSegment::to_edge(3, 4));
+        today.fail(new);
+        let failures = Alert::new_failures(&yesterday, &today);
+        assert_eq!(failures, [new], "only what failed in going from one day to the next");
+        assert_eq!(Alert::current(&today, &failures), [Alert::Failed(new)]);
+        assert!(today.is_failed(old), "the old ruin is still there");
+        // A day on which nothing fails clears the lot.
+        let tomorrow = today.clone();
+        assert!(Alert::current(&tomorrow, &Alert::new_failures(&today, &tomorrow)).is_empty());
     }
 
     #[test]
