@@ -7,6 +7,7 @@ mod alerts;
 mod autosave;
 mod bridge;
 mod bridge_tool;
+mod claim_prompt;
 mod destroy_tool;
 mod connection;
 mod costs;
@@ -80,6 +81,7 @@ use treasury::Treasury;
 use options::{Options, OptionsUi};
 use bridge::BRIDGE_COST;
 use bridge_tool::BridgeTool;
+use claim_prompt::ClaimPrompt;
 use destroy_tool::DestroyTool;
 use gatherer::GathererKind;
 use gatherer_popup::GathererPopup;
@@ -197,8 +199,6 @@ async fn main() {
             return;
         }
     };
-    // A game saved before gatherers made their region their country's: the autosave keeps the change.
-    day.claim_regions();
 
     // Where the regions are and how they meet, for the paths.
     let region_map = RegionMap::build(&world);
@@ -224,6 +224,8 @@ async fn main() {
     let mut noting: Option<Popup> = None;
     // The treasury of the country played, which is also where it sends money and resources to another.
     let mut treasury = Treasury::default();
+    // The question of whether to claim a region that something was just placed in.
+    let mut claim_prompt = ClaimPrompt::default();
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
@@ -260,7 +262,9 @@ async fn main() {
         if is_key_pressed(KeyCode::Escape) {
             // Esc first backs out of the countries menu, or closes the options, or gives up on naming a
             // city, and only then quits.
-            if treasury.is_open() {
+            if claim_prompt.is_open() {
+                claim_prompt.escape();
+            } else if treasury.is_open() {
                 treasury.escape();
             } else if advance_popup.is_open() {
                 advance_popup.close();
@@ -313,7 +317,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || advance_popup.is_open();
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
@@ -410,6 +414,10 @@ async fn main() {
                     Ok(()) => {
                         day = updated;
                         tool.built();
+                        claim_prompt.placed_in(&day, &[match piece {
+                            path::PathPiece::Segment(segment) => segment.region,
+                            path::PathPiece::Link(link) => link.region,
+                        }]);
                     }
                     Err(message) => tool.fail(message),
                 }
@@ -426,6 +434,9 @@ async fn main() {
                     Ok(()) => {
                         day = updated;
                         bridge_tool.built();
+                        let ends = [first, second].map(|end| bridge::Spot::from(end));
+                        let regions: Vec<u16> = ends.iter().filter_map(|end| world.region_at(end.x, end.z)).map(|region| region.raw()).collect();
+                        claim_prompt.placed_in(&day, &regions);
                     }
                     Err(message) => bridge_tool.fail(message),
                 }
@@ -442,6 +453,7 @@ async fn main() {
                         Ok(()) => {
                             day = updated;
                             tool.built();
+                            claim_prompt.placed_in(&day, &[region]);
                         }
                         Err(message) => tool.fail(message),
                     }
@@ -706,6 +718,18 @@ async fn main() {
                     country_menu.done(&choice, &day);
                 }
                 Err(message) => country_menu.fail(message),
+            }
+        }
+
+        if let Some(region) = claim_prompt.show(&style, &day) {
+            // Only keep the claim if it is saved too.
+            let mut updated = day.clone();
+            match updated.claim_region(region).and_then(|()| autosave.save_now(&saves, &updated)) {
+                Ok(()) => {
+                    day = updated;
+                    claim_prompt.claimed();
+                }
+                Err(message) => claim_prompt.fail(message),
             }
         }
 

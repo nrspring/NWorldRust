@@ -240,11 +240,11 @@ impl DaySave {
     }
 
     /// Why the country with this id can't be deleted, or `None` if it can: it can't own anything, which is cities,
-    /// gatherers of any kind, and regions that it owns with no city or gatherer of its in them. Its people don't count.
+    /// gatherers of any kind, and regions that it owns with no city of its in them. Its people don't count.
     pub fn delete_problem(&self, id: CountryId) -> Option<String> {
         let country = self.country(id)?;
         let cities = self.cities.iter().filter(|c| c.country == id).count();
-        let regions = self.region_owners.iter().filter(|o| o.country == id && !self.cities.iter().any(|c| c.country == id && c.region == Some(o.region)) && !self.gatherers.iter().any(|g| g.country == id && g.region == o.region)).count();
+        let regions = self.region_owners.iter().filter(|o| o.country == id && !self.cities.iter().any(|c| c.country == id && c.region == Some(o.region))).count();
         let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let mut owned: Vec<String> = Vec::new();
         let mut counts = vec![(cities, "city", "cities".to_owned())];
@@ -356,15 +356,20 @@ impl DaySave {
         Some(format!("That region belongs to {}.", self.country_name(owner)))
     }
 
-    /// Why the owner of the region numbered `region` can't be changed, or `None` if it can: a city or any
-    /// infrastructure (a gatherer) in it keeps it with its country.
+    /// What is in the region numbered `region` that belongs to a country, as a phrase that says where it is and whose it
+    /// is: a city, "Port Aldor stands" (and which country), or a gatherer, "A woodcutter of Aldoria is".
+    fn region_holders(&self, region: u16) -> Vec<(String, CountryId)> {
+        let cities = self.cities.iter().filter(|c| c.region == Some(region)).map(|c| (format!("{} stands", c.name), c.country));
+        let gatherers = self.gatherers.iter().filter(|g| g.region == region).map(|g| (format!("{} of {} is", g.kind.a_noun_capital(), self.country_name(g.country)), g.country));
+        cities.chain(gatherers).collect()
+    }
+
+    /// Why the owner of the region numbered `region` can't be changed, or `None` if it can: a region that belongs to a
+    /// country with a city or any infrastructure (a gatherer) in it stays with that country.
     pub fn region_lock(&self, region: u16) -> Option<String> {
-        let owner = self.region_owner(region);
-        if let Some(city) = self.cities.iter().find(|c| c.region == Some(region)) {
-            return Some(format!("{} stands in that region, so it has to stay with {}.", city.name, self.country_name(owner.unwrap_or(city.country))));
-        }
-        let gatherer = self.gatherers.iter().find(|g| g.region == region)?;
-        Some(format!("{} of {} is in that region, so it has to stay with {}.", gatherer.kind.a_noun_capital(), self.country_name(gatherer.country), self.country_name(owner.unwrap_or(gatherer.country))))
+        let owner = self.region_owner(region)?;
+        let (what, _) = self.region_holders(region).into_iter().next()?;
+        Some(format!("{what} in that region, so it has to stay with {}.", self.country_name(owner)))
     }
 
     /// Gives the region numbered `region` to the country called `named`, or to none if that is "No country": what
@@ -378,9 +383,17 @@ impl DaySave {
         self.set_region_owner(region, owner)
     }
 
+    /// Makes the country being played the owner of the region numbered `region`, which is what is asked after something
+    /// is placed in a region nobody has. An error says why it can't be done (see
+    /// [`set_region_owner`](Self::set_region_owner)).
+    pub fn claim_region(&mut self, region: u16) -> Result<(), String> {
+        let country = self.player_country().ok_or("There is no country yet to claim the region.")?.id;
+        self.set_region_owner(region, Some(country))
+    }
+
     /// Makes `owner` the owner of the region numbered `region`, or leaves it unowned if `owner` is `None`.
-    /// A region with a city or a gatherer in it can't be given to another country, or to none. An error says
-    /// why it can't be done.
+    /// A region that has an owner can't be given to another country, or to none, while a city or a gatherer is in it, and
+    /// one that has none can only go to the country that has things in it. An error says why it can't be done.
     pub fn set_region_owner(&mut self, region: u16, owner: Option<CountryId>) -> Result<(), String> {
         if let Some(owner) = owner {
             self.country(owner).ok_or("There is no such country.")?;
@@ -390,6 +403,10 @@ impl DaySave {
         }
         if let Some(problem) = self.region_lock(region) {
             return Err(problem);
+        }
+        // A region nobody has claimed can't go to a country other than the one whose city or gatherer is in it.
+        if let Some((what, holder)) = self.region_holders(region).into_iter().find(|(_, holder)| Some(*holder) != owner) {
+            return Err(format!("{what} in that region, so only {} can have it.", self.country_name(holder)));
         }
         self.region_owners.retain(|o| o.region != region);
         if let Some(country) = owner {
@@ -868,6 +885,10 @@ mod tests {
         let aldoria = day.countries[0].id;
         day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
         day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0x4006).unwrap();
+        // A region nobody has claimed can only go to the country whose gatherer is in it.
+        assert_eq!(day.region_lock(0x4006), None);
+        assert!(day.assign_region(0x4006, "Brevon").unwrap_err().contains("so only Aldoria can have it"));
+        day.assign_region(0x4006, "Aldoria").unwrap();
         let before = day.clone();
         for region in [0x4005, 0x4006] {
             assert!(day.region_lock(region).unwrap().contains("has to stay with Aldoria"));

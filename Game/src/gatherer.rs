@@ -11,7 +11,6 @@ use macroquad::prelude::*;
 use nworld_map::world::{Resource, WaterClass, World};
 use serde::{Deserialize, Serialize};
 
-use crate::country::RegionOwner;
 use crate::day::DaySave;
 use crate::format;
 use crate::ids::{CountryId, GathererId};
@@ -388,41 +387,8 @@ impl DaySave {
         }
         let id = GathererId::new();
         self.gatherers.push(Gatherer { id, kind, country, x, z, region, operating: false });
-        self.settle_region_owner(region);
         self.newsreel.push(News::about(id, Event::GathererBuilt { kind }));
         Ok(())
-    }
-
-    /// Makes the region numbered `region` belong to the one country that has anything in it, which is a city or a
-    /// gatherer, or leaves it as it is when there are two countries' things in it. A region that has nothing in it
-    /// any more belongs to nobody. A country has the region of its gatherers just as it has the region of its cities.
-    pub fn settle_region_owner(&mut self, region: u16) {
-        let mut countries: Vec<CountryId> = Vec::new();
-        let there = self.cities.iter().filter(|c| c.region == Some(region)).map(|c| c.country).chain(self.gatherers.iter().filter(|g| g.region == region).map(|g| g.country));
-        for country in there {
-            if !countries.contains(&country) {
-                countries.push(country);
-            }
-        }
-        match countries.as_slice() {
-            [only] if self.region_owner(region) != Some(*only) => {
-                self.region_owners.retain(|o| o.region != region);
-                self.region_owners.push(RegionOwner { region, country: *only });
-            }
-            [] => self.region_owners.retain(|o| o.region != region),
-            _ => {}
-        }
-    }
-
-    /// Settles the owner of every region that has a gatherer in it (see [`settle_region_owner`](Self::settle_region_owner)),
-    /// for a game saved before gatherers made their region their country's.
-    pub fn claim_regions(&mut self) {
-        let mut regions: Vec<u16> = self.gatherers.iter().map(|g| g.region).collect();
-        regions.sort_unstable();
-        regions.dedup();
-        for region in regions {
-            self.settle_region_owner(region);
-        }
     }
 
     /// Transfers the gatherer with this id to `country`, which is reported in the newsreel unless it belonged to it
@@ -434,16 +400,12 @@ impl DaySave {
         if from == country {
             return Ok(());
         }
-        // The region goes with it, unless it is another country's, or still has something of the old country's in it.
-        let others_of_old = self.cities.iter().any(|c| c.region == Some(region) && c.country == from) || self.gatherers.iter().any(|g| g.id != id && g.region == region && g.country == from);
-        match self.region_owner(region) {
-            Some(owner) if owner != country && (owner != from || others_of_old) => return Err(format!("That region belongs to {}.", self.country_name(owner))),
-            _ => {}
+        if let Some(problem) = self.city_region_problem(country, Some(region)) {
+            return Err(problem);
         }
         if let Some(gatherer) = self.gatherers.iter_mut().find(|g| g.id == id) {
             gatherer.country = country;
         }
-        self.settle_region_owner(region);
         self.newsreel.push(News::about(id, Event::GathererTransferred { from, to: country, kind }));
         Ok(())
     }
@@ -453,7 +415,6 @@ impl DaySave {
     pub fn destroy_gatherer(&mut self, id: GathererId) -> Result<(), String> {
         let Gatherer { kind, country, region, .. } = *self.gatherer(id).ok_or("There is no such gatherer to destroy.")?;
         self.gatherers.retain(|g| g.id != id);
-        self.settle_region_owner(region);
         self.newsreel.push(News::about(id, Event::GathererDestroyed { country, region, kind }));
         Ok(())
     }
@@ -469,6 +430,7 @@ impl DaySave {
 mod tests {
     use super::*;
     use crate::calendar::Date;
+    use crate::country::RegionOwner;
     use nworld_map::world::SEA_LEVEL;
 
     fn day_with_money(money: i64) -> DaySave {
@@ -835,59 +797,39 @@ mod tests {
     }
 
     #[test]
-    fn a_region_with_a_gatherer_in_it_and_nothing_of_another_country_belongs_to_its_country() {
+    fn a_gatherer_does_not_claim_its_region_but_the_country_can_claim_it_afterwards() {
         let mut day = day_with_money(5_000);
         day.found_country("Brevon").unwrap();
         let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
-        assert_eq!(day.region_owner(0xC001), None);
         day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        assert_eq!(day.region_owner(0xC001), None, "claiming is asked, not done");
+        day.claim_region(0xC001).unwrap();
         assert_eq!(day.region_owner(0xC001), Some(aldoria));
-        assert_eq!(day.region_owners.len(), 1);
-        // A second of its own there changes nothing, and another country's can't join it.
-        day.build_gatherer(GathererKind::Stonecutter, 10.0, 0.0, 0xC001).unwrap();
-        assert_eq!(day.region_owners.len(), 1);
+        // Claimed, it is hers, so Brevon can't build in it or take it, and she can't give it away.
         day.select_country(brevon).unwrap();
         day.add_money(brevon, 5_000).unwrap();
-        assert!(day.build_gatherer(GathererKind::Woodcutter, 20.0, 0.0, 0xC001).unwrap_err().contains("belongs to Aldoria"));
-        // Destroying one of the two leaves the region hers, and the last one frees it.
-        let (first, second) = (day.gatherers[0].id, day.gatherers[1].id);
-        day.destroy_gatherer(first).unwrap();
-        assert_eq!(day.region_owner(0xC001), Some(aldoria));
-        day.destroy_gatherer(second).unwrap();
-        assert_eq!(day.region_owner(0xC001), None);
-        day.build_gatherer(GathererKind::Woodcutter, 20.0, 0.0, 0xC001).unwrap();
-        assert_eq!(day.region_owner(0xC001), Some(brevon), "and another country can have it now");
-    }
-
-    #[test]
-    fn a_region_with_a_city_stays_its_countrys_when_its_gatherer_goes_and_a_transfer_moves_the_region_with_it() {
-        let mut day = day_with_money(5_000);
-        day.found_country("Brevon").unwrap();
-        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
-        day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
+        assert!(day.build_gatherer(GathererKind::Stonecutter, 20.0, 0.0, 0xC001).unwrap_err().contains("belongs to Aldoria"));
+        assert!(day.claim_region(0xC001).unwrap_err().contains("has to stay with Aldoria"));
+        // Destroying the gatherer leaves her the region she claimed.
         let cutter = day.gatherers[0].id;
-        // The city is hers too, so the gatherer can't go to Brevon, and destroying it leaves the region.
-        assert!(day.set_gatherer_country(cutter, brevon).unwrap_err().contains("belongs to Aldoria"));
         day.destroy_gatherer(cutter).unwrap();
         assert_eq!(day.region_owner(0xC001), Some(aldoria));
-        // On its own in another region, a gatherer takes the region with it to its new country.
-        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
-        let lone = day.gatherers[0].id;
-        assert_eq!(day.region_owner(0xC002), Some(aldoria));
-        day.set_gatherer_country(lone, brevon).unwrap();
-        assert_eq!(day.region_owner(0xC002), Some(brevon));
-        assert_eq!(day.region_owners.len(), 2);
     }
 
     #[test]
-    fn claiming_regions_gives_a_game_saved_before_this_the_regions_of_its_gatherers() {
+    fn a_gatherer_in_a_region_nobody_claimed_can_go_to_another_country() {
         let mut day = day_with_money(5_000);
-        let aldoria = day.countries[0].id;
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
-        day.region_owners.clear();
-        day.claim_regions();
-        assert_eq!(day.region_owners, [RegionOwner { region: 0xC001, country: aldoria }]);
+        day.found_country("Brevon").unwrap();
+        let brevon = day.countries[1].id;
+        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
+        let lone = day.gatherers[0].id;
+        day.set_gatherer_country(lone, brevon).unwrap();
+        assert_eq!(day.region_owner(0xC002), None);
+        // Its own country can claim the region, and nobody else can while their gatherer is the only thing in it.
+        assert!(day.claim_region(0xC002).unwrap_err().contains("of Brevon is in that region"));
+        day.select_country(brevon).unwrap();
+        day.claim_region(0xC002).unwrap();
+        assert_eq!(day.region_owner(0xC002), Some(brevon));
     }
 
     #[test]
