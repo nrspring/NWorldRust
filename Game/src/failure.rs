@@ -89,6 +89,38 @@ impl DaySave {
     pub fn repair(&mut self, thing: Thing) {
         self.failed.retain(|t| *t != thing);
     }
+
+    /// Destroys `thing`, which was built: it is gone from the map, and from what has failed. A bridge takes with it the
+    /// paths and roads that start at its ends. It costs nothing, and nothing is paid back. An error says why it can't be
+    /// done.
+    pub fn destroy(&mut self, thing: Thing) -> Result<(), String> {
+        fn take<T: PartialEq>(from: &mut Vec<T>, item: &T) -> bool {
+            let before = from.len();
+            from.retain(|x| x != item);
+            from.len() != before
+        }
+        let there = match thing {
+            Thing::Path(segment) => take(&mut self.paths, &segment),
+            Thing::Road(segment) => take(&mut self.roads, &segment),
+            Thing::PathLink(link) => take(&mut self.bridge_links, &link),
+            Thing::RoadLink(link) => take(&mut self.road_links, &link),
+            Thing::Bridge(id) => {
+                let before = self.bridges.len();
+                self.bridges.retain(|b| b.id != id);
+                self.bridges.len() != before
+            }
+        };
+        if !there {
+            return Err(format!("There is no such {} to destroy.", thing.name()));
+        }
+        self.repair(thing);
+        if let Thing::Bridge(id) = thing {
+            self.bridge_links.retain(|l| l.bridge != id);
+            self.road_links.retain(|l| l.bridge != id);
+            self.failed.retain(|t| !matches!(t, Thing::PathLink(l) | Thing::RoadLink(l) if l.bridge == id));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +180,55 @@ mod tests {
         assert!(day.is_failed(thing));
         day.repair(thing);
         assert!(day.failed.is_empty());
+    }
+
+    #[test]
+    fn a_path_or_a_road_destroyed_is_gone_for_nothing_and_so_is_its_failure() {
+        let mut day = day();
+        let money = day.countries[0].money;
+        let segment = PathSegment::to_edge(1, 2);
+        day.build_segment(Kind::Path, segment).unwrap();
+        day.build_segment(Kind::Road, PathSegment::to_edge(3, 4)).unwrap();
+        day.fail(Thing::Path(segment));
+        let paid = day.countries[0].money;
+        assert_eq!(paid, money - 10 - 100);
+        day.destroy(Thing::Path(segment)).unwrap();
+        assert!(day.paths.is_empty() && day.failed.is_empty());
+        assert_eq!(day.roads.len(), 1, "only what was destroyed");
+        day.destroy(Thing::Road(PathSegment::to_edge(3, 4))).unwrap();
+        assert!(day.roads.is_empty());
+        assert_eq!(day.countries[0].money, paid, "no cost and no refund");
+        // It can be built again, as new.
+        day.build_segment(Kind::Path, segment).unwrap();
+        assert!(!day.is_failed(Thing::Path(segment)));
+        // Destroying what isn't there says so and changes nothing.
+        let before = day.clone();
+        assert!(day.destroy(Thing::Road(segment)).unwrap_err().contains("no such road"));
+        assert_eq!(day, before);
+    }
+
+    #[test]
+    fn a_bridge_destroyed_takes_the_paths_and_roads_from_its_ends_with_it() {
+        let mut day = day();
+        day.add_money(day.countries[0].id, 5_000).unwrap();
+        day.build_bridge(Spot { x: -30.0, z: 0.0 }, Spot { x: 30.0, z: 0.0 }).unwrap();
+        day.build_bridge(Spot { x: -30.0, z: 50.0 }, Spot { x: 30.0, z: 50.0 }).unwrap();
+        let (gone, kept) = (day.bridges[0].id, day.bridges[1].id);
+        let on = |bridge, end| BridgeLink { bridge, end, region: 1, to: None };
+        day.build_link_of(Kind::Path, on(gone, End::First)).unwrap();
+        day.build_link_of(Kind::Road, on(gone, End::Second)).unwrap();
+        day.build_link_of(Kind::Path, on(kept, End::First)).unwrap();
+        day.fail(Thing::Bridge(gone));
+        day.fail(Thing::PathLink(on(gone, End::First)));
+        day.fail(Thing::PathLink(on(kept, End::First)));
+        day.destroy(Thing::Bridge(gone)).unwrap();
+        assert_eq!(day.bridges.iter().map(|b| b.id).collect::<Vec<_>>(), [kept]);
+        assert_eq!(day.bridge_links, [on(kept, End::First)]);
+        assert!(day.road_links.is_empty());
+        assert_eq!(day.failed, [Thing::PathLink(on(kept, End::First))], "the other bridge's path is still ruined");
+        // A path from a bridge can be destroyed on its own.
+        day.destroy(Thing::PathLink(on(kept, End::First))).unwrap();
+        assert!(day.bridge_links.is_empty() && day.failed.is_empty() && day.bridges.len() == 1);
     }
 
     #[test]

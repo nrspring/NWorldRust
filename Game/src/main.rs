@@ -7,6 +7,7 @@ mod alerts;
 mod autosave;
 mod bridge;
 mod bridge_tool;
+mod destroy_tool;
 mod bridge_view;
 mod calendar;
 mod camera;
@@ -70,6 +71,7 @@ use country_menu::CountryMenu;
 use options::{Options, OptionsUi};
 use bridge::BRIDGE_COST;
 use bridge_tool::BridgeTool;
+use destroy_tool::DestroyTool;
 use bridge_view::BridgeRenderer;
 use path::Kind;
 use path_tool::{PathTool, Scene};
@@ -214,6 +216,7 @@ async fn main() {
     let mut road_tool = PathTool::new(Kind::Road);
     let mut roads = PathRenderer::new(Kind::Road);
     let mut bridge_tool = BridgeTool::default();
+    let mut destroy_tool = DestroyTool::default();
     let mut bridges = BridgeRenderer::default();
     // The popup that asks whether to end the day.
     let mut advance_popup = AdvancePopup::default();
@@ -260,6 +263,8 @@ async fn main() {
                 road_tool.escape();
             } else if bridge_tool.is_active() {
                 bridge_tool.escape();
+            } else if destroy_tool.is_active() {
+                destroy_tool.escape();
             } else {
                 break;
             }
@@ -279,7 +284,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse);
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse);
         if modal {
             camera.skip_frame();
         } else {
@@ -312,7 +317,7 @@ async fn main() {
         if bridge_problem.is_some() {
             bridge_tool.deactivate();
         }
-        let placing = !modal && day.cities.is_empty() && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active();
+        let placing = !modal && day.cities.is_empty() && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active();
         let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
         // Why the city can't go there: the ground, or the region belonging to another country.
         let problem = site.and_then(|at| {
@@ -329,17 +334,17 @@ async fn main() {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
         // The city under the mouse, if there is one, which the tooltip tells about.
-        let hovered = if modal || naming_city.is_some() || over_interface || path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
+        let hovered = if modal || naming_city.is_some() || over_interface || path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() { None } else { cities.city_under(mouse_ray(&eye, mouse), &day.cities) };
 
         // The label of a place under the mouse while the named places are showing.
-        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active() {
             region_labels::place_under(&style, &day, &world, &eye, mouse)
         } else {
             None
         };
         // The river or lake under the mouse while the named places are showing, with a little give so that a thin river can be
         // hit when the camera is far away.
-        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active() {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 1.5, 40.0);
             pick_terrain(&eye, &world, mouse).and_then(|at| water_bodies.near(at.x, at.y, reach))
         } else {
@@ -379,6 +384,21 @@ async fn main() {
                         bridge_tool.built();
                     }
                     Err(message) => bridge_tool.fail(message),
+                }
+            }
+        } else if !modal && destroy_tool.is_active() {
+            // With the destroy tool on, a click is for destroying the path, road or bridge the mouse is on.
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            let reach = (camera.distance() * 0.006).clamp(0.0, 20.0);
+            if let Some(thing) = destroy_tool.update(&scene, &day, &paths, &roads, reach, clicked) {
+                // Only keep it destroyed if that is saved too.
+                let mut updated = day.clone();
+                match updated.destroy(thing).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        destroy_tool.destroyed();
+                    }
+                    Err(message) => destroy_tool.fail(message),
                 }
             }
         } else if clicked {
@@ -423,13 +443,13 @@ async fn main() {
 
         // The region under the mouse, for a note about it while the region names are showing, unless it is a river or
         // lake that is under the mouse and the named places are showing.
-        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active() {
             pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y))
         } else {
             None
         };
         // The resource under the mouse, for a note about what it is, when nothing else has the mouse.
-        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() {
+        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && !placing && !path_tool.is_active() && !road_tool.is_active() && !bridge_tool.is_active() && !destroy_tool.is_active() {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 2.5, 40.0);
             pick_terrain(&eye, &world, mouse).and_then(|at| resource_hover::deposit_near(&world, at.x, at.y, reach))
         } else {
@@ -446,6 +466,8 @@ async fn main() {
             region_labels::draw_lakes(&style, &day, &water_bodies, &world, &eye);
             region_labels::draw_places(&style, &day, &world, &eye);
         }
+        // A flashing red warning over whatever an alert is about, under the interface.
+        alerts::draw_marks(&day, &day_failures, &region_map, &world, &eye, time);
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
         let header = hud::header(&style, &day, !modal, camera.yaw());
         if !modal && is_mouse_button_pressed(MouseButton::Left) {
@@ -531,11 +553,12 @@ async fn main() {
             options_ui.show(&style, footer, &mut options, view.has_regions());
             overlays_ui.show(&style, footer, &mut options, view.has_regions());
             // Only one of the tools is on at a time: the one that was just turned on wins.
-            let was_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active()];
-            let path_button = path_tool.show_button(&style, footer, overlays_ui.button().x - 8.0, path_problem.as_ref(), no_regions);
+            let was_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
+            let destroy_button = destroy_tool.show_button(&style, footer, overlays_ui.button().x - 8.0);
+            let path_button = path_tool.show_button(&style, footer, destroy_button.x - 8.0, path_problem.as_ref(), no_regions);
             let road_button = road_tool.show_button(&style, footer, path_button.x - 8.0, road_problem.as_ref(), no_regions);
             bridge_tool.show_button(&style, footer, road_button.x - 8.0, bridge_problem.as_ref(), tool_reason.as_deref());
-            let now_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active()];
+            let now_on = [path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
             if now_on.iter().filter(|on| **on).count() > 1 {
                 // The one that was already on gives way.
                 if was_on[0] && now_on[0] {
@@ -547,10 +570,14 @@ async fn main() {
                 if was_on[2] && now_on[2] {
                     bridge_tool.deactivate();
                 }
+                if was_on[3] && now_on[3] {
+                    destroy_tool.deactivate();
+                }
             }
             path_tool.show_prompt(&style, &day);
             road_tool.show_prompt(&style, &day);
             bridge_tool.show_prompt(&style, &day);
+            destroy_tool.show_prompt(&style, &day);
             if overlays_ui.is_open() && !overlays_was_open {
                 options_ui.close();
             } else if options_ui.is_open() && !options_was_open {

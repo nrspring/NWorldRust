@@ -113,6 +113,41 @@ impl PathRenderer {
     }
 }
 
+impl PathRenderer {
+    /// The piece nearest `at` (world x and z) that is no more than `reach` meters from it, and how far it is: for
+    /// pointing at one with the mouse. Only what has been drawn is known, which is everything there is by the time the
+    /// mouse is used.
+    pub fn piece_near(&self, at: Vec2, reach: f32) -> Option<(PathPiece, f32)> {
+        self.routes
+            .iter()
+            .filter_map(|(piece, lines)| lines.iter().map(|line| distance_to_line(line, at)).min_by(f32::total_cmp).map(|d| (*piece, d)))
+            .filter(|(_, distance)| *distance <= reach)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// The lines of points that `piece` is drawn along, none if it isn't one of this renderer's.
+    pub fn route_of(&self, piece: PathPiece) -> &[Vec<Vec2>] {
+        self.routes.get(&piece).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// How far `at` is from the straight line from `a` to `b`, which ends at them.
+pub fn distance_to_segment(a: Vec2, b: Vec2, at: Vec2) -> f32 {
+    let along = b - a;
+    let length_squared = along.length_squared();
+    let t = if length_squared > 0.0 { ((at - a).dot(along) / length_squared).clamp(0.0, 1.0) } else { 0.0 };
+    at.distance(a + along * t)
+}
+
+/// How far `at` is from the line through `points`, or infinitely far if there are none.
+fn distance_to_line(points: &[Vec2], at: Vec2) -> f32 {
+    match points {
+        [] => f32::INFINITY,
+        [only] => at.distance(*only),
+        _ => points.windows(2).map(|pair| distance_to_segment(pair[0], pair[1], at)).fold(f32::INFINITY, f32::min),
+    }
+}
+
 /// The ends of `segment` on the map, in world x and z: the center of its region (or, for a segment across the
 /// region, the middle of its border with one neighbor) and the middle of its border with another.
 pub fn ends(map: &RegionMap, segment: PathSegment) -> Option<(Vec2, Vec2)> {
@@ -543,6 +578,30 @@ mod tests {
         let middles: Vec<u8> = vertices.chunks(5).map(|row| row[2].color[0]).collect();
         let distinct: std::collections::HashSet<u8> = middles.iter().copied().collect();
         assert!(distinct.len() >= 2 && middles.windows(2).any(|w| w[0] != w[1]));
+    }
+
+    #[test]
+    fn the_distance_to_a_line_is_to_the_nearest_part_of_it() {
+        let line = [vec2(0.0, 0.0), vec2(10.0, 0.0), vec2(10.0, 10.0)];
+        assert_eq!(distance_to_line(&line, vec2(5.0, 3.0)), 3.0);
+        assert_eq!(distance_to_line(&line, vec2(13.0, 5.0)), 3.0);
+        assert_eq!(distance_to_line(&line, vec2(-4.0, 3.0)), 5.0, "past the end it is the distance to the end");
+        assert_eq!(distance_to_line(&[vec2(1.0, 1.0)], vec2(4.0, 5.0)), 5.0);
+        assert_eq!(distance_to_line(&[], Vec2::ZERO), f32::INFINITY);
+        assert_eq!(distance_to_segment(vec2(2.0, 2.0), vec2(2.0, 2.0), vec2(5.0, 6.0)), 5.0, "a segment of no length");
+    }
+
+    #[test]
+    fn a_piece_is_found_by_how_near_it_is_and_the_nearest_wins() {
+        let mut paths = PathRenderer::new(Kind::Path);
+        let (near, far) = (PathPiece::Segment(PathSegment::to_edge(1, 2)), PathPiece::Segment(PathSegment::to_edge(3, 4)));
+        paths.routes.insert(near, vec![vec![vec2(0.0, 0.0), vec2(20.0, 0.0)]]);
+        paths.routes.insert(far, vec![vec![vec2(0.0, 6.0), vec2(20.0, 6.0)]]);
+        assert_eq!(paths.piece_near(vec2(10.0, 2.0), 5.0), Some((near, 2.0)));
+        assert_eq!(paths.piece_near(vec2(10.0, 4.5), 5.0), Some((far, 1.5)));
+        assert_eq!(paths.piece_near(vec2(10.0, 20.0), 5.0), None, "out of reach");
+        assert_eq!(paths.route_of(near).len(), 1);
+        assert!(paths.route_of(PathPiece::Segment(PathSegment::to_edge(9, 8))).is_empty());
     }
 
     #[test]

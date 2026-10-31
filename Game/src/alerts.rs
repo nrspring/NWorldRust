@@ -7,12 +7,17 @@
 //! before stay ruined, but are no longer news.
 
 use macroquad::prelude::*;
+use nworld_map::region_map::RegionMap;
+use nworld_map::world::World;
 use nworld_view::style::{self, Style, Weight};
 
+use crate::bridge::End;
 use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::hud;
 use crate::ids::{BridgeId, CountryId};
+use crate::path::PathPiece;
+use crate::{path_view, region_labels};
 
 /// The color of an alert's icon and marks.
 const AMBER: Color = Color::new(0.96, 0.69, 0.20, 1.0);
@@ -23,6 +28,12 @@ const HEADER_HEIGHT: f32 = 36.0;
 const LINE: f32 = 16.0;
 const ITEM_GAP: f32 = 7.0;
 const NOTE_HEIGHT: f32 = 26.0;
+/// How long the warning icon on the map takes to fade out and in again, in seconds.
+const FLASH_PERIOD: f32 = 2.4;
+/// How high above the ground the warning icon is held, in meters, and how big it is, in pixels.
+const MARK_HOLD: f32 = 3.0;
+const MARK_WIDTH: f32 = 24.0;
+const MARK_HEIGHT: f32 = 21.0;
 
 #[derive(Debug, PartialEq)]
 pub enum Alert {
@@ -75,6 +86,49 @@ impl Alert {
             Alert::Failed(thing) => format!("A {} has failed", thing.name()),
         }
     }
+
+    /// Where the thing the alert is about is on the map, in world x and z: the middle of a failed path, road or bridge.
+    /// A country with no cities is nowhere on the map, so that has none.
+    pub fn place(&self, day: &DaySave, map: &RegionMap) -> Option<Vec2> {
+        let piece = match self {
+            Alert::CountryWithoutCities(_) => return None,
+            Alert::Failed(Thing::Path(segment) | Thing::Road(segment)) => PathPiece::Segment(*segment),
+            Alert::Failed(Thing::PathLink(link) | Thing::RoadLink(link)) => PathPiece::Link(*link),
+            Alert::Failed(Thing::Bridge(id)) => {
+                let bridge = day.bridge(*id)?;
+                return Some((bridge.end(End::First) + bridge.end(End::Second)) * 0.5);
+            }
+        };
+        path_view::piece_ends(map, &day.bridges, piece).map(|(from, to)| (from + to) * 0.5)
+    }
+}
+
+/// Draws a red warning icon, flashing slowly, over each alert there is that is about a place on the map, as `camera`
+/// sees it. `time` is the seconds the game has run.
+pub fn draw_marks(day: &DaySave, failures: &[Thing], map: &RegionMap, world: &World, camera: &Camera3D, time: f32) {
+    // Fading in and out, never quite gone, so that it is always there to be found.
+    let flash = 0.5 + 0.5 * (time * std::f32::consts::TAU / FLASH_PERIOD).sin();
+    let strength = 0.25 + 0.75 * flash;
+    for at in Alert::current(day, failures).iter().filter_map(|alert| alert.place(day, map)) {
+        let Some(at) = region_labels::to_screen(camera, vec3(at.x, world.surface_height(at.x, at.y) + MARK_HOLD, at.y)) else { continue };
+        if at.x < -MARK_WIDTH || at.x > screen_width() + MARK_WIDTH || at.y < 0.0 || at.y > screen_height() + MARK_HEIGHT {
+            continue;
+        }
+        draw_warning(vec2(at.x, at.y - 4.0), strength);
+    }
+}
+
+/// A warning triangle with an exclamation mark in it, standing with the middle of its base at `base`.
+fn draw_warning(base: Vec2, strength: f32) {
+    let (half, height) = (MARK_WIDTH * 0.5, MARK_HEIGHT);
+    let top = vec2(base.x, base.y - height);
+    let (left, right) = (vec2(base.x - half, base.y), vec2(base.x + half, base.y));
+    // A dark edge first, so that it shows on any ground.
+    draw_triangle(top + vec2(0.0, -2.5), left + vec2(-3.0, 1.5), right + vec2(3.0, 1.5), Color::new(0.10, 0.02, 0.02, 0.7 * strength));
+    draw_triangle(top, left, right, Color::new(0.88, 0.10, 0.10, strength));
+    let white = Color::new(1.0, 1.0, 1.0, strength);
+    draw_rectangle(base.x - 1.3, base.y - 15.0, 2.6, 8.0, white);
+    draw_circle(base.x, base.y - 3.8, 1.5, white);
 }
 
 /// The alerts panel under the newsreel.
@@ -243,7 +297,9 @@ fn draw_bell(c: Vec2, color: Color) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::Spot;
     use crate::calendar::Date;
+    use crate::path::PathSegment;
 
     fn day() -> DaySave {
         DaySave::new(Date::FIRST, "Assets/map.nworld")
@@ -252,6 +308,19 @@ mod tests {
     #[test]
     fn there_are_no_alerts_when_there_are_no_countries() {
         assert!(Alert::current(&day(), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_failed_bridge_is_marked_at_its_middle_and_a_country_with_no_cities_is_marked_nowhere() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.add_money(day.countries[0].id, 5_000).unwrap();
+        day.build_bridge(Spot { x: -30.0, z: 10.0 }, Spot { x: 30.0, z: 20.0 }).unwrap();
+        let map = RegionMap::default();
+        assert_eq!(Alert::CountryWithoutCities(day.countries[0].id).place(&day, &map), None);
+        assert_eq!(Alert::Failed(Thing::Bridge(day.bridges[0].id)).place(&day, &map), Some(vec2(0.0, 15.0)));
+        // A path on a map with no regions is nowhere either.
+        assert_eq!(Alert::Failed(Thing::Path(PathSegment::to_edge(1, 2))).place(&day, &map), None);
     }
 
     #[test]
