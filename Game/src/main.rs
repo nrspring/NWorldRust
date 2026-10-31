@@ -9,6 +9,7 @@ mod bridge;
 mod bridge_tool;
 mod destroy_tool;
 mod connection;
+mod costs;
 mod gatherer;
 mod gatherer_popup;
 mod gatherer_tool;

@@ -7,6 +7,7 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 use nworld_view::{mouse_ray, pick_terrain};
 
+use crate::costs;
 use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::hud;
@@ -168,6 +169,9 @@ impl DestroyTool {
         draw_line(icon.x - 5.0, icon.y - 5.0, icon.x + 5.0, icon.y + 5.0, 2.0, color);
         draw_line(icon.x - 5.0, icon.y + 5.0, icon.x + 5.0, icon.y - 5.0, 2.0, color);
         style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
+        if hovered {
+            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge, woodcutter or stonecutter for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
+        }
         button
     }
 

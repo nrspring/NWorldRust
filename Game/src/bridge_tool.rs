@@ -8,7 +8,8 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 use nworld_view::{mouse_ray, pick_terrain};
 
-use crate::bridge::{check_bridge, Bridge, BridgeProblem, BRIDGE_COST};
+use crate::bridge::{check_bridge, Bridge, BridgeProblem};
+use crate::costs::{self, Buildable};
 use crate::day::DaySave;
 use crate::ground::nearest_clear;
 use crate::hud;
@@ -178,14 +179,13 @@ impl BridgeTool {
             let text_width = style.measure(text, 12, Weight::Regular).width;
             style.text_mid(text, button.x - 10.0 - text_width, button.center().y, 12, Weight::Regular, style::ERROR);
         }
-        if let (Some(problem), true) = (problem, hovered) {
-            let lines = hud::wrap(style, &problem.long(), 12, 260.0);
-            let height = lines.len() as f32 * 17.0 + 20.0;
-            let tip = Rect::new((button.right() - 300.0).max(8.0), button.y - 8.0 - height, 300.0, height);
-            style::card(tip, 10.0, style::GLASS);
-            for (k, line) in lines.iter().enumerate() {
-                style.text_mid(line, tip.x + 14.0, tip.y + 10.0 + 17.0 * (k as f32 + 0.5), 12, Weight::Regular, style::TEXT);
+        if hovered {
+            // What it is and costs and does, and first of all why it can't be used, if it can't.
+            let mut lines = Buildable::Bridge.button_lines();
+            if let Some(problem) = problem {
+                lines.insert(0, (problem.long(), style::ERROR));
             }
+            costs::draw_tip(style, button, &lines);
         }
         button
     }
@@ -197,7 +197,7 @@ impl BridgeTool {
             return;
         }
         let width = 520.0;
-        let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 88.0, width, 88.0);
+        let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 112.0, width, 112.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
         style.text_mid("Build a bridge", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
@@ -208,7 +208,8 @@ impl BridgeTool {
             (None, _, Some(_)) => style.text_mid("Now click dry ground on the other side. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         let paying = day.player_country().map_or_else(|| "No country".to_owned(), |c| format!("{} has {}", c.name, crate::format::money(c.money)));
-        style.text_mid(&format!("{} coins. {paying} coins.", crate::format::money(BRIDGE_COST)), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&Buildable::Bridge.output(), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&format!("Costs {}. {paying} coins.", Buildable::Bridge.cost_text()), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
     }
 }
 

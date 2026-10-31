@@ -20,6 +20,7 @@ use nworld_view::{mouse_ray, pick_terrain};
 use nworld_view::style::{self, Style, Weight};
 
 use crate::bridge::{Bridge, BridgeLink, End};
+use crate::costs::{self, Buildable};
 use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::hud;
@@ -391,16 +392,13 @@ impl PathTool {
         // Why it can't be used, in full over it. (The short reason goes beside the leftmost of the footer's tool
         // buttons: see `BridgeTool::show_button`.)
         let reason = if no_regions { Some(("This map has no regions".to_owned(), format!("{label} join the regions of the map, and this map has none."))) } else { problem.map(|p| (p.short(), p.long())) };
-        if let Some((_, long)) = reason {
-            if hovered {
-                let lines = hud::wrap(style, &long, 12, 260.0);
-                let height = lines.len() as f32 * 17.0 + 20.0;
-                let tip = Rect::new((button.right() - 300.0).max(8.0), button.y - 8.0 - height, 300.0, height);
-                style::card(tip, 10.0, style::GLASS);
-                for (k, line) in lines.iter().enumerate() {
-                    style.text_mid(line, tip.x + 14.0, tip.y + 10.0 + 17.0 * (k as f32 + 0.5), 12, Weight::Regular, style::TEXT);
-                }
+        if hovered {
+            // What it is and costs and does, and first of all why it can't be used, if it can't.
+            let mut lines = Buildable::Way(self.kind).button_lines();
+            if let Some((_, long)) = reason {
+                lines.insert(0, (long, style::ERROR));
             }
+            costs::draw_tip(style, button, &lines);
         }
         button
     }
@@ -412,7 +410,7 @@ impl PathTool {
             return;
         }
         let width = 520.0;
-        let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 88.0, width, 88.0);
+        let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 112.0, width, 112.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
         style.text_mid(&format!("Build a {}", self.kind.noun()), panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
@@ -426,7 +424,9 @@ impl PathTool {
             (None, Some(Point::BridgeEnd(..))) => style.text_mid("Now click the center of its region, or the middle of one of its edges. Esc lets go.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         let paying = day.player_country().map_or_else(|| "No country".to_owned(), |c| format!("{} has {}", c.name, crate::format::money(c.money)));
-        style.text_mid(&format!("{} coins a segment. {paying} coins.", self.kind.cost()), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
+        let buildable = Buildable::Way(self.kind);
+        style.text_mid(&buildable.output(), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&format!("Costs {}. {paying} coins.", buildable.cost_text()), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
     }
 }
 
