@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::bridge::BridgeLink;
 use crate::day::DaySave;
 use crate::failure::Thing;
+use crate::newsreel::{Cost, Event, News};
 
 /// What a segment of path costs, in coins.
 pub const PATH_COST: i64 = 10;
@@ -194,8 +195,10 @@ impl DaySave {
         }
         let country = self.player_country().ok_or_else(|| format!("There is no country yet to pay for a {}.", kind.noun()))?.id;
         self.add_money(country, -kind.cost())?;
+        let cost = vec![Cost::coins(kind.cost())];
         if repairing {
             self.repair(thing);
+            self.newsreel.push(News::about(country, Event::Repaired { piece: thing.piece(), country, regions: vec![segment.region], cost }));
             return Ok(());
         }
         match kind {
@@ -207,6 +210,8 @@ impl DaySave {
                 self.roads.push(segment);
             }
         }
+        let paved = kind == Kind::Road && in_paths;
+        self.newsreel.push(News::about(country, Event::Built { piece: thing.piece(), country, regions: vec![segment.region], cost, paved }));
         Ok(())
     }
 }

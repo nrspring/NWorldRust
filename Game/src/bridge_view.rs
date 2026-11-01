@@ -232,7 +232,7 @@ mod tests {
         let world = river_world(10.0);
         assert!(mesh_of(&world, vec2(5.0, 5.0), vec2(5.0, 5.0)).0.is_empty());
         assert!(build(&world, &[]).is_none());
-        let bridge = Bridge { id: BridgeId::new(), first: vec2(-30.0, 0.0).into(), second: vec2(30.0, 0.0).into() };
+        let bridge = Bridge { id: BridgeId::new(), first: vec2(-30.0, 0.0).into(), second: vec2(30.0, 0.0).into(), regions: [None; 2] };
         let mesh = build(&world, &[(bridge, false), (bridge, false)]).unwrap();
         assert_eq!(mesh.vertices.len(), 2 * mesh_of(&world, vec2(-30.0, 0.0), vec2(30.0, 0.0)).0.len(), "each bridge adds its own");
     }

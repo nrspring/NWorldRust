@@ -88,6 +88,13 @@ pub struct RegionOwner {
     pub country: CountryId,
 }
 
+/// A country that was deleted. Its name is kept so that the news of it, which stays, can still say who it was about.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct FormerCountry {
+    pub id: CountryId,
+    pub name: String,
+}
+
 /// A country name as typed, tidied up. An error says what is wrong with it.
 pub fn clean_name(typed: &str) -> Result<String, String> {
     text::clean(typed, MAX_NAME_CHARS, "a name for your country")

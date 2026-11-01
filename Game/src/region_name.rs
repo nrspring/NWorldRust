@@ -5,6 +5,7 @@ use nworld_map::regions::{RegionId, RegionKind};
 use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
+use crate::newsreel::{Event, Named, News};
 use crate::text;
 
 /// The longest a region's name can be, in characters.
@@ -49,9 +50,13 @@ impl DaySave {
             return Err("There is no such region.".to_owned());
         }
         let name = clean_name(typed)?;
+        let from = self.region_name(region).unwrap_or_default().to_owned();
         self.region_names.retain(|n| n.region != region);
         if !name.is_empty() {
-            self.region_names.push(RegionName { region, name });
+            self.region_names.push(RegionName { region, name: name.clone() });
+        }
+        if from != name {
+            self.newsreel.push(News::happening(Event::NameChanged { what: Named::Region, id: u32::from(region), from, to: name }));
         }
         Ok(())
     }

@@ -6,6 +6,7 @@ use macroquad::prelude::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
+use crate::newsreel::{Event, Named, News};
 use crate::text;
 
 /// The longest a place's name can be, in characters.
@@ -40,20 +41,22 @@ impl DaySave {
     pub fn add_place(&mut self, at: Vec2, typed: &str) -> Result<u32, String> {
         let name = text::clean(typed, MAX_NAME_CHARS, "a name for the place")?;
         let id = self.places.iter().map(|p| p.id + 1).max().unwrap_or(1);
-        self.places.push(Place { id, x: at.x, z: at.y, name });
+        self.places.push(Place { id, x: at.x, z: at.y, name: name.clone() });
+        self.newsreel.push(News::happening(Event::NameChanged { what: Named::Place, id, from: String::new(), to: name }));
         Ok(id)
     }
 
     /// Renames the place numbered `id` to `typed`, or removes it if that is blank. An error says why it can't be done.
     pub fn set_place_name(&mut self, id: u32, typed: &str) -> Result<(), String> {
-        if self.place(id).is_none() {
-            return Err("There is no such place.".to_owned());
-        }
+        let from = self.place(id).ok_or("There is no such place.")?.name.clone();
         let name = clean_name(typed)?;
         if name.is_empty() {
             self.places.retain(|p| p.id != id);
         } else if let Some(place) = self.places.iter_mut().find(|p| p.id == id) {
-            place.name = name;
+            place.name = name.clone();
+        }
+        if from != name {
+            self.newsreel.push(News::happening(Event::NameChanged { what: Named::Place, id, from, to: name }));
         }
         Ok(())
     }

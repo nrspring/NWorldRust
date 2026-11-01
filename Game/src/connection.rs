@@ -142,8 +142,8 @@ impl DaySave {
             let operating = !cut_off.contains(&gatherer.id);
             if gatherer.operating != operating {
                 gatherer.operating = operating;
-                let kind = gatherer.kind;
-                news.push(News::about(gatherer.id, if operating { Event::GathererStarted { kind } } else { Event::GathererStopped { kind } }));
+                let (kind, country, region) = (gatherer.kind, Some(gatherer.country), Some(gatherer.region));
+                news.push(News::about(gatherer.id, if operating { Event::GathererStarted { kind, country, region } } else { Event::GathererStopped { kind, country, region } }));
             }
         }
         let changed = !news.is_empty();

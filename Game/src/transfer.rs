@@ -118,6 +118,7 @@ impl DaySave {
             }
         }
         self.newsreel.push(News::about(from, Event::Transfer { to, asset, amount }));
+        self.newsreel.push(News::about(to, Event::TransferReceived { from, asset, amount }));
         Ok(())
     }
 }
@@ -178,11 +179,15 @@ mod tests {
         send(&mut day, aldoria, brevon, Asset::Coins, 1).unwrap();
         send(&mut day, aldoria, brevon, Asset::Oil, 0).unwrap_err();
         send(&mut day, aldoria, brevon, Asset::Wood, 12).unwrap();
-        assert_eq!(day.newsreel.len(), before + 2, "a refused transfer is not news");
+        assert_eq!(day.newsreel.len(), before + 4, "a refused transfer is not news; each of the others is news to both countries");
         let news = &day.newsreel[before..];
         assert_eq!(news[0], News::about(aldoria, Event::Transfer { to: brevon, asset: Asset::Coins, amount: 1 }));
         assert_eq!(news[0].headline(&day), "Aldoria sends 1 coin to Brevon");
-        assert_eq!(news[1].headline(&day), "Aldoria sends 12 wood to Brevon");
+        // The receiver has news of its own, with the receiver as its subject.
+        assert_eq!(news[1], News::about(brevon, Event::TransferReceived { from: aldoria, asset: Asset::Coins, amount: 1 }));
+        assert_eq!(news[1].headline(&day), "Brevon receives 1 coin from Aldoria");
+        assert_eq!(news[2].headline(&day), "Aldoria sends 12 wood to Brevon");
+        assert_eq!(news[3].headline(&day), "Brevon receives 12 wood from Aldoria");
     }
 
     #[test]
@@ -223,8 +228,12 @@ mod tests {
         send(&mut day, aldoria, brevon, Asset::Sulphur, 0).unwrap_err();
         day.add_resource(aldoria, Resource::Sulphur, 9).unwrap();
         send(&mut day, aldoria, brevon, Asset::Sulphur, 9).unwrap();
-        let json = serde_json::to_string(day.newsreel.last().unwrap()).unwrap();
+        let sent = &day.newsreel[day.newsreel.len() - 2];
+        let json = serde_json::to_string(sent).unwrap();
         assert!(json.contains(r#""type":"transfer""#) && json.contains(r#""asset":"sulphur""#) && json.contains(r#""amount":9"#), "{json}");
-        assert_eq!(serde_json::from_str::<News>(&json).unwrap(), *day.newsreel.last().unwrap());
+        assert_eq!(serde_json::from_str::<News>(&json).unwrap(), *sent);
+        let received = serde_json::to_string(day.newsreel.last().unwrap()).unwrap();
+        assert!(received.contains(r#""type":"transfer_received""#) && received.contains(r#""asset":"sulphur""#), "{received}");
+        assert_eq!(serde_json::from_str::<News>(&received).unwrap(), *day.newsreel.last().unwrap());
     }
 }

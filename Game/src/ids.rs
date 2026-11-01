@@ -135,6 +135,11 @@ id_type!(
     /// The id of a gatherer.
     GathererId
 );
+id_type!(
+    /// The id of a happening in the newsreel that is about no one thing with an id of its own, such as a stretch of
+    /// road failing, a river being named or a day beginning.
+    EventId
+);
 
 impl CityId {
     /// A number made from the id, for anything that should come out the same for the same city every

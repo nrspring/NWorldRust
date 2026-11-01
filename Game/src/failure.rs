@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::bridge::BridgeLink;
 use crate::day::DaySave;
 use crate::ids::BridgeId;
+use crate::newsreel::{Event, News};
 use crate::path::{Kind, PathPiece, PathSegment};
 
 /// The chance, as a fraction, that a path fails on a day: 2%. The tests are written in terms of it, and one checks
@@ -78,10 +79,12 @@ impl DaySave {
         things
     }
 
-    /// Makes `thing` fail, if it hasn't already.
+    /// Makes `thing` fail, if it hasn't already, which is reported in the newsreel.
     pub fn fail(&mut self, thing: Thing) {
         if !self.failed.contains(&thing) {
             self.failed.push(thing);
+            let (subject, piece, regions) = self.thing_news(thing);
+            self.newsreel.push(News::about(subject, Event::Failed { piece, regions }));
         }
     }
 
@@ -91,9 +94,11 @@ impl DaySave {
     }
 
     /// Destroys `thing`, which was built: it is gone from the map, and from what has failed. A bridge takes with it the
-    /// paths and roads that start at its ends. It costs nothing, and nothing is paid back. An error says why it can't be
-    /// done.
+    /// paths and roads that start at its ends. It costs nothing, and nothing is paid back. It is reported in the
+    /// newsreel, as the work of the country being played. An error says why it can't be done.
     pub fn destroy(&mut self, thing: Thing) -> Result<(), String> {
+        let (subject, piece, regions) = self.thing_news(thing);
+        let links_before = self.bridge_links.len() + self.road_links.len();
         fn take<T: PartialEq>(from: &mut Vec<T>, item: &T) -> bool {
             let before = from.len();
             from.retain(|x| x != item);
@@ -119,6 +124,13 @@ impl DaySave {
             self.road_links.retain(|l| l.bridge != id);
             self.failed.retain(|t| !matches!(t, Thing::PathLink(l) | Thing::RoadLink(l) if l.bridge == id));
         }
+        // A link that is destroyed by itself was one of the links before, and a bridge takes the rest with it.
+        let with_it = match thing {
+            Thing::Bridge(_) => (links_before - (self.bridge_links.len() + self.road_links.len())) as u32,
+            _ => 0,
+        };
+        let country = self.player_country().map(|c| c.id);
+        self.newsreel.push(News::about(subject, Event::Destroyed { piece, country, regions, with_it }));
         Ok(())
     }
 }

@@ -8,6 +8,7 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
 use crate::day::DaySave;
+use crate::format::capitalized;
 use crate::popup::{self, Icon};
 
 const CARD_WIDTH: f32 = 460.0;
@@ -140,12 +141,6 @@ impl ClaimPrompt {
         }
         None
     }
-}
-
-/// `text` with its first letter in capitals: "region 5" as "Region 5".
-fn capitalized(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
 #[cfg(test)]

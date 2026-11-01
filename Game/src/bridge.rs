@@ -10,7 +10,9 @@ use crate::day::DaySave;
 use crate::ground;
 use crate::failure::Thing;
 use crate::ids::BridgeId;
+use crate::newsreel::{Cost, Event, News, Piece};
 use crate::path::Kind;
+use crate::transfer::Asset;
 
 /// What a bridge costs, in coins.
 pub const BRIDGE_COST: i64 = 1_000;
@@ -59,6 +61,10 @@ pub struct Bridge {
     pub id: BridgeId,
     pub first: Spot,
     pub second: Spot,
+    /// The numbers of the regions its first and its second end are in, when they were known at the time it was built.
+    /// Only the newsreel makes use of them.
+    #[serde(default)]
+    pub regions: [Option<u16>; 2],
 }
 
 impl Bridge {
@@ -151,7 +157,16 @@ impl DaySave {
     /// Builds a bridge between `first` and `second`, which the caller has checked are fit places for one (see
     /// [`check_bridge`]), and charges its cost to the country being played: coins, wood and stone. An error says why it
     /// can't be done.
+    // The short way to say it when the regions of the ends aren't known, which the tests use; the game builds one with
+    // `build_bridge_in`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn build_bridge(&mut self, first: Spot, second: Spot) -> Result<(), String> {
+        self.build_bridge_in(first, second, [None; 2])
+    }
+
+    /// [`build_bridge`](Self::build_bridge), with the numbers of the regions the first and the second end are in, which
+    /// the newsreel says. Building one that has failed mends it, which is reported as that.
+    pub fn build_bridge_in(&mut self, first: Spot, second: Spot, regions: [Option<u16>; 2]) -> Result<(), String> {
         if let Some(problem) = self.bridge_problem() {
             return Err(problem.long());
         }
@@ -167,9 +182,19 @@ impl DaySave {
         for (resource, needed) in BRIDGE_MATERIALS {
             self.add_resource(country, resource, -(needed as i64))?;
         }
+        let mut cost = vec![Cost::coins(BRIDGE_COST)];
+        cost.extend(BRIDGE_MATERIALS.iter().map(|(resource, needed)| Cost { asset: Asset::of(*resource), amount: *needed }));
         match failed_here {
-            Some(id) => self.repair(Thing::Bridge(id)),
-            None => self.bridges.push(Bridge { id: BridgeId::new(), first, second }),
+            Some(id) => {
+                self.repair(Thing::Bridge(id));
+                let regions = self.bridge(id).map_or_else(Vec::new, |b| b.regions.iter().flatten().copied().collect());
+                self.newsreel.push(News::about(id, Event::Repaired { piece: Piece::Bridge, country, regions, cost }));
+            }
+            None => {
+                let id = BridgeId::new();
+                self.bridges.push(Bridge { id, first, second, regions });
+                self.newsreel.push(News::about(id, Event::Built { piece: Piece::Bridge, country, regions: regions.iter().flatten().copied().collect(), cost, paved: false }));
+            }
         }
         Ok(())
     }
@@ -207,8 +232,10 @@ impl DaySave {
         }
         let country = self.player_country().ok_or_else(|| format!("There is no country yet to pay for a {}.", kind.noun()))?.id;
         self.add_money(country, -kind.cost())?;
+        let cost = vec![Cost::coins(kind.cost())];
         if repairing {
             self.repair(thing);
+            self.newsreel.push(News::about(country, Event::Repaired { piece: thing.piece(), country, regions: vec![link.region], cost }));
             return Ok(());
         }
         match kind {
@@ -219,6 +246,8 @@ impl DaySave {
                 self.road_links.push(link);
             }
         }
+        let paved = kind == Kind::Road && in_paths;
+        self.newsreel.push(News::about(country, Event::Built { piece: thing.piece(), country, regions: vec![link.region], cost, paved }));
         Ok(())
     }
 }
@@ -490,7 +519,7 @@ mod tests {
     fn the_same_bridge_cannot_be_built_twice_from_either_end() {
         let world = river_world(|p| p.x.abs() < 10.0);
         let (a, b) = (vec2(-30.0, 20.0), vec2(30.0, 20.0));
-        let existing = [Bridge { id: BridgeId::new(), first: a.into(), second: b.into() }];
+        let existing = [Bridge { id: BridgeId::new(), first: a.into(), second: b.into(), regions: [None; 2] }];
         assert!(check_bridge(&world, &existing, a, b).unwrap_err().contains("already"));
         assert!(check_bridge(&world, &existing, b + vec2(0.0, 2.0), a).unwrap_err().contains("already"), "the other way round, a little off");
         assert!(check_bridge(&world, &existing, a + vec2(0.0, 40.0), b + vec2(0.0, 40.0)).is_ok(), "somewhere else along the river");

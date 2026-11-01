@@ -15,6 +15,12 @@ pub fn money(n: i64) -> String {
     format!("{}{}", if n < 0 { "-" } else { "" }, group(&n.unsigned_abs().to_string()))
 }
 
+/// `text` with its first letter in capitals: "region 5" as "Region 5".
+pub fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+}
+
 /// `digits` with a comma between each three.
 fn group(digits: &str) -> String {
     let mut out = String::new();

@@ -526,7 +526,7 @@ mod tests {
 
     /// A bridge with its first end in the middle region B of `three_regions` and its second end in the right-hand one, C.
     fn bridge_in_b_and_c() -> Bridge {
-        Bridge { id: BridgeId::new(), first: vec2(0.0, 0.0).into(), second: vec2(120.0, 0.0).into() }
+        Bridge { id: BridgeId::new(), first: vec2(0.0, 0.0).into(), second: vec2(120.0, 0.0).into(), regions: [None; 2] }
     }
 
     #[test]

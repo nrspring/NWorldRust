@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
+use crate::newsreel::{Event, Named, News};
 use crate::region_name;
 
 /// The name of one river.
@@ -26,9 +27,13 @@ impl DaySave {
     /// it can't be done.
     pub fn set_river_name(&mut self, river: u32, typed: &str) -> Result<(), String> {
         let name = region_name::clean_name(typed)?;
+        let from = self.river_name(river).unwrap_or_default().to_owned();
         self.river_names.retain(|n| n.river != river);
         if !name.is_empty() {
-            self.river_names.push(RiverName { river, name });
+            self.river_names.push(RiverName { river, name: name.clone() });
+        }
+        if from != name {
+            self.newsreel.push(News::happening(Event::NameChanged { what: Named::River, id: river, from, to: name }));
         }
         Ok(())
     }

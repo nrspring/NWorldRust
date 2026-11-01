@@ -430,12 +430,13 @@ async fn main() {
             if let Some((first, second)) = bridge_tool.update(&scene, &standing, clicked) {
                 // Only keep the bridge if it is saved too.
                 let mut updated = day.clone();
-                match updated.build_bridge(first.into(), second.into()).and_then(|()| autosave.save_now(&saves, &updated)) {
+                let ends = [first, second].map(|end| bridge::Spot::from(end));
+                let in_regions = ends.map(|end| world.region_at(end.x, end.z).map(|region| region.raw()));
+                match updated.build_bridge_in(first.into(), second.into(), in_regions).and_then(|()| autosave.save_now(&saves, &updated)) {
                     Ok(()) => {
                         day = updated;
                         bridge_tool.built();
-                        let ends = [first, second].map(|end| bridge::Spot::from(end));
-                        let regions: Vec<u16> = ends.iter().filter_map(|end| world.region_at(end.x, end.z)).map(|region| region.raw()).collect();
+                        let regions: Vec<u16> = in_regions.into_iter().flatten().collect();
                         claim_prompt.placed_in(&day, &regions);
                     }
                     Err(message) => bridge_tool.fail(message),

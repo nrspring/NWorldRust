@@ -179,7 +179,8 @@ mod tests {
         let next = saves.advance(&day).unwrap();
         assert_eq!(next.date.to_string(), "1-1-2");
         assert_eq!(next.countries, day.countries, "what carries forward does");
-        assert!(next.newsreel.is_empty(), "the news doesn't");
+        assert_eq!(next.newsreel.len(), 1, "the news doesn't, and the new day begins with its own");
+        assert_eq!(next.newsreel[0].headline(&next), "Day 1-1-2 begins");
         // The day that ended was saved as it was, news and all, and stays as it was.
         let first: DaySave = serde_json::from_str(&fs::read_to_string(root.0.join("Saves/Days/year-0001_month-01_day-01.json")).unwrap()).unwrap();
         assert_eq!(first, day);

@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::day::DaySave;
 use crate::format;
 use crate::ids::{CountryId, GathererId};
-use crate::newsreel::{Event, News};
+use crate::newsreel::{Cost, Event, News};
+use crate::transfer::Asset;
 
 /// How dense a resource has to be at a point of the map, from 0 to 255, to count as there, and how many such points a
 /// region needs to have for it to count as having the resource at all: a stray speck doesn't make a forest.
@@ -387,7 +388,9 @@ impl DaySave {
         }
         let id = GathererId::new();
         self.gatherers.push(Gatherer { id, kind, country, x, z, region, operating: false });
-        self.newsreel.push(News::about(id, Event::GathererBuilt { kind }));
+        let mut cost = vec![Cost::coins(kind.cost())];
+        cost.extend(kind.materials().iter().map(|(resource, needed)| Cost { asset: Asset::of(*resource), amount: *needed }));
+        self.newsreel.push(News::about(id, Event::GathererBuilt { kind, country: Some(country), region: Some(region), cost }));
         Ok(())
     }
 
@@ -406,7 +409,7 @@ impl DaySave {
         if let Some(gatherer) = self.gatherers.iter_mut().find(|g| g.id == id) {
             gatherer.country = country;
         }
-        self.newsreel.push(News::about(id, Event::GathererTransferred { from, to: country, kind }));
+        self.newsreel.push(News::about(id, Event::GathererTransferred { from, to: country, kind, region: Some(region) }));
         Ok(())
     }
 
@@ -517,16 +520,21 @@ mod tests {
         let id = day.gatherers[0].id;
         assert_eq!(day.newsreel.len(), before + 1);
         let news = day.newsreel.last().unwrap();
-        assert_eq!(*news, News::about(id, Event::GathererBuilt { kind: GathererKind::Woodcutter }));
-        assert_eq!(news.headline(&day), "Aldoria builds a woodcutter in region 7");
+        let aldoria = day.countries[0].id;
+        assert_eq!(*news, News::about(id, Event::GathererBuilt { kind: GathererKind::Woodcutter, country: Some(aldoria), region: Some(0xC007), cost: vec![Cost::coins(1_000)] }));
+        assert_eq!(news.headline(&day), "Aldoria builds a woodcutter in region 7 for 1,000 coins");
+        let news = day.newsreel.last().unwrap().clone();
         day.set_region_name(0xC007, "The Greenwood").unwrap();
-        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a woodcutter in The Greenwood");
+        assert_eq!(news.headline(&day), "Aldoria builds a woodcutter in The Greenwood for 1,000 coins");
         // It is saved with its kind, and the subject's id is never in the words.
-        let json = serde_json::to_string(day.newsreel.last().unwrap()).unwrap();
+        let json = serde_json::to_string(&news).unwrap();
         assert!(json.contains(r#""type":"gatherer_built""#), "{json}");
-        assert!(!day.newsreel.last().unwrap().headline(&day).contains(&id.to_string()));
-        // News of one that is gone reads on without it, and a gatherer that can't be built is not reported.
-        assert_eq!(News::about(GathererId::new(), Event::GathererBuilt { kind: GathererKind::Woodcutter }).headline(&day), "A woodcutter is built");
+        assert!(!news.headline(&day).contains(&id.to_string()));
+        // News from before the country, the region and the cost were kept reads on without them, and a gatherer that
+        // can't be built is not reported.
+        let old: News = serde_json::from_str(&format!(r#"{{"subject":"{id}","type":"woodcutter_built"}}"#)).unwrap();
+        assert_eq!(old.headline(&day), "Aldoria builds a woodcutter in The Greenwood", "from the gatherer, which is there");
+        assert_eq!(News::about(GathererId::new(), Event::GathererBuilt { kind: GathererKind::Woodcutter, country: None, region: None, cost: Vec::new() }).headline(&day), "A woodcutter is built");
         let count = day.newsreel.len();
         assert!(day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC007).is_err());
         assert_eq!(day.newsreel.len(), count);
@@ -575,9 +583,10 @@ mod tests {
         assert_eq!(day.newsreel.len(), before);
         day.set_gatherer_country(id, brevon).unwrap();
         let news = day.newsreel.last().unwrap();
-        assert_eq!(*news, News::about(id, Event::GathererTransferred { from: aldoria, to: brevon, kind: GathererKind::Woodcutter }));
+        assert_eq!(*news, News::about(id, Event::GathererTransferred { from: aldoria, to: brevon, kind: GathererKind::Woodcutter, region: Some(0xC001) }));
         assert_eq!(news.headline(&day), "The woodcutter in region 1 is transferred from Aldoria to Brevon");
         assert!(serde_json::to_string(news).unwrap().contains(r#""type":"gatherer_transferred""#));
+        let news_transferred = news.clone();
         // A change that can't be made is not news.
         let count = day.newsreel.len();
         assert!(day.set_gatherer_country(id, CountryId::new()).is_err());
@@ -594,7 +603,9 @@ mod tests {
         let count = day.newsreel.len();
         assert!(day.destroy_gatherer(id).is_err());
         assert_eq!(day.newsreel.len(), count, "one that isn't there is not news");
-        assert_eq!(News::about(id, Event::GathererTransferred { from: aldoria, to: brevon, kind: GathererKind::Woodcutter }).headline(&day), "A woodcutter is transferred from Aldoria to Brevon");
+        assert_eq!(News::about(id, Event::GathererTransferred { from: aldoria, to: brevon, kind: GathererKind::Woodcutter, region: None }).headline(&day), "A woodcutter is transferred from Aldoria to Brevon");
+        // With the region kept, it is still said where, though the gatherer is gone.
+        assert_eq!(news_transferred.headline(&day), "The woodcutter in region 1 is transferred from Aldoria to Brevon");
     }
 
     #[test]
@@ -652,7 +663,7 @@ mod tests {
         assert!(poor.build_gatherer(GathererKind::Stonecutter, 0.0, 0.0, 0xC001).unwrap_err().contains("a stonecutter costs 1,000"));
         assert!(DaySave::new(Date::FIRST, "x").gatherer_problem(GathererKind::Stonecutter).unwrap().contains("own a stonecutter"));
         // Its news and the countries' lists name it too.
-        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a stonecutter in region 1");
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a stonecutter in region 1 for 1,000 coins");
         assert_eq!(day.delete_problem(day.countries[0].id).unwrap(), "Aldoria owns 1 woodcutter and 1 stonecutter, so it can't be deleted.");
         assert!(serde_json::to_string(day.newsreel.last().unwrap()).unwrap().contains(r#""type":"gatherer_built","kind":"stonecutter""#));
     }
@@ -678,7 +689,7 @@ mod tests {
         day.build_gatherer(GathererKind::Sawmill, 0.0, 0.0, 0xC001).unwrap();
         let country = &day.countries[0];
         assert_eq!((country.money, country.stock.wood, country.stock.stone), (10_000, 0, 500));
-        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a sawmill in region 1");
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a sawmill in region 1 for 10,000 coins, 1,000 wood and 1,000 stone");
         // The materials are used up, so a quarry can't follow it until there is more.
         assert!(day.build_gatherer(GathererKind::Quarry, 20.0, 0.0, 0xC001).unwrap_err().contains("Not enough wood"));
         // A woodcutter can't join the sawmill, which already gathers the wood of the region, and neither can a second sawmill.
@@ -786,7 +797,7 @@ mod tests {
         day.add_resource(id, Resource::Forest, 2_000).unwrap();
         day.add_resource(id, Resource::Stone, 2_000).unwrap();
         day.build_gatherer(GathererKind::IronMine, 0.0, 0.0, 1).unwrap();
-        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds an iron mine in region 1");
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds an iron mine in region 1 for 10,000 coins, 1,000 wood and 1,000 stone");
         assert_eq!(day.gatherer_region_problem(1, GathererKind::IronMine).unwrap(), "There is already an iron mine in this region.");
         assert_eq!(day.gatherer_region_problem(1, GathererKind::OilWell), None, "another resource is another matter");
         assert_eq!(day.delete_problem(id).unwrap(), "Aldoria owns 1 iron mine, so it can't be deleted.");

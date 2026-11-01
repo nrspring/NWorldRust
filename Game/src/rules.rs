@@ -251,7 +251,7 @@ mod tests {
             day.roads.push(PathSegment::to_edge(n, n + 1));
         }
         for _ in 0..20_000 {
-            day.bridges.push(crate::bridge::Bridge { id: crate::ids::BridgeId::new(), first: Spot { x: 0.0, z: 0.0 }, second: Spot { x: 1.0, z: 1.0 } });
+            day.bridges.push(crate::bridge::Bridge { id: crate::ids::BridgeId::new(), first: Spot { x: 0.0, z: 0.0 }, second: Spot { x: 1.0, z: 1.0 }, regions: [None; 2] });
         }
         failures(&mut day);
         let count = |f: fn(&Thing) -> bool| day.failed.iter().filter(|t| f(t)).count();

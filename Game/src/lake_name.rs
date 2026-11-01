@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::day::DaySave;
+use crate::newsreel::{Event, Named, News};
 use crate::region_name;
 
 /// The name of one lake.
@@ -25,9 +26,13 @@ impl DaySave {
     /// it can't be done.
     pub fn set_lake_name(&mut self, lake: u32, typed: &str) -> Result<(), String> {
         let name = region_name::clean_name(typed)?;
+        let from = self.lake_name(lake).unwrap_or_default().to_owned();
         self.lake_names.retain(|n| n.lake != lake);
         if !name.is_empty() {
-            self.lake_names.push(LakeName { lake, name });
+            self.lake_names.push(LakeName { lake, name: name.clone() });
+        }
+        if from != name {
+            self.newsreel.push(News::happening(Event::NameChanged { what: Named::Lake, id: lake, from, to: name }));
         }
         Ok(())
     }

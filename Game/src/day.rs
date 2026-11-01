@@ -14,8 +14,8 @@ use crate::bridge::{Bridge, BridgeLink};
 use crate::calendar::Date;
 use crate::failure::Thing;
 use crate::city::{self, City, INITIAL_POPULATION};
-use crate::country::{self, resource_name, Country, RegionOwner, Stock, STARTING_MONEY};
-use crate::ids::{CityId, CountryId, Guid, PersonId, TitleTypeId};
+use crate::country::{self, resource_name, Country, FormerCountry, RegionOwner, Stock, STARTING_MONEY};
+use crate::ids::{CityId, CountryId, PersonId, TitleTypeId};
 use crate::newsreel::{Event, News};
 use crate::path::PathSegment;
 use crate::person::{self, Person};
@@ -53,6 +53,9 @@ pub struct DaySave {
     /// Carried forward from day to day.
     #[serde(default)]
     pub countries: Vec<Country>,
+    /// The countries that were deleted, which the news of them still names. Carried forward from day to day.
+    #[serde(default)]
+    pub former_countries: Vec<FormerCountry>,
     /// The country the player plays, which new people and cities belong to. The first country founded
     /// is it until another is chosen. Carried forward from day to day.
     #[serde(default)]
@@ -111,7 +114,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), gatherers: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), former_countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), gatherers: Vec::new(), newsreel: Vec::new() }
     }
 
     // For showing the kind of title a person has, which nothing shows yet.
@@ -136,6 +139,7 @@ impl DaySave {
     /// reported.
     pub fn next_day(&self) -> Self {
         let mut next = self.following(self.date.next());
+        next.newsreel.push(News::happening(Event::DayBegan { date: next.date }));
         crate::rules::run(&mut next);
         next.update_gatherer_operation();
         next
@@ -154,9 +158,12 @@ impl DaySave {
         self.cities.iter().find(|c| c.id == id)
     }
 
-    /// The name of the country with this id, for showing.
+    /// The name of the country with this id, for showing: the name it had if it was deleted.
     pub fn country_name(&self, id: CountryId) -> &str {
-        self.country(id).map_or("an unknown country", |c| c.name.as_str())
+        self.country(id)
+            .map(|c| c.name.as_str())
+            .or_else(|| self.former_countries.iter().find(|c| c.id == id).map(|c| c.name.as_str()))
+            .unwrap_or("an unknown country")
     }
 
     /// The country the player plays: the one chosen, or else the first there is.
@@ -176,21 +183,32 @@ impl DaySave {
         Ok(())
     }
 
-    /// Makes the country with this id the one the player plays. An error says why it can't be done.
+    /// Makes the country with this id the one the player plays, which is reported in the newsreel unless it was already.
+    /// An error says why it can't be done.
     pub fn select_country(&mut self, id: CountryId) -> Result<(), String> {
         self.country(id).ok_or("There is no such country.")?;
+        let from = self.player_country().map(|c| c.id);
         self.player = Some(id);
+        if from != Some(id) {
+            self.newsreel.push(News::about(id, Event::PlayerChanged { from, to: id }));
+        }
         Ok(())
     }
 
-    /// Renames the country with this id to `typed`. People, cities and news follow it, since they hold
-    /// its id. A name that only differs in its capitals from the country's own is fine. An error says
-    /// why it can't be done.
+    /// Renames the country with this id to `typed`, which is reported in the newsreel. People, cities and news follow
+    /// it, since they hold its id. A name that only differs in its capitals from the country's own is fine. An error
+    /// says why it can't be done.
     pub fn rename_country(&mut self, id: CountryId, typed: &str) -> Result<(), String> {
         self.country(id).ok_or("There is no such country.")?;
         let name = self.free_country_name(typed, Some(id))?;
+        let mut renamed = None;
         if let Some(country) = self.countries.iter_mut().find(|c| c.id == id) {
-            country.name = name;
+            if country.name != name {
+                renamed = Some(std::mem::replace(&mut country.name, name.clone()));
+            }
+        }
+        if let Some(from) = renamed {
+            self.newsreel.push(News::about(id, Event::CountryRenamed { from, to: name }));
         }
         Ok(())
     }
@@ -232,10 +250,14 @@ impl DaySave {
         Ok(())
     }
 
-    /// Gives the country with this id this color. An error says why it can't be done.
+    /// Gives the country with this id this color, which is reported in the newsreel unless it had it. An error says why
+    /// it can't be done.
     pub fn recolor_country(&mut self, id: CountryId, color: Rgb) -> Result<(), String> {
         let country = self.countries.iter_mut().find(|c| c.id == id).ok_or("There is no such country.")?;
-        country.color = color;
+        let from = std::mem::replace(&mut country.color, color);
+        if from != color {
+            self.newsreel.push(News::about(id, Event::CountryRecolored { from, to: color }));
+        }
         Ok(())
     }
 
@@ -266,20 +288,21 @@ impl DaySave {
     }
 
     /// Removes the country with this id, which can only be done if it owns nothing (see
-    /// [`delete_problem`](Self::delete_problem)). Its people go with it, and so does the news of them. If it was the
+    /// [`delete_problem`](Self::delete_problem)). Its people go with it. The news of it and of them stays, since it is
+    /// history, and so does its name, in `former_countries`; the deleting is reported in the newsreel. If it was the
     /// country the player plays, the first country left is. An error says why it can't be done.
     pub fn delete_country(&mut self, id: CountryId) -> Result<(), String> {
-        self.country(id).ok_or("There is no such country.")?;
+        let name = self.country(id).ok_or("There is no such country.")?.name.clone();
         if let Some(problem) = self.delete_problem(id) {
             return Err(problem);
         }
-        let gone: Vec<Guid> = std::iter::once(id.into()).chain(self.people.iter().filter(|p| p.country == id).map(|p| Guid::from(p.id))).collect();
         self.countries.retain(|c| c.id != id);
         self.people.retain(|p| p.country != id);
-        self.newsreel.retain(|n| !gone.contains(&n.subject));
+        self.former_countries.push(FormerCountry { id, name: name.clone() });
         if self.player == Some(id) {
             self.player = self.countries.first().map(|c| c.id);
         }
+        self.newsreel.push(News::about(id, Event::CountryDeleted { name }));
         Ok(())
     }
 
@@ -303,13 +326,14 @@ impl DaySave {
             Some(existing) => existing.id,
             None => {
                 let id = TitleTypeId::new();
-                self.title_types.push(TitleType { id, name: type_name });
+                self.title_types.push(TitleType { id, name: type_name.clone() });
+                self.newsreel.push(News::about(id, Event::TitleTypeAdded { name: type_name }));
                 id
             }
         };
         let id = PersonId::new();
-        self.people.push(Person { id, name, title, title_type, country });
-        self.newsreel.push(News::about(id, Event::PersonJoined));
+        self.people.push(Person { id, name: name.clone(), title: title.clone(), title_type, country });
+        self.newsreel.push(News::about(id, Event::PersonJoined { title, name, country: Some(country) }));
         Ok(())
     }
 
@@ -333,19 +357,29 @@ impl DaySave {
         if let Some(other) = self.cities.iter().find(|c| c.id != city && region.is_some() && c.region == region && c.country != country) {
             return Err(format!("{} also stands in that region, so it has to stay in {}.", other.name, self.country_name(other.country)));
         }
+        let mut from = None;
         if let Some(c) = self.cities.iter_mut().find(|c| c.id == city) {
-            c.country = country;
+            from = Some(std::mem::replace(&mut c.country, country));
+        }
+        match from {
+            Some(from) if from != country => self.newsreel.push(News::about(city, Event::CityChangedCountry { from, to: country })),
+            _ => {}
         }
         if let Some(region) = region {
-            self.region_owners.retain(|o| o.region != region);
-            self.region_owners.push(RegionOwner { region, country });
+            self.put_region_owner(region, Some(country));
         }
         Ok(())
     }
 
-    /// Puts the city with this id under siege, or lifts the siege. An error says why it can't be done.
+    /// Puts the city with this id under siege, or lifts the siege, which is reported in the newsreel unless it made no
+    /// difference. An error says why it can't be done.
     pub fn set_city_under_siege(&mut self, city: CityId, under_siege: bool) -> Result<(), String> {
-        self.cities.iter_mut().find(|c| c.id == city).ok_or("There is no such city.")?.under_siege = under_siege;
+        let city = self.cities.iter_mut().find(|c| c.id == city).ok_or("There is no such city.")?;
+        let changed = std::mem::replace(&mut city.under_siege, under_siege) != under_siege;
+        let (id, population) = (city.id, city.population);
+        if changed {
+            self.newsreel.push(News::about(id, Event::SiegeChanged { under_siege, population }));
+        }
         Ok(())
     }
 
@@ -408,11 +442,24 @@ impl DaySave {
         if let Some((what, holder)) = self.region_holders(region).into_iter().find(|(_, holder)| Some(*holder) != owner) {
             return Err(format!("{what} in that region, so only {} can have it.", self.country_name(holder)));
         }
+        self.put_region_owner(region, owner);
+        Ok(())
+    }
+
+    /// Makes `owner` the owner of the region numbered `region`, or leaves it unowned if `owner` is `None`, without
+    /// asking whether it may be, and reports the change in the newsreel unless nothing changed.
+    fn put_region_owner(&mut self, region: u16, owner: Option<CountryId>) {
+        let from = self.region_owner(region);
+        if from == owner {
+            return;
+        }
         self.region_owners.retain(|o| o.region != region);
         if let Some(country) = owner {
             self.region_owners.push(RegionOwner { region, country });
         }
-        Ok(())
+        if let Some(subject) = owner.or(from) {
+            self.newsreel.push(News::about(subject, Event::RegionOwnerChanged { region, from, to: owner }));
+        }
     }
 
     /// Founds a city called `typed` at (`x`, `z`) in the map region numbered `region` (`None` if the map has
@@ -433,11 +480,10 @@ impl DaySave {
         }
         let id = CityId::new();
         self.cities.push(City { id, country, name, x, z, region, population: INITIAL_POPULATION, under_siege: false });
+        self.newsreel.push(News::about(id, Event::CityFounded { population: INITIAL_POPULATION, region, country: Some(country) }));
         if let Some(region) = region {
-            self.region_owners.retain(|o| o.region != region);
-            self.region_owners.push(RegionOwner { region, country });
+            self.put_region_owner(region, Some(country));
         }
-        self.newsreel.push(News::about(id, Event::CityFounded { population: INITIAL_POPULATION }));
         Ok(())
     }
 }
@@ -491,8 +537,15 @@ mod tests {
         let person = &day.people[0];
         assert_eq!((person.name.as_str(), person.title.as_str(), person.country), ("Mara Voss", "President", aldoria));
         assert_eq!(day.title_type(person.title_type).unwrap().name, "Head of State");
-        assert_eq!(day.newsreel.last(), Some(&News::about(person.id, Event::PersonJoined)));
+        assert_eq!(day.newsreel.last(), Some(&News::about(person.id, Event::PersonJoined { title: "President".to_owned(), name: "Mara Voss".to_owned(), country: Some(aldoria) })));
+        // The first person of a kind of title makes the kind news too, just before.
+        let kind = day.newsreel[day.newsreel.len() - 2].clone();
+        assert_eq!(kind, News::about(person.title_type, Event::TitleTypeAdded { name: "Head of State".to_owned() }));
+        assert_eq!(kind.headline(&day), "A new kind of title, Head of State, is added");
         assert_eq!(day.person(person.id), Some(person));
+        // Another of the same kind adds nothing more of that kind.
+        day.found_person("Tomas Rue", "Chancellor", "Head of State").unwrap();
+        assert_eq!(day.newsreel.iter().filter(|n| matches!(n.event, Event::TitleTypeAdded { .. })).count(), 1);
     }
 
     #[test]
@@ -559,7 +612,7 @@ mod tests {
 
         let city = &day.cities[0];
         assert_eq!((city.country, city.name.as_str(), city.x, city.z, city.population), (day.countries[0].id, "Port Aldor", 120.0, -45.5, 100));
-        assert_eq!(day.newsreel.last(), Some(&News::about(city.id, Event::CityFounded { population: 100 })));
+        assert_eq!(day.newsreel.last(), Some(&News::about(city.id, Event::CityFounded { population: 100, region: None, country: Some(city.country) })));
         assert_eq!(day.city(city.id), Some(city));
     }
 
@@ -1032,9 +1085,13 @@ mod tests {
         assert_eq!(day.people.len(), 1, "its people go with it");
         assert_eq!(day.people[0].name, "Mara Voss");
         assert_eq!(day.region_owner(0x4006), Some(aldoria), "other countries' regions are not touched");
-        // Its news goes: the founding and Tomas joining, and nothing of Aldoria's.
-        assert!(day.newsreel.iter().all(|n| n.subject != Guid::from(brevon) && n.subject != Guid::from(tomas)));
-        assert_eq!(day.newsreel.len(), 2, "Aldoria founded, Mara joined");
+        // Its news stays, since it is history, and still names it and them; the deleting is news too.
+        assert_eq!(day.former_countries, [FormerCountry { id: brevon, name: "Brevon".to_owned() }]);
+        assert!(day.newsreel.iter().any(|n| n.subject == crate::ids::Guid::from(tomas)));
+        let headlines: Vec<String> = day.newsreel.iter().map(|n| n.headline(&day)).collect();
+        assert!(headlines.contains(&"The nation of Brevon is founded".to_owned()), "{headlines:?}");
+        assert!(headlines.contains(&"King Tomas Rue joins Brevon".to_owned()), "{headlines:?}");
+        assert_eq!(headlines.last().unwrap(), "The nation of Brevon is deleted");
         // It was the country that was played, so the one left is.
         assert_eq!(day.player_country().unwrap().id, aldoria);
         assert_eq!(day.player, Some(aldoria));
@@ -1131,7 +1188,7 @@ mod tests {
         assert_eq!(tomorrow.map, today.map);
         assert!(tomorrow.newsreel.is_empty());
         // Today's own newsreel is untouched.
-        assert_eq!(today.newsreel.len(), 3);
+        assert_eq!(today.newsreel.len(), 4, "the country, the kind of title, the person and the city");
     }
 
     #[test]
@@ -1149,7 +1206,8 @@ mod tests {
         assert_eq!(named, ["Head of State"]);
         // Each news item has the id of its subject, whatever kind of thing that is.
         assert_eq!(json["newsreel"][0]["subject"].as_str().unwrap(), country_id);
-        assert_eq!(json["newsreel"][1]["subject"], json["people"][0]["id"]);
+        assert_eq!(json["newsreel"][1]["subject"], json["title_types"][0]["id"]);
+        assert_eq!(json["newsreel"][2]["subject"], json["people"][0]["id"]);
         // And it reads back the same.
         assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
     }
