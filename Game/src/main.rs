@@ -109,10 +109,34 @@ const DATA_DIR: &str = r"C:\Users\nrspring\OneDrive\Secure\Projects\NWorld";
 /// The map a new game is played on, made with the world editor, relative to the data folder.
 const MAP_FILE: &str = "Assets/map.nworld";
 
+const WINDOW_TITLE: &str = "NWorld";
+
+/// Maximizes the window, which is opened at a size, since the window settings can't ask for it to be maximized. It is
+/// found by its title.
+#[cfg(windows)]
+fn maximize_window() {
+    unsafe extern "system" {
+        fn FindWindowW(class: *const u16, title: *const u16) -> *mut std::ffi::c_void;
+        fn ShowWindow(window: *mut std::ffi::c_void, command: i32) -> i32;
+    }
+    const SW_MAXIMIZE: i32 = 3;
+    let title: Vec<u16> = WINDOW_TITLE.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: both are plain Win32 calls, and the title is null-terminated and outlives the call.
+    unsafe {
+        let window = FindWindowW(std::ptr::null(), title.as_ptr());
+        if !window.is_null() {
+            ShowWindow(window, SW_MAXIMIZE);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn maximize_window() {}
+
 fn window_conf() -> macroquad::conf::Conf {
     macroquad::conf::Conf {
         miniquad_conf: macroquad::miniquad::conf::Conf {
-            window_title: "NWorld".to_owned(),
+            window_title: WINDOW_TITLE.to_owned(),
             window_width: 1600,
             window_height: 900,
             // An ordinary bordered window, so it can be minimized, maximized and resized.
@@ -191,6 +215,7 @@ impl Asking {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    maximize_window();
     let style = Style::load();
     let Started { world, saves, mut day } = match start() {
         Ok(started) => started,
