@@ -14,12 +14,12 @@ use crate::day::DaySave;
 use crate::ground::nearest_clear;
 use crate::hud;
 use crate::path_tool::Scene;
+use crate::toolbar;
 
 const MARKER_SIZE: f32 = 0.007;
 const MARKER_LEAST: f32 = 0.6;
 /// How high above the ground the markers and the line between the ends are held.
 const HOLD: f32 = 1.2;
-const BUTTON_HEIGHT: f32 = 36.0;
 
 #[derive(Default)]
 pub struct BridgeTool {
@@ -134,60 +134,39 @@ impl BridgeTool {
         }
     }
 
-    /// Draws the button that turns the tool on and off, in the `footer`, with its right edge at `right`. When
-    /// `problem` is something the tool can't be used, it is dimmed, and the whole reason shows when the mouse is over
-    /// it. `inline` is a line of text to put to the left of it, which is for the reason when one of the buttons is
-    /// off. Returns where the button is.
-    pub fn show_button(&mut self, style: &Style, footer: Rect, right: f32, problem: Option<&BridgeProblem>, inline: Option<&str>) -> Rect {
-        let mouse = Vec2::from(mouse_position());
-        let label = "Bridge";
-        let label_width = style.measure(label, 13, Weight::Semibold).width;
-        let width = 12.0 + 18.0 + 8.0 + label_width + 14.0;
-        let button = Rect::new(right - width, footer.center().y - BUTTON_HEIGHT * 0.5, width, BUTTON_HEIGHT);
+    /// Draws the tool's row in the Travel menu, in `rect`, which turns the tool on and off when clicked. `menu` is where
+    /// the menu's panel is, for the tip to go above. When `problem` is something the tool can't be used, the row is
+    /// dimmed, and the whole reason shows when the mouse is over it.
+    pub fn show_row(&mut self, style: &Style, rect: Rect, menu: Rect, problem: Option<&BridgeProblem>) {
         let disabled = problem.is_some();
-        let hovered = button.contains(mouse);
-        if hovered && is_mouse_button_pressed(MouseButton::Left) && !disabled {
+        let row = toolbar::draw_row(style, rect, "Bridges", Buildable::Bridge.cost(), self.active, disabled, |center, color| {
+            // A little arch: a curve with a line under it.
+            let icon = vec2(center.x, center.y + 3.0);
+            let mut last = vec2(icon.x - 8.0, icon.y);
+            for k in 1..=8 {
+                let t = k as f32 / 8.0;
+                let next = vec2(icon.x - 8.0 + 16.0 * t, icon.y - 8.0 * (4.0 * t * (1.0 - t)));
+                draw_line(last.x, last.y, next.x, next.y, 1.8, color);
+                last = next;
+            }
+            draw_line(icon.x - 9.0, icon.y + 1.0, icon.x + 9.0, icon.y + 1.0, 1.8, color);
+        });
+        if row.pressed {
             if self.active {
                 self.deactivate();
             } else {
                 *self = Self { active: true, ..Self::default() };
             }
         }
-        if self.active {
-            style::rounded_rect(button, 10.0, style::ACCENT_SOFT);
-        } else if hovered && !disabled {
-            style::rounded_rect(button, 10.0, style::HOVER);
-        }
-        let color = match (disabled, self.active) {
-            (true, _) => Color::new(1.0, 1.0, 1.0, 0.30),
-            (false, true) => style::ACCENT_HOVER,
-            (false, false) => style::TEXT,
-        };
-        // A little arch: a curve with a line under it.
-        let icon = vec2(button.x + 12.0 + 9.0, button.center().y + 3.0);
-        let mut last = vec2(icon.x - 8.0, icon.y);
-        for k in 1..=8 {
-            let t = k as f32 / 8.0;
-            let next = vec2(icon.x - 8.0 + 16.0 * t, icon.y - 8.0 * (4.0 * t * (1.0 - t)));
-            draw_line(last.x, last.y, next.x, next.y, 1.8, color);
-            last = next;
-        }
-        draw_line(icon.x - 9.0, icon.y + 1.0, icon.x + 9.0, icon.y + 1.0, 1.8, color);
-        style.text_mid(label, button.x + 12.0 + 18.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
 
-        if let Some(text) = inline {
-            let text_width = style.measure(text, 12, Weight::Regular).width;
-            style.text_mid(text, button.x - 10.0 - text_width, button.center().y, 12, Weight::Regular, style::ERROR);
-        }
-        if hovered {
+        if row.hovered {
             // What it is and costs and does, and first of all why it can't be used, if it can't.
             let mut lines = Buildable::Bridge.button_lines();
             if let Some(problem) = problem {
                 lines.insert(0, (problem.long(), style::ERROR));
             }
-            costs::draw_tip(style, button, &lines);
+            costs::draw_tip(style, menu, &lines);
         }
-        button
     }
 
     /// Draws the prompt over the footer while the tool is on: what to do next, what a bridge costs, and what the

@@ -1,4 +1,4 @@
-//! The gatherer tools, one for each kind of gatherer (the woodcutter, the stonecutter): a button in the footer that turns
+//! The gatherer tools, one for each kind of gatherer (the woodcutter, the stonecutter): a row in the Buildings menu that turns
 //! it on, and then the player clicks dry ground in a region that has some of what it gathers, and one is built there for
 //! the country being played. There can be only one of a kind to a region, and it costs a lot.
 //!
@@ -13,6 +13,7 @@ use crate::costs::{self, Buildable};
 use crate::day::DaySave;
 use crate::hud;
 use crate::path_tool::Scene;
+use crate::toolbar;
 use crate::gatherer::{site_region, Deposits, Gatherer, GathererKind};
 use crate::gatherer_view;
 
@@ -21,7 +22,6 @@ const MARKER_SIZE: f32 = 0.009;
 const MARKER_LEAST: f32 = 0.9;
 /// How high above the ground the marker is held.
 const HOLD: f32 = 1.5;
-const BUTTON_HEIGHT: f32 = 36.0;
 
 pub struct GathererTool {
     /// What it builds.
@@ -123,46 +123,29 @@ impl GathererTool {
         }
     }
 
-    /// Draws the button that turns the tool on and off, in the `footer`, with its right edge at `right`. When
-    /// `problem` is something the tool can't be used, it is dimmed, and the whole reason shows when the mouse is over
-    /// it. Returns where the button is.
-    pub fn show_button(&mut self, style: &Style, footer: Rect, right: f32, problem: Option<&str>) -> Rect {
-        let mouse = Vec2::from(mouse_position());
-        let label = self.kind.button_label();
-        let label_width = style.measure(label, 13, Weight::Semibold).width;
-        let width = 12.0 + 14.0 + 8.0 + label_width + 14.0;
-        let button = Rect::new(right - width, footer.center().y - BUTTON_HEIGHT * 0.5, width, BUTTON_HEIGHT);
+    /// Draws the tool's row in the Buildings menu, in `rect`, which turns the tool on and off when clicked. `menu` is where
+    /// the menu's panel is, for the tip to go above. When `problem` is something the tool can't be used, the row is
+    /// dimmed, and the whole reason shows when the mouse is over it.
+    pub fn show_row(&mut self, style: &Style, rect: Rect, menu: Rect, problem: Option<&str>) {
+        let kind = self.kind;
         let disabled = problem.is_some();
-        let hovered = button.contains(mouse);
-        if hovered && is_mouse_button_pressed(MouseButton::Left) && !disabled {
+        let row = toolbar::draw_row(style, rect, kind.label(), Buildable::Gatherer(kind).cost(), self.active, disabled, |icon, color| kind.draw_icon(icon, 1.0, color, style::GLASS));
+        if row.pressed {
             if self.active {
                 self.deactivate();
             } else {
-                *self = Self { active: true, ..Self::new(self.kind) };
+                *self = Self { active: true, ..Self::new(kind) };
             }
         }
-        if self.active {
-            style::rounded_rect(button, 10.0, style::ACCENT_SOFT);
-        } else if hovered && !disabled {
-            style::rounded_rect(button, 10.0, style::HOVER);
-        }
-        let color = match (disabled, self.active) {
-            (true, _) => Color::new(1.0, 1.0, 1.0, 0.30),
-            (false, true) => style::ACCENT_HOVER,
-            (false, false) => style::TEXT,
-        };
-        self.kind.draw_icon(vec2(button.x + 12.0 + 7.0, button.center().y), 1.0, color, style::GLASS);
-        style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
 
-        if hovered {
+        if row.hovered {
             // What it is and costs and does, and first of all why it can't be used, if it can't.
-            let mut lines = Buildable::Gatherer(self.kind).button_lines();
+            let mut lines = Buildable::Gatherer(kind).button_lines();
             if let Some(problem) = problem {
                 lines.insert(0, (problem.to_owned(), style::ERROR));
             }
-            costs::draw_tip(style, button, &lines);
+            costs::draw_tip(style, menu, &lines);
         }
-        button
     }
 
     /// Draws the prompt over the footer while the tool is on: what to do next, what a gatherer costs, and what the

@@ -57,6 +57,7 @@ mod saves;
 mod test_support;
 mod text;
 mod title_type;
+mod toolbar;
 
 use std::path::{Path, PathBuf};
 
@@ -79,7 +80,6 @@ use day::DaySave;
 use country_menu::CountryMenu;
 use treasury::Treasury;
 use options::{Options, OptionsUi};
-use bridge::BRIDGE_COST;
 use bridge_tool::BridgeTool;
 use claim_prompt::ClaimPrompt;
 use destroy_tool::DestroyTool;
@@ -95,6 +95,7 @@ use placement::ClickTracker;
 use popup::Popup;
 use rgb::Rgb;
 use saves::Saves;
+use toolbar::{Menu, Toolbar};
 
 /// How far from a new city the camera flies to look at it, in meters.
 const NEW_CITY_VIEW_DISTANCE: f32 = 190.0;
@@ -229,6 +230,8 @@ async fn main() {
     let mut options = Options::default();
     let mut options_ui = OptionsUi::default();
     let mut overlays_ui = OverlaysUi::default();
+    // The Travel and Buildings menus of tools.
+    let mut toolbar = Toolbar::default();
     let mut alerts_ui = AlertsUi::default();
     // What failed when the last day ended, which the alerts report. Not saved: a game opened again has none.
     let mut day_failures: Vec<failure::Thing> = Vec::new();
@@ -274,9 +277,10 @@ async fn main() {
                 gatherer_popup.escape();
             } else if country_menu.is_open() {
                 country_menu.escape();
-            } else if options_ui.is_open() || overlays_ui.is_open() {
+            } else if options_ui.is_open() || overlays_ui.is_open() || toolbar.is_open() {
                 options_ui.close();
                 overlays_ui.close();
+                toolbar.close();
             } else if asking.as_mut().is_some_and(|(_, popup)| popup.close_dropdown()) {
                 // A drop-down list was open, and is closed.
             } else if naming_city.is_some() {
@@ -318,10 +322,13 @@ async fn main() {
 
         // While a popup is up, typing is for it and not for the camera.
         let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || advance_popup.is_open();
+        if modal {
+            toolbar.close();
+        }
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse));
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse));
         if modal {
             camera.skip_frame();
         } else {
@@ -402,6 +409,10 @@ async fn main() {
         // A click on the map (a drag is for the camera) places the first city, and after that opens the
         // popup of the city clicked.
         let clicked = clicks.update(!modal && !over_interface);
+        // A click on the map puts away a menu of tools that was left open.
+        if clicked {
+            toolbar.close();
+        }
         // With the path tool or the road tool on, clicks are for choosing the ends of a segment of it.
         if !modal && (path_tool.is_active() || road_tool.is_active()) {
             let tool = if path_tool.is_active() { &mut path_tool } else { &mut road_tool };
@@ -569,19 +580,7 @@ async fn main() {
                 advance_popup.open(day.date);
             }
         }
-        // The room the footer keeps for its buttons grows by the reason the paths button is off, when it is.
-        // Why a tool button is off, for beside the leftmost of them. Paths cost the least, then roads, then
-        // bridges, so each one that can't be built means the ones after it can't be either.
-        let coins = day.player_country().map(|c| c.money);
-        let tool_reason: Option<String> = match coins {
-            None => Some("No country to pay for paths, roads or bridges".to_owned()),
-            _ if no_regions => Some("This map has no regions for paths or roads".to_owned()),
-            Some(coins) if coins < path::PATH_COST => Some(format!("Not enough coin (paths {}, roads {}, bridges {}; has {coins})", path::PATH_COST, path::ROAD_COST, format::money(BRIDGE_COST))),
-            Some(coins) if coins < path::ROAD_COST => Some(format!("Not enough coin for roads or bridges ({}, {}; has {coins})", path::ROAD_COST, format::money(BRIDGE_COST))),
-            Some(_) => bridge_problem.as_ref().map(|problem| problem.short()),
-        };
-        let buttons_room = hud::BUTTONS_ROOM + if tool_reason.is_some() { 300.0 } else { 0.0 };
-        let footer = hud::footer(&style, !modal, buttons_room);
+        let footer = hud::footer(&style, !modal, hud::BUTTONS_ROOM);
         autosave.update(&saves, &day, get_time());
         if let Some(message) = autosave.error() {
             hud::save_failed(&style, message);
@@ -639,25 +638,37 @@ async fn main() {
             } else if let Some(deposit) = resource_hover {
                 hud::resource_tooltip(&style, deposit);
             }
-            // Only one of the two menus is open at a time: the one that was just opened wins.
-            let (options_was_open, overlays_was_open) = (options_ui.is_open(), overlays_ui.is_open());
+            // Only one of the menus is open at a time: the one that was just opened wins.
+            let (options_was_open, overlays_was_open, toolbar_was_open) = (options_ui.is_open(), overlays_ui.is_open(), toolbar.is_open());
             options_ui.show(&style, footer, &mut options, view.has_regions());
             overlays_ui.show(&style, footer, &mut options, view.has_regions());
             // Only one of the tools is on at a time: the one that was just turned on wins.
             let mut was_on = vec![path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
             was_on.extend(gatherer_tools.iter().map(|tool| tool.is_active()));
             let destroy_button = destroy_tool.show_button(&style, footer, overlays_ui.button().x - 8.0);
-            // The gatherer buttons, the last kind nearest the destroy button so that they read in order.
-            let mut gatherers_left = destroy_button.x - 8.0;
-            for tool in gatherer_tools.iter_mut().rev() {
-                let problem = day.gatherer_problem(tool.kind());
-                gatherers_left = tool.show_button(&style, footer, gatherers_left, problem.as_deref()).x - 8.0;
+            // The Travel and Buildings buttons are lit while a tool in them is on, and the open one has its tools in a
+            // panel above it.
+            let lit = [path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active(), gatherer_tools.iter().any(|tool| tool.is_active())];
+            match toolbar.show(&style, footer, destroy_button.x - 8.0, lit) {
+                Some((Menu::Travel, panel)) => {
+                    path_tool.show_row(&style, toolbar::row_rect(panel, 0), panel, path_problem.as_ref(), no_regions);
+                    road_tool.show_row(&style, toolbar::row_rect(panel, 1), panel, road_problem.as_ref(), no_regions);
+                    bridge_tool.show_row(&style, toolbar::row_rect(panel, 2), panel, bridge_problem.as_ref());
+                }
+                Some((Menu::Buildings, panel)) => {
+                    for (n, tool) in gatherer_tools.iter_mut().enumerate() {
+                        let problem = day.gatherer_problem(tool.kind());
+                        tool.show_row(&style, toolbar::row_rect(panel, n), panel, problem.as_deref());
+                    }
+                }
+                None => {}
             }
-            let path_button = path_tool.show_button(&style, footer, gatherers_left, path_problem.as_ref(), no_regions);
-            let road_button = road_tool.show_button(&style, footer, path_button.x - 8.0, road_problem.as_ref(), no_regions);
-            bridge_tool.show_button(&style, footer, road_button.x - 8.0, bridge_problem.as_ref(), tool_reason.as_deref());
             let mut now_on = vec![path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
             now_on.extend(gatherer_tools.iter().map(|tool| tool.is_active()));
+            // Turning a tool on or off puts the menu away, so that the map is clear for it.
+            if now_on != was_on {
+                toolbar.close();
+            }
             if now_on.iter().filter(|on| **on).count() > 1 {
                 // The one that was already on gives way.
                 if was_on[0] && now_on[0] {
@@ -687,7 +698,12 @@ async fn main() {
             }
             if overlays_ui.is_open() && !overlays_was_open {
                 options_ui.close();
+                toolbar.close();
             } else if options_ui.is_open() && !options_was_open {
+                overlays_ui.close();
+                toolbar.close();
+            } else if toolbar.is_open() && !toolbar_was_open {
+                options_ui.close();
                 overlays_ui.close();
             }
         }

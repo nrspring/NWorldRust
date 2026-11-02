@@ -41,14 +41,6 @@ impl Kind {
             Self::Road => "road",
         }
     }
-
-    /// What to call several of them.
-    pub const fn plural(self) -> &'static str {
-        match self {
-            Self::Path => "paths",
-            Self::Road => "roads",
-        }
-    }
 }
 
 /// One segment of path, in the region numbered `region`.
@@ -97,14 +89,6 @@ pub enum PathProblem {
 }
 
 impl PathProblem {
-    /// A few words, for beside the button.
-    pub fn short(&self) -> String {
-        match self {
-            Self::NoCountry(kind) => format!("No country to pay for {}", kind.plural()),
-            Self::NotEnoughCoin { money, kind, .. } => format!("Not enough coin (needs {}, has {money})", kind.cost()),
-        }
-    }
-
     /// The whole reason, as a sentence.
     pub fn long(&self) -> String {
         match self {
@@ -324,9 +308,8 @@ mod tests {
     #[test]
     fn the_reasons_read_well() {
         let problem = PathProblem::NotEnoughCoin { country: "Aldoria".to_owned(), money: 3, kind: Kind::Path };
-        assert_eq!(problem.short(), "Not enough coin (needs 10, has 3)");
         assert_eq!(problem.long(), "Not enough coin: a path segment costs 10 coins, and Aldoria has 3.");
-        assert!(!PathProblem::NoCountry(Kind::Path).short().is_empty() && !PathProblem::NoCountry(Kind::Path).long().is_empty());
+        assert!(!PathProblem::NoCountry(Kind::Path).long().is_empty());
     }
 
     #[test]
@@ -367,7 +350,6 @@ mod tests {
         let none = DaySave::new(Date::FIRST, "Assets/map.nworld");
         assert_eq!(none.road_problem(), Some(PathProblem::NoCountry(Kind::Road)));
         assert!(none.road_problem().unwrap().long().contains("road"));
-        assert_eq!(PathProblem::NotEnoughCoin { country: "A".to_owned(), money: 3, kind: Kind::Road }.short(), "Not enough coin (needs 100, has 3)");
     }
 
     #[test]

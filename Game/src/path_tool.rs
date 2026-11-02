@@ -27,6 +27,7 @@ use crate::hud;
 use crate::ids::BridgeId;
 use crate::path::{Kind, PathPiece, PathProblem, PathSegment};
 use crate::path_view;
+use crate::toolbar;
 
 /// Why a segment that crosses water is refused.
 const CROSSES_WATER: &str = "A path can't cross a river or a lake.";
@@ -37,7 +38,6 @@ const MARKER_SIZE: f32 = 0.007;
 const MARKER_LEAST: f32 = 0.6;
 /// How high above the ground the markers and the line between the ends are held.
 const HOLD: f32 = 1.2;
-const BUTTON_HEIGHT: f32 = 36.0;
 
 /// A place a segment can start or end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -339,39 +339,17 @@ impl PathTool {
         }
     }
 
-    /// Draws the button that turns the tool on and off, in the `footer`, with its right edge at `right`. When
-    /// `problem` is something the tool can't be used, it is dimmed, the reason is beside it, and the whole reason
-    /// shows when the mouse is over it. Returns where the button is.
-    pub fn show_button(&mut self, style: &Style, footer: Rect, right: f32, problem: Option<&PathProblem>, no_regions: bool) -> Rect {
-        let mouse = Vec2::from(mouse_position());
-        let label = match self.kind {
+    /// Draws the tool's row in the Travel menu, in `rect`, which turns the tool on and off when clicked. `menu` is where
+    /// the menu's panel is, for the tip to go above. When `problem` is something the tool can't be used, the row is
+    /// dimmed, and the whole reason shows when the mouse is over it.
+    pub fn show_row(&mut self, style: &Style, rect: Rect, menu: Rect, problem: Option<&PathProblem>, no_regions: bool) {
+        let kind = self.kind;
+        let label = match kind {
             Kind::Path => "Paths",
             Kind::Road => "Roads",
         };
-        let label_width = style.measure(label, 13, Weight::Semibold).width;
-        let width = 12.0 + 14.0 + 8.0 + label_width + 14.0;
-        let button = Rect::new(right - width, footer.center().y - BUTTON_HEIGHT * 0.5, width, BUTTON_HEIGHT);
         let disabled = problem.is_some() || no_regions;
-        let hovered = button.contains(mouse);
-        if hovered && is_mouse_button_pressed(MouseButton::Left) && !disabled {
-            if self.active {
-                self.deactivate();
-            } else {
-                *self = Self { active: true, ..Self::new(self.kind) };
-            }
-        }
-        if self.active {
-            style::rounded_rect(button, 10.0, style::ACCENT_SOFT);
-        } else if hovered && !disabled {
-            style::rounded_rect(button, 10.0, style::HOVER);
-        }
-        let color = match (disabled, self.active) {
-            (true, _) => Color::new(1.0, 1.0, 1.0, 0.30),
-            (false, true) => style::ACCENT_HOVER,
-            (false, false) => style::TEXT,
-        };
-        let icon = vec2(button.x + 12.0 + 7.0, button.center().y);
-        match self.kind {
+        let row = toolbar::draw_row(style, rect, label, Buildable::Way(kind).cost(), self.active, disabled, |icon, color| match kind {
             // A little path: two dots joined by a line that bends.
             Kind::Path => {
                 draw_line(icon.x - 6.0, icon.y + 4.0, icon.x, icon.y - 1.0, 1.8, color);
@@ -386,21 +364,25 @@ impl PathTool {
                 draw_line(icon.x, icon.y + 4.0, icon.x, icon.y + 1.0, 1.6, color);
                 draw_line(icon.x, icon.y - 2.0, icon.x, icon.y - 5.0, 1.6, color);
             }
-        }
-        style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
-
-        // Why it can't be used, in full over it. (The short reason goes beside the leftmost of the footer's tool
-        // buttons: see `BridgeTool::show_button`.)
-        let reason = if no_regions { Some(("This map has no regions".to_owned(), format!("{label} join the regions of the map, and this map has none."))) } else { problem.map(|p| (p.short(), p.long())) };
-        if hovered {
-            // What it is and costs and does, and first of all why it can't be used, if it can't.
-            let mut lines = Buildable::Way(self.kind).button_lines();
-            if let Some((_, long)) = reason {
-                lines.insert(0, (long, style::ERROR));
+        });
+        if row.pressed {
+            if self.active {
+                self.deactivate();
+            } else {
+                *self = Self { active: true, ..Self::new(kind) };
             }
-            costs::draw_tip(style, button, &lines);
         }
-        button
+
+        if row.hovered {
+            // What it is and costs and does, and first of all why it can't be used, if it can't.
+            let mut lines = Buildable::Way(kind).button_lines();
+            if no_regions {
+                lines.insert(0, (format!("{label} join the regions of the map, and this map has none."), style::ERROR));
+            } else if let Some(problem) = problem {
+                lines.insert(0, (problem.long(), style::ERROR));
+            }
+            costs::draw_tip(style, menu, &lines);
+        }
     }
 
     /// Draws the prompt over the footer while the tool is on: what to do next, what a segment costs, and what

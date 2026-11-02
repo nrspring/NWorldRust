@@ -100,15 +100,6 @@ pub enum BridgeProblem {
 }
 
 impl BridgeProblem {
-    /// A few words.
-    pub fn short(&self) -> String {
-        match self {
-            Self::NoCountry => "No country to pay for bridges".to_owned(),
-            Self::NotEnoughCoin { money, .. } => format!("Bridges need {} coins (has {money})", crate::format::money(BRIDGE_COST)),
-            Self::NotEnoughMaterial { resource, needed, has, .. } => format!("Bridges need {needed} {resource} (has {has})"),
-        }
-    }
-
     /// The whole reason, as a sentence.
     pub fn long(&self) -> String {
         match self {
@@ -345,7 +336,6 @@ mod tests {
         let before = day.clone();
         let problem = day.bridge_problem().unwrap();
         assert_eq!(problem, BridgeProblem::NotEnoughMaterial { country: "Aldoria".to_owned(), resource: "wood", needed: 100, has: 99 });
-        assert_eq!(problem.short(), "Bridges need 100 wood (has 99)");
         assert_eq!(problem.long(), "Not enough wood: a bridge needs 100 wood as well as its coins, and Aldoria has 99.");
         assert!(day.build_bridge(A, B).unwrap_err().contains("Not enough wood"));
         assert_eq!(day, before, "nothing is taken when it can't be done");
@@ -445,9 +435,8 @@ mod tests {
     #[test]
     fn the_reasons_read_well() {
         let problem = BridgeProblem::NotEnoughCoin { country: "Aldoria".to_owned(), money: 250 };
-        assert_eq!(problem.short(), "Bridges need 1,000 coins (has 250)");
         assert!(problem.long().contains("1,000") && problem.long().contains("250"));
-        assert!(!BridgeProblem::NoCountry.short().is_empty());
+        assert!(!BridgeProblem::NoCountry.long().is_empty());
         let _ = CountryId::new();
         assert!(BridgeProblem::NotEnoughMaterial { country: "Aldoria".to_owned(), resource: "stone", needed: 500, has: 3 }.long().contains("500 stone"));
     }

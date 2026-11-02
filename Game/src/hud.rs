@@ -31,8 +31,8 @@ const HELP: &[(&str, &str)] = &[
 pub const FOOTER_HEIGHT: f32 = 48.0;
 /// Distance of what is in the footer from its left edge. The options button keeps the same from the right.
 pub const FOOTER_PADDING: f32 = 12.0;
-/// Room kept at the right end of the footer for its buttons, before any reason that one of them is off.
-pub const BUTTONS_ROOM: f32 = 1500.0;
+/// Room kept at the right end of the footer for its buttons: Travel, Buildings, Destroy, Overlays and options.
+pub const BUTTONS_ROOM: f32 = 560.0;
 
 /// The size of the text in the header and the footer.
 const BAR_TEXT_SIZE: u16 = 13;
@@ -163,9 +163,8 @@ fn draw_compass(rect: Rect, yaw: f32, hovered: bool) {
 
 /// The footer along the bottom of the window: the frame rate at the left and, when `keys` is set and
 /// there is room for them (the right `buttons_room` pixels are kept for the buttons), the keys in the middle.
-/// The bridge, road, path, overlays and options buttons go at the right, which `BridgeTool`, `PathTool` (for paths
-/// and roads), `OverlaysUi` and
-/// `OptionsUi` draw.
+/// The Travel, Buildings, destroy, overlays and options buttons go at the right, which `Toolbar` (for the first two),
+/// `DestroyTool`, `OverlaysUi` and `OptionsUi` draw.
 /// Returns where the footer is.
 pub fn footer(style: &Style, keys: bool, buttons_room: f32) -> Rect {
     let bar = Rect::new(0.0, screen_height() - FOOTER_HEIGHT, screen_width(), FOOTER_HEIGHT);

@@ -46,7 +46,7 @@ pub enum GathererKind {
 }
 
 impl GathererKind {
-    /// Every kind, in the order the footer has them: each of wood and then each of stone, the lesser first, and then
+    /// Every kind, in the order the Buildings menu has them: each of wood and then each of stone, the lesser first, and then
     /// iron, copper, sulphur and oil.
     pub const ALL: [GathererKind; 8] = [
         GathererKind::Woodcutter,
@@ -113,18 +113,6 @@ impl GathererKind {
             Self::CopperMine => "Copper mine",
             Self::SulphurPit => "Sulphur pit",
             Self::OilWell => "Oil well",
-        }
-    }
-
-    /// What its button in the footer says, which is short for the ones that are new, to leave room: their whole name is
-    /// said when the mouse is on them.
-    pub fn button_label(self) -> &'static str {
-        match self {
-            Self::IronMine => "Iron",
-            Self::CopperMine => "Copper",
-            Self::SulphurPit => "Sulphur",
-            Self::OilWell => "Oil",
-            _ => self.label(),
         }
     }
 
@@ -782,7 +770,6 @@ mod tests {
             // All cost the same for now: 10,000 coins and a thousand each of wood and stone, and give 1,000 a day.
             assert!(kind.greater() && kind.cost() == 10_000 && kind.daily_yield() == 1_000);
             assert_eq!(kind.materials(), &[(Resource::Forest, 1_000), (Resource::Stone, 1_000)]);
-            assert!(kind.button_label().len() < kind.label().len() + 1);
         }
         assert_eq!((GathererKind::IronMine.a_noun(), GathererKind::OilWell.a_noun(), GathererKind::CopperMine.a_noun()), ("an iron mine".to_owned(), "an oil well".to_owned(), "a copper mine".to_owned()));
         assert_eq!(GathererKind::IronMine.a_noun_capital(), "An iron mine");
