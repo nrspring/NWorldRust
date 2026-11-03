@@ -78,6 +78,8 @@ pub enum Walls {
     Timber,
     /// Plain stone with tall narrow windows.
     Church,
+    /// The small front of a dormer in a roof, with one window.
+    Dormer,
 }
 
 impl Walls {
@@ -88,6 +90,7 @@ impl Walls {
             Walls::Masonry => 1.0,
             Walls::Timber => 2.0,
             Walls::Church => 3.0,
+            Walls::Dormer => 5.0,
         }
     }
 }
@@ -110,6 +113,8 @@ pub struct Building {
     pub roof_color: [u8; 3],
     /// How many chimneys stand on the roof.
     pub chimneys: u8,
+    /// How many dormer windows each slope of a gabled roof has.
+    pub dormers: u8,
 }
 
 impl Building {
@@ -136,6 +141,12 @@ fn rotate(v: Vec2, angle: f32) -> Vec2 {
     vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos)
 }
 
+/// `color` a little lighter or darker, as `r` from 0 to 1 says.
+fn jitter(color: [u8; 3], r: f32) -> [u8; 3] {
+    let factor = 0.9 + 0.2 * r;
+    color.map(|c| (c as f32 * factor).min(255.0) as u8)
+}
+
 /// One of `palette`, chosen by `r` from 0 to 1.
 fn pick<T: Copy>(palette: &[T], r: f32) -> T {
     palette[((r * palette.len() as f32) as usize).min(palette.len() - 1)]
@@ -151,7 +162,8 @@ const STONE: [[u8; 3]; 3] = [[206, 198, 180], [190, 184, 170], [214, 204, 182]];
 const BRICK: [[u8; 3]; 3] = [[168, 96, 76], [154, 88, 70], [178, 110, 84]];
 const THATCH: [[u8; 3]; 2] = [[170, 138, 76], [156, 126, 70]];
 const TILE: [[u8; 3]; 3] = [[178, 88, 60], [160, 76, 54], [190, 104, 70]];
-const SLATE: [[u8; 3]; 2] = [[92, 98, 110], [82, 88, 100]];
+const SLATE: [[u8; 3]; 4] = [[92, 98, 110], [82, 88, 100], [108, 112, 120], [74, 82, 96]];
+const COPPER: [[u8; 3]; 2] = [[104, 150, 130], [92, 138, 120]];
 
 /// The buildings of `city` on the ground of `world`, middle first. A church is two buildings, its
 /// nave and its tower.
@@ -230,7 +242,7 @@ fn touches(church: &Building, at: Vec2) -> bool {
 /// A house, townhouse or block at `at`, whichever fits how grand the place is, from 0 to 1.
 fn house(seed: u32, k: usize, at: Vec2, yaw: f32, low: f32, high: f32, grandeur: f32) -> Building {
     let r = |n: u32| hash(seed, k as i32, 1, n);
-    let (width, depth, walls_high, roof, walls, wall, roof_color, chimneys) = if grandeur < 0.14 {
+    let (width, depth, walls_high, roof, walls, wall, roof_color, chimneys, dormers) = if grandeur < 0.14 {
         // A timber-framed house with a steep roof, of thatch or tile.
         (
             2.7 + 1.2 * r(5),
@@ -241,6 +253,7 @@ fn house(seed: u32, k: usize, at: Vec2, yaw: f32, low: f32, high: f32, grandeur:
             pick(&PLASTER, r(9)),
             if r(10) < 0.5 { pick(&THATCH, r(13)) } else { pick(&TILE, r(13)) },
             (r(14) > 0.5) as u8,
+            0,
         )
     } else if grandeur < 0.38 {
         // A townhouse of two or three storeys, timber-framed or plastered stone, with a tiled roof.
@@ -254,6 +267,7 @@ fn house(seed: u32, k: usize, at: Vec2, yaw: f32, low: f32, high: f32, grandeur:
             if timber { pick(&PLASTER, r(9)) } else { pick(&STONE, r(9)) },
             if r(10) < 0.75 { pick(&TILE, r(13)) } else { pick(&SLATE, r(13)) },
             1 + (r(14) > 0.5) as u8,
+            (r(16) > 0.4) as u8,
         )
     } else {
         // A block of four to six storeys in brick or stone, with a hipped slate roof and chimneys.
@@ -264,11 +278,15 @@ fn house(seed: u32, k: usize, at: Vec2, yaw: f32, low: f32, high: f32, grandeur:
             Roof::Hip(1.75),
             Walls::Masonry,
             if r(9) < 0.5 { pick(&BRICK, r(13)) } else { pick(&STONE, r(13)) },
-            pick(&SLATE, r(10)),
-            2,
+            // Mostly slate, with some tile, and a few roofs of green copper.
+            if r(10) < 0.62 { pick(&SLATE, r(17)) } else if r(10) < 0.9 { pick(&TILE, r(17)) } else { pick(&COPPER, r(17)) },
+            1 + (r(14) > 0.45) as u8,
+            0,
         )
     };
-    Building { x: at.x, z: at.y, width, depth, yaw, base: low - FOUNDATION, top: high + walls_high, roof, walls, wall, roof_color, chimneys }
+    // No two buildings are quite the same shade.
+    let (wall, roof_color) = (jitter(wall, r(18)), jitter(roof_color, r(19)));
+    Building { x: at.x, z: at.y, width, depth, yaw, base: low - FOUNDATION, top: high + walls_high, roof, walls, wall, roof_color, chimneys, dormers }
 }
 
 /// A church at `at`: a nave with a gabled roof, and a tower at one end of it with a spire. Both are
@@ -292,6 +310,7 @@ fn church(at: Vec2, yaw: f32, low: f32, high: f32, size: f32) -> [Building; 2] {
         wall: STONE[0],
         roof_color: SLATE[1],
         chimneys: 0,
+        dormers: 0,
     };
     let spire = Building {
         x: tower_at.x,
@@ -306,6 +325,7 @@ fn church(at: Vec2, yaw: f32, low: f32, high: f32, size: f32) -> [Building; 2] {
         wall: STONE[1],
         roof_color: SLATE[0],
         chimneys: 0,
+        dormers: 0,
     };
     [nave, spire]
 }

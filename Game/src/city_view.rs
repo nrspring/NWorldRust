@@ -60,33 +60,142 @@ uniform vec3 ambient;
 // A colour to mix over everything, and how much of it, for showing where a city would go.
 uniform vec4 tint;
 
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+               mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// 1 where p is inside the rectangle from lo to hi, and 0 where it is not.
+float box(vec2 p, vec2 lo, vec2 hi) {
+    vec2 s = step(lo, p) * step(p, hi);
+    return s.x * s.y;
+}
+
+// Masonry courses on a wall: bricks if the wall is a reddish colour, and blocks of dressed stone if not.
+// `at` is meters along and up the wall, and the result is what to multiply the wall colour by.
+vec3 courses(vec2 at, bool brick, vec3 base, float fine) {
+    float course_h = brick ? 0.24 : 0.52;
+    float unit_w = brick ? 0.5 : 0.95;
+    float cy = at.y / course_h;
+    float row = floor(cy);
+    float x = at.x / unit_w + 0.5 * mod(row, 2.0);
+    float tone = 0.9 + 0.2 * hash21(vec2(floor(x), row));
+    float gap = max(step(fract(cy), brick ? 0.14 : 0.07), step(fract(x), brick ? 0.05 : 0.025));
+    vec3 mortar = brick ? vec3(0.66, 0.62, 0.55) : base * 0.74;
+    vec3 col = base * mix(1.0, tone, fine);
+    return mix(col, mortar, gap * fine * (brick ? 0.85 : 0.7));
+}
+
 void main() {
     vec3 n = normalize(v_normal.xyz);
-    float lit = max(dot(n, normalize(sun_dir)), 0.0);
-    vec3 light = ambient + sun_color * lit;
-    vec3 col = v_color.rgb * light;
-
-    // What is drawn on a wall, by its style in the fourth part of the normal: 1 for rows of windows,
-    // 2 for a timber frame with small windows, 3 for stone with tall narrow windows, 0 for nothing.
-    // The detail fades out with distance, where it would only shimmer.
-    float dist = length(v_world - cam_pos);
     float style = v_normal.w;
+
+    // Light from the sun, wrapped a little past the line where it stops, and from the sky above and the
+    // ground around, which is a warmer, darker light that comes up from below.
+    float lit = clamp((dot(n, normalize(sun_dir)) + 0.15) / 1.15, 0.0, 1.0);
+    vec3 sky = ambient * 1.2;
+    vec3 ground_light = vec3(0.27, 0.243, 0.198);
+    vec3 light = mix(ground_light, sky, n.y * 0.5 + 0.5) + sun_color * lit;
+
+    float dist = length(v_world - cam_pos);
+    // Windows and the like fade out with distance, where they would only shimmer, and the finer detail of
+    // bricks and tiles sooner.
     float near = 1.0 - smoothstep(170.0, 440.0, dist);
+    float fine = 1.0 - smoothstep(55.0, 200.0, dist);
+
+    // Patchy ageing, in large and small patches.
+    float wear = vnoise(v_world.xz * 0.45 + v_world.y * 0.9);
+    float wear_fine = vnoise(v_world.xz * 2.3 + v_world.y * 3.1);
+    vec3 base = v_color.rgb * (0.9 + 0.2 * wear + 0.07 * (wear_fine - 0.5) * fine);
+    vec3 col = base * light;
+
     if (style > 0.5 && style < 1.5) {
-        vec2 cell = fract(v_uv / vec2(1.55, 1.95));
-        float pane = step(0.3, cell.x) * step(cell.x, 0.7) * step(0.3, cell.y) * step(cell.y, 0.78) * step(0.95, v_uv.y);
-        col = mix(col, col * vec3(0.38, 0.43, 0.52), pane * near * 0.85);
+        // Brick, or dressed stone, in storeys of 1.95 m with a window in each bay.
+        bool brick = v_color.r > v_color.g * 1.3;
+        float grime = mix(0.8, 1.0, smoothstep(0.6, 2.6, v_uv.y));
+        col = courses(v_uv, brick, base, fine) * light * grime;
+
+        vec2 cell = fract(vec2(v_uv.x / 1.55, (v_uv.y - 0.15) / 1.95));
+        float win = box(cell, vec2(0.3, 0.26), vec2(0.7, 0.7));
+        float frame = box(cell, vec2(0.26, 0.22), vec2(0.74, 0.74)) - win;
+        float sill = box(cell, vec2(0.24, 0.2), vec2(0.76, 0.25));
+        vec2 local = (cell - vec2(0.3, 0.26)) / vec2(0.4, 0.44);
+        float bars = max(step(abs(local.x - 0.5), 0.035), step(abs(local.y - 0.58), 0.03));
+        // Glass shows the sky, brighter towards the top, and is shaded under the head of the window.
+        vec3 glass = mix(vec3(0.1, 0.15, 0.22), vec3(0.5, 0.64, 0.8), smoothstep(0.1, 1.0, local.y) * 0.75);
+        glass *= (0.82 + 0.3 * hash21(floor(vec2(v_uv.x / 1.55, (v_uv.y - 0.15) / 1.95)))) * (1.0 - 0.35 * smoothstep(0.82, 1.0, local.y));
+        vec3 trim = vec3(0.87, 0.84, 0.77) * light;
+        col = mix(col, trim, max(frame, sill) * near);
+        col = mix(col, glass, win * near);
+        col = mix(col, trim * 0.92, win * bars * near);
     } else if (style > 1.5 && style < 2.5) {
+        // Plaster between a frame of dark timber, with a window in each bay and shutters beside it.
+        float grime = mix(0.82, 1.0, smoothstep(0.6, 2.4, v_uv.y));
+        col = base * grime * light * (0.97 + 0.06 * wear_fine);
         vec2 cell = fract(v_uv / vec2(1.3, 1.2));
-        // Posts and rails in dark timber, and a small window in each bay.
         float beam = max(max(step(cell.x, 0.08), step(0.92, cell.x)), step(cell.y, 0.1));
-        float pane = step(0.36, cell.x) * step(cell.x, 0.64) * step(0.34, cell.y) * step(cell.y, 0.74) * step(0.5, v_uv.y);
-        col = mix(col, vec3(0.27, 0.19, 0.13) * light, beam * near * 0.9);
-        col = mix(col, col * vec3(0.3, 0.34, 0.42), pane * near * (1.0 - beam));
-    } else if (style > 2.5) {
+        // Braces, leaning one way or the other from bay to bay.
+        vec2 bay = floor(v_uv / vec2(1.3, 1.2));
+        float lean = hash21(bay) > 0.5 ? cell.x : 1.0 - cell.x;
+        float brace = step(abs(cell.y - lean), 0.075) * step(0.3, abs(cell.x - 0.5)) ;
+        vec3 timber = vec3(0.27, 0.19, 0.13) * (0.85 + 0.3 * hash21(bay + 3.7)) * light;
+        float win = box(cell, vec2(0.38, 0.34), vec2(0.62, 0.74)) * step(0.5, v_uv.y);
+        float shutter = (box(cell, vec2(0.28, 0.34), vec2(0.37, 0.74)) + box(cell, vec2(0.63, 0.34), vec2(0.72, 0.74))) * step(0.5, v_uv.y);
+        vec2 local = (cell - vec2(0.38, 0.34)) / vec2(0.24, 0.4);
+        float bars = max(step(abs(local.x - 0.5), 0.05), step(abs(local.y - 0.5), 0.04));
+        vec3 glass = mix(vec3(0.12, 0.16, 0.22), vec3(0.45, 0.58, 0.72), smoothstep(0.0, 1.0, local.y) * 0.7);
+        vec3 shutter_col = mix(vec3(0.3, 0.42, 0.3), vec3(0.45, 0.3, 0.25), step(0.5, hash21(bay + 9.1))) * light;
+        col = mix(col, timber, max(beam, brace * 0.9) * near * 0.92);
+        col = mix(col, shutter_col, shutter * near * (1.0 - beam));
+        col = mix(col, glass, win * near * (1.0 - beam));
+        col = mix(col, timber, win * bars * near * 0.9);
+    } else if (style > 2.5 && style < 3.5) {
+        // Large blocks of stone, with tall narrow windows, pointed at the top and of coloured glass.
+        float grime = mix(0.78, 1.0, smoothstep(0.8, 3.0, v_uv.y));
+        col = courses(v_uv * vec2(0.8, 0.9), false, base, fine) * light * grime;
         vec2 cell = fract(v_uv / vec2(2.0, 3.3));
-        float pane = step(0.42, cell.x) * step(cell.x, 0.58) * step(0.3, cell.y) * step(cell.y, 0.82) * step(1.1, v_uv.y);
-        col = mix(col, col * vec3(0.3, 0.34, 0.42), pane * near);
+        float ax = abs(cell.x - 0.5);
+        float top = 0.62 + (0.08 - ax) * 3.4;
+        float win = step(ax, 0.08) * step(0.3, cell.y) * step(cell.y, top);
+        float frame = step(ax, 0.115) * step(0.28, cell.y) * step(cell.y, top + 0.04) - win;
+        vec2 id = floor(v_uv / vec2(2.0, 3.3));
+        float h = hash21(id);
+        vec3 stained = h < 0.33 ? vec3(0.2, 0.28, 0.6) : (h < 0.66 ? vec3(0.62, 0.2, 0.22) : vec3(0.78, 0.6, 0.2));
+        vec3 glass = mix(stained * 0.55, stained, smoothstep(0.3, top, cell.y)) * (0.8 + 0.4 * sin(cell.y * 50.0 + h * 9.0) * 0.25);
+        col = mix(col, vec3(0.85, 0.82, 0.74) * light, frame * near);
+        col = mix(col, glass, win * near);
+    } else if (style > 3.5 && style < 4.5) {
+        // Roof: courses of tiles or slates, each a different tone, with a dark line under each course.
+        float cy = v_uv.y / 0.3;
+        float row = floor(cy);
+        float fr = fract(cy);
+        float x = v_uv.x / 0.24 + 0.5 * mod(row, 2.0);
+        float tile = hash21(vec2(floor(x), row));
+        float line = smoothstep(0.0, 0.16, fr);
+        float joint = smoothstep(0.0, 0.1, fract(x));
+        float shade = mix(0.64, 1.0, line) * mix(0.86, 1.0, joint) * (0.88 + 0.16 * fr);
+        float roughness = mix(0.9, (0.84 + 0.3 * tile) * shade, fine);
+        col = base * roughness * light;
+    } else if (style > 4.5) {
+        // The front of a dormer: a small window, with a frame around it.
+        float win = box(v_uv, vec2(0.28, 0.3), vec2(0.72, 0.74));
+        float frame = box(v_uv, vec2(0.23, 0.25), vec2(0.77, 0.79)) - win;
+        float bars = step(abs(v_uv.x - 0.5), 0.03);
+        vec3 glass = mix(vec3(0.1, 0.15, 0.22), vec3(0.48, 0.62, 0.78), smoothstep(0.3, 0.74, v_uv.y) * 0.75);
+        vec3 trim = vec3(0.87, 0.84, 0.77) * light;
+        col = base * light * (0.97 + 0.06 * wear_fine);
+        col = mix(col, trim, frame * near);
+        col = mix(col, glass, win * near);
+        col = mix(col, trim * 0.9, win * bars * near);
     }
 
     col = mix(col, tint.rgb, tint.a);

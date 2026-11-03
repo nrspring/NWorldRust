@@ -76,7 +76,7 @@ mod tests {
     use crate::city_layout::{Roof, Walls};
 
     fn tower(x: f32, z: f32) -> Building {
-        Building { x, z, width: 4.0, depth: 4.0, yaw: 0.0, base: 9.0, top: 30.0, roof: Roof::Hip(5.0), walls: Walls::Masonry, wall: [0; 3], roof_color: [0; 3], chimneys: 0 }
+        Building { x, z, width: 4.0, depth: 4.0, yaw: 0.0, base: 9.0, top: 30.0, roof: Roof::Hip(5.0), walls: Walls::Masonry, wall: [0; 3], roof_color: [0; 3], chimneys: 0, dormers: 0 }
     }
 
     /// A city 40 m across with its ground at 9 m and its top at 35 m, centred on the origin.
