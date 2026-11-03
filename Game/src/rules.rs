@@ -39,6 +39,10 @@ pub const DAY_RULES: &[Rule] = &[
         apply: failures,
     },
     Rule { description: "Each woodcutter, sawmill, stonecutter or quarry that has a path, road or bridge route to a city of its country provides its wood or stone to the country each day: 100 from a woodcutter or stonecutter, and 1,000 from a sawmill or quarry.", apply: gather },
+    Rule {
+        description: "Each country pays 1 coin a day for each member of its militia, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
+        apply: militia_upkeep,
+    },
 ];
 
 /// Runs every rule, in order, on `day`, which has just started.
@@ -77,6 +81,12 @@ fn gather(day: &mut DaySave) {
             }
         }
     }
+}
+
+/// Each country pays to keep its militia (see [`DaySave::pay_militia`]). This comes last, after the income, so that a
+/// country pays out of what it earned today.
+fn militia_upkeep(day: &mut DaySave) {
+    day.pay_militia();
 }
 
 /// Each path, road and bridge that hasn't failed already has a chance of failing: `PATH_FAILURE`, 0.1% and 0.05%. What fails is
@@ -542,6 +552,49 @@ mod tests {
         let before = day.clone();
         gather(&mut day);
         assert_eq!(day, before);
+    }
+
+    #[test]
+    fn the_militia_are_paid_for_last_out_of_what_the_country_earned_that_day() {
+        let paid_at = DAY_RULES.iter().position(|r| r.description.contains("member of its militia")).unwrap();
+        assert_eq!(paid_at, DAY_RULES.len() - 1);
+
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let aldoria = day.countries[0].id;
+        day.add_money(aldoria, 3_000).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.cities[0].population = 2_000;
+        day.raise_militia(day.cities[0].id, 200, macroquad::math::vec2(40.0, 0.0)).unwrap();
+        assert_eq!(day.country(aldoria).unwrap().money, 1_000, "200 members at 10 coins each");
+
+        let mut tomorrow = day.following(day.date.next());
+        run(&mut tomorrow);
+        // Income on the 1,800 left in the city, less 200 for the militia.
+        assert_eq!(tomorrow.country(aldoria).unwrap().money, 1_000 + 1_800 - 200);
+        assert_eq!(tomorrow.militias[0].members, 200, "all of them paid for");
+        assert!(tomorrow.newsreel.iter().any(|n| matches!(n.event, Event::MilitiaPaid { amount: 200 })));
+    }
+
+    #[test]
+    fn a_country_that_earns_nothing_and_has_nothing_loses_its_militia_on_the_day_switch() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let aldoria = day.countries[0].id;
+        day.add_money(aldoria, 500).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.cities[0].population = 500;
+        day.raise_militia(day.cities[0].id, 50, macroquad::math::vec2(40.0, 0.0)).unwrap();
+        // The city goes to another country, so Aldoria earns nothing and has no money left for the militia.
+        day.found_country("Brevon").unwrap();
+        day.set_city_country(day.cities[0].id, day.countries[1].id).unwrap();
+        day.add_money(aldoria, -day.country(aldoria).unwrap().money).unwrap();
+
+        let mut tomorrow = day.following(day.date.next());
+        run(&mut tomorrow);
+        assert!(tomorrow.militias.is_empty());
+        assert_eq!(tomorrow.country(aldoria).unwrap().money, 0);
+        assert!(tomorrow.cities[0].population < 500, "the 50 who deserted are not in it: {}", tomorrow.cities[0].population);
     }
 
     #[test]

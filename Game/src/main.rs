@@ -33,6 +33,9 @@ mod format;
 mod ground;
 mod hud;
 mod ids;
+mod militia;
+mod militia_popup;
+mod militia_view;
 mod newsreel;
 mod resource_hover;
 mod transfer;
@@ -85,6 +88,7 @@ use claim_prompt::ClaimPrompt;
 use destroy_tool::DestroyTool;
 use gatherer::GathererKind;
 use gatherer_popup::GathererPopup;
+use militia_popup::MilitiaPopup;
 use gatherer_tool::GathererTool;
 use bridge_view::BridgeRenderer;
 use path::Kind;
@@ -277,6 +281,10 @@ async fn main() {
     let mut city_popup = CityPopup::default();
     // The popup for the gatherer that was clicked.
     let mut gatherer_popup = GathererPopup::default();
+    // The popup for the militia that was clicked.
+    let mut militia_popup = MilitiaPopup::default();
+    // The popup for a new name for a militia: its id, and the popup.
+    let mut naming_militia: Option<(ids::MilitiaId, Popup)> = None;
     // The owned regions the map is showing, as (region, color), to know when they change.
     let mut shown_owners: Vec<(u16, Rgb)> = Vec::new();
     let mut autosave = Autosave::new(&day, get_time());
@@ -300,6 +308,8 @@ async fn main() {
                 city_popup.escape();
             } else if gatherer_popup.is_open() {
                 gatherer_popup.escape();
+            } else if militia_popup.is_open() {
+                militia_popup.escape();
             } else if country_menu.is_open() {
                 country_menu.escape();
             } else if options_ui.is_open() || overlays_ui.is_open() || toolbar.is_open() {
@@ -316,6 +326,8 @@ async fn main() {
                 naming_water = None;
             } else if naming_place.is_some() {
                 naming_place = None;
+            } else if naming_militia.is_some() {
+                naming_militia = None;
             } else if noting.is_some() {
                 noting = None;
             } else if path_tool.is_active() {
@@ -346,7 +358,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || militia_popup.is_open() || advance_popup.is_open();
         if modal {
             toolbar.close();
         }
@@ -407,6 +419,7 @@ async fn main() {
         roads.draw(&world, &region_map, &day);
         bridges.draw(&world, &day);
         gatherer_view::draw(&world, &day);
+        militia_view::draw(&world, &day);
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
@@ -416,15 +429,18 @@ async fn main() {
         // The gatherer under the mouse, if there is one and no city is in front of it, which the tooltip tells about.
         let gatherer_hover = if modal || over_interface || tool_on || hovered.is_some() { None } else { gatherer_view::under_ray(mouse_ray(&eye, mouse), &world, &day.gatherers) };
 
+        // The militia under the mouse, if there is one and no city or gatherer is in front of it, which the tooltip tells about.
+        let militia_hover = if modal || over_interface || tool_on || hovered.is_some() || gatherer_hover.is_some() { None } else { militia_view::under_ray(mouse_ray(&eye, mouse), &world, &day.militias) };
+
         // The label of a place under the mouse while the named places are showing.
-        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && !placing && !tool_on {
+        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             region_labels::place_under(&style, &day, &world, &eye, mouse)
         } else {
             None
         };
         // The river or lake under the mouse while the named places are showing, with a little give so that a thin river can be
         // hit when the camera is far away.
-        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && !placing && !tool_on {
+        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 1.5, 40.0);
             pick_terrain(&eye, &world, mouse).and_then(|at| water_bodies.near(at.x, at.y, reach))
         } else {
@@ -525,6 +541,10 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 gatherer_popup.open(id);
+            } else if let Some(id) = militia_hover {
+                options_ui.close();
+                overlays_ui.close();
+                militia_popup.open(id);
             } else if let Some(id) = place_hover {
                 // With the named places showing, a click on the label of a place is for changing it.
                 options_ui.close();
@@ -559,13 +579,13 @@ async fn main() {
 
         // The region under the mouse, for a note about it while the region names are showing, unless it is a river or
         // lake that is under the mouse and the named places are showing.
-        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && !placing && !tool_on {
+        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y))
         } else {
             None
         };
         // The resource under the mouse, for a note about what it is, when nothing else has the mouse.
-        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && !placing && !tool_on {
+        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 2.5, 40.0);
             pick_terrain(&eye, &world, mouse).and_then(|at| resource_hover::deposit_near(&world, at.x, at.y, reach))
         } else {
@@ -652,6 +672,8 @@ async fn main() {
                 hud::city_tooltip(&style, &day, city);
             } else if let Some(gatherer) = gatherer_hover.and_then(|id| day.gatherer(id)) {
                 gatherer_tool::tooltip(&style, &day, gatherer, day.gatherer_operating(gatherer.id));
+            } else if let Some(militia) = militia_hover.and_then(|id| day.militia(id)) {
+                militia_view::tooltip(&style, &day, militia);
             } else if let Some(id) = water_hover {
                 if water_bodies.body(id).is_some_and(|b| b.lake) {
                     hud::river_tooltip(&style, day.lake_name(id.0), "lake");
@@ -802,7 +824,7 @@ async fn main() {
             }
         }
 
-        if let Some(change) = city_popup.show(&style, &day) {
+        if let Some(change) = city_popup.show(&style, &day, &world) {
             // Only keep the change if it is saved too.
             let mut updated = day.clone();
             match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
@@ -818,6 +840,38 @@ async fn main() {
                 Ok(()) => day = updated,
                 Err(message) => gatherer_popup.fail(message),
             }
+        }
+
+        if let Some(change) = militia_popup.show(&style, &day) {
+            // Only keep the change if it is saved too.
+            let mut updated = day.clone();
+            match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
+                Ok(()) => day = updated,
+                Err(message) => militia_popup.fail(message),
+            }
+        }
+
+        if let Some(id) = militia_popup.take_rename() {
+            if let Some(militia) = day.militia(id) {
+                naming_militia = Some((id, Popup::militia(militia.title())));
+            }
+        }
+        let mut named = false;
+        if let Some((id, popup)) = naming_militia.as_mut() {
+            if let Some(typed) = popup.show(&style) {
+                // Only keep the name if it is saved too.
+                let mut updated = day.clone();
+                match updated.rename_militia(*id, &typed[0]).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        named = true;
+                    }
+                    Err(message) => popup.fail(message),
+                }
+            }
+        }
+        if named {
+            naming_militia = None;
         }
 
         let mut founded = false;

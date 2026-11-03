@@ -233,6 +233,31 @@ pub enum Event {
         #[serde(default)]
         region: Option<u16>,
     },
+    /// The subject is a militia of `members` people, which the country `country` raised in the city `city` for `cost`. The
+    /// members came out of the city's population.
+    MilitiaRaised {
+        #[serde(default)]
+        name: String,
+        country: CountryId,
+        city: CityId,
+        members: u32,
+        cost: Vec<Cost>,
+    },
+    /// The subject is a country, and it paid this many coins to keep its militia for a day.
+    MilitiaPaid { amount: u64 },
+    /// The subject is a militia called `name` of the country `country`, and `deserters` of its members deserted because the country
+    /// couldn't pay them, leaving `remaining`. A militia with none left is gone.
+    MilitiaDeserted {
+        #[serde(default)]
+        name: String,
+        country: CountryId,
+        deserters: u32,
+        remaining: u32,
+    },
+    /// The subject is a militia of `members` people, and it went from the country `from` to the country `to`.
+    MilitiaTransferred { from: CountryId, to: CountryId, members: u32 },
+    /// The subject is a militia, which was called `from` and is called `to`.
+    MilitiaRenamed { from: String, to: String },
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -442,6 +467,26 @@ impl News {
                 Some((country, region)) => format!("{}'s {} in {} starts operating", day.country_name(country), kind.noun(), day.region_label(region)),
                 None => format!("{} starts operating", kind.a_noun_capital()),
             },
+            Event::MilitiaRaised { ref name, country, city, members, ref cost } => {
+                let place = day.city(city).map_or_else(|| "a city".to_owned(), |city| city.name.clone());
+                let name = if name.is_empty() { "a militia" } else { name };
+                format!("{} raises {name} of {} in {place}{}", day.country_name(country), thousands(members), for_cost(cost))
+            }
+            Event::MilitiaPaid { amount } => format!("{} pays {} to keep its militia", day.country_name(CountryId::from(self.subject)), amount_text(Asset::Coins, amount)),
+            Event::MilitiaDeserted { ref name, country, deserters, remaining } => {
+                let deserters = thousands(deserters);
+                let name = if name.is_empty() { format!("{}'s militia", day.country_name(country)) } else { name.clone() };
+                if remaining == 0 {
+                    format!("All {deserters} members of {name} desert for want of pay, and it is gone")
+                } else {
+                    format!("{deserters} members of {name} desert for want of pay, leaving {}", thousands(remaining))
+                }
+            }
+            Event::MilitiaTransferred { from, to, members } => {
+                let name = day.militia(crate::ids::MilitiaId::from(self.subject)).map_or_else(|| format!("A militia of {}", thousands(members)), |m| m.title().to_owned());
+                format!("{name} passes from {} to {}", day.country_name(from), day.country_name(to))
+            }
+            Event::MilitiaRenamed { ref from, ref to } => format!("{from} is renamed {to}"),
             Event::Note { ref text } => text.clone(),
         }
     }
@@ -824,5 +869,27 @@ mod tests {
         let json = serde_json::to_string(&city).unwrap();
         assert!(json.contains(r#""type":"city_founded""#) && json.contains(r#""population":100"#), "{json}");
         assert_eq!(serde_json::from_str::<News>(&json).unwrap(), city);
+    }
+
+    #[test]
+    fn militia_news_reads_naturally() {
+        let mut day = day();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon, port) = (day.countries[0].id, day.countries[1].id, day.cities[0].id);
+        let id = crate::ids::MilitiaId::new();
+        let headline = |event| News::about(id, event).headline(&day);
+        let raised = |name: &str, city, members| Event::MilitiaRaised { name: name.to_owned(), country: aldoria, city, members, cost: vec![Cost::coins(10_000)] };
+        assert_eq!(headline(raised("Port Aldor Militia 1-1-1", port, 1_000)), "Aldoria raises Port Aldor Militia 1-1-1 of 1,000 in Port Aldor for 10,000 coins");
+        assert_eq!(News::about(aldoria, Event::MilitiaPaid { amount: 450 }).headline(&day), "Aldoria pays 450 coins to keep its militia");
+        assert_eq!(News::about(aldoria, Event::MilitiaPaid { amount: 1 }).headline(&day), "Aldoria pays 1 coin to keep its militia");
+        let deserted = |name: &str, deserters, remaining| Event::MilitiaDeserted { name: name.to_owned(), country: aldoria, deserters, remaining };
+        assert_eq!(headline(deserted("Harbour Guard", 40, 60)), "40 members of Harbour Guard desert for want of pay, leaving 60");
+        assert_eq!(headline(deserted("Harbour Guard", 100, 0)), "All 100 members of Harbour Guard desert for want of pay, and it is gone");
+        assert_eq!(headline(deserted("", 40, 60)), "40 members of Aldoria's militia desert for want of pay, leaving 60", "news from before militia had names");
+        // A transfer names the militia if it is still there, and otherwise says how big it was.
+        assert_eq!(headline(Event::MilitiaTransferred { from: aldoria, to: brevon, members: 30 }), "A militia of 30 passes from Aldoria to Brevon");
+        assert_eq!(headline(Event::MilitiaRenamed { from: "Port Aldor Militia 1-1-1".to_owned(), to: "Harbour Guard".to_owned() }), "Port Aldor Militia 1-1-1 is renamed Harbour Guard");
+        // A city that is gone is "a city", and the news survives the militia.
+        assert_eq!(headline(raised("", CityId::new(), 5)), "Aldoria raises a militia of 5 in a city for 10,000 coins");
     }
 }

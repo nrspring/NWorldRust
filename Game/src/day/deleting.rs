@@ -19,6 +19,7 @@ impl DaySave {
         for kind in GathererKind::ALL {
             counts.push((self.gatherers.iter().filter(|g| g.country == id && g.kind == kind).count(), kind.noun(), kind.plural().to_owned()));
         }
+        counts.push((self.militias.iter().filter(|m| m.country == id).count(), "militia", "militia".to_owned()));
         counts.push((regions, "region", "regions".to_owned()));
         for (n, one, many) in counts {
             if n > 0 {
@@ -135,5 +136,25 @@ mod tests {
         assert!(day.countries.is_empty() && day.player.is_none() && day.player_country().is_none());
         day.found_country("Brevon").unwrap();
         assert_eq!(day.player_country().unwrap().name, "Brevon");
+    }
+
+    #[test]
+    fn a_country_with_a_militia_cannot_be_deleted() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.add_money(aldoria, 1_000).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.cities[0].population = 500;
+        day.raise_militia(day.cities[0].id, 20, macroquad::math::vec2(30.0, 0.0)).unwrap();
+        day.set_city_country(day.cities[0].id, brevon).unwrap();
+        // Brevon has the city; Aldoria has only the militia.
+        let problem = day.delete_problem(aldoria).unwrap();
+        assert!(problem.contains("1 militia"), "{problem}");
+        assert!(day.delete_country(aldoria).is_err());
+        let id = day.militias[0].id;
+        day.set_militia_country(id, brevon).unwrap();
+        day.delete_country(aldoria).unwrap();
     }
 }

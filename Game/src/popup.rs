@@ -9,7 +9,7 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
 use crate::transfer::Asset;
-use crate::{city, country, newsreel, person, place, region_name, text, title_type};
+use crate::{city, country, militia, newsreel, person, place, region_name, text, title_type};
 
 const CARD_WIDTH: f32 = 520.0;
 const PADDING: f32 = 32.0;
@@ -161,6 +161,10 @@ fn check_transfer(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![asset.label(), to, amount.to_string()])
 }
 
+fn check_militia(typed: &[String]) -> Result<Vec<String>, String> {
+    Ok(vec![militia::clean_name(&typed[0])?])
+}
+
 fn check_city(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![city::clean_name(&typed[0])?])
 }
@@ -253,6 +257,20 @@ impl Popup {
             check_place,
         );
         popup.fields[0].value = current.unwrap_or("").to_owned();
+        popup
+    }
+
+    /// Asks for a new name for a militia that is called `current`.
+    pub fn militia(current: &str) -> Self {
+        let mut popup = Self::new(
+            "Rename this militia",
+            "Choose a name for it.".to_owned(),
+            Icon::Person,
+            "Save name",
+            vec![Field::new("MILITIA NAME", "e.g. Harbour Guard", militia::MAX_NAME_CHARS)],
+            check_militia,
+        );
+        popup.fields[0].value = current.to_owned();
         popup
     }
 

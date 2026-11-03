@@ -56,7 +56,7 @@ Going ahead saves the day that ended exactly as it was, writes the next day's fi
 
 When a day ends, the next day starts as a copy of it and then a series of **rules** runs on the new day, one after another in the order they are listed, so a later rule sees what the earlier ones did. The rules are in `Game/src/rules.rs` (`DAY_RULES`); each is a function with a sentence saying what it does (only for people reading the rules: the game doesn't show it). The day that ended is saved before they run and isn't changed by them.
 
-The rules so far (the third, failures, is described under [Failures](#failures)):
+The rules so far (the third, failures, is described under [Failures](#failures), and the last, which pays for the militia, under [Militia](#militia)):
 
 1. **Income:** each country earns 1 coin for each person living in its cities, the total population of the cities it owns, which is added to its money.
 2. **Population:** each city's population changes by a random amount. A city that is **not under siege grows by 1 to 3 percent**, and one that **is under siege shrinks by 5 to 10 percent** (each city gets its own random percent, anywhere in the range, not just whole numbers). The result is rounded to a whole number of people and kept between **100 and 100,000**: a city at 100 stays there under siege, and one at 100,000 stops growing. Because this comes after income, a country earns on the people its cities had at the end of the day, not the new ones. A city's size on the map follows its population, so cities that grow or shrink enough are redrawn.
@@ -192,6 +192,20 @@ This is all in the game (`city*.rs`); the map and the generic map view know noth
 "cities": [ { "id": "47067f7a-fdac-4040-b652-873cebb0c53d", "country": "3f2b8c1e-5a47-4d0e-9b6a-7c1d2e8f4a90", "name": "Port Aldor",
               "x": -120.0, "z": 441.4, "population": 100 } ]
 ```
+
+## Militia
+
+The first unit. A **militia** is a group of a city's people under arms, and it belongs to a country. It is made in the city popup, under **Raise militia**: a slider chooses how many members, and the button says what it will cost.
+
+- **One group a day from each city.** A city that has raised a militia today can't raise another until the next day; the popup says so. Each city has its own turn.
+- **No more than a tenth of the city, and no more than 1,000.** A city of 2,000 can raise at most 200; one of 10,000 or more can raise 1,000, which is the most a militia can have and so the most a city can raise in a day. The members **come out of the city's population**. (A city's population is brought back up to 100 by the population rule on the next day, so a village of 100 that raises 10 has 100 again the day after.)
+- **10 coins a member to raise.** The country the city belongs to pays, and the slider stops at what it can afford. There is no militia at all if it can't pay for one member.
+- **1 coin a member a day to keep.** The last day rule, after income, has each country pay for its militia, the oldest first. **A member it can't pay for deserts**, and doesn't go back to a city: a country with no money (or in debt) loses all of its militia, and one that can pay for some keeps that many. A militia with no members left is gone.
+- **It has a name, which can be changed.** It starts out as its city and the day it was raised, like **"Port Aldor Militia 1-3-14"**. Click the *Name* row of its popup to give it another (up to 64 characters, tidied like any name); two can share a name.
+- **It belongs to a country, and that can change.** It starts with the country of the city it was raised in. Click it and click the country row of its popup to give it to another country, which pays to keep it from then on. A country that has a militia can't be deleted, as with its cities and gatherers.
+- **It camps outside the city.** For now it stays where it was raised, in a camp on dry ground a little beyond the edge of its city (each camp of a city on a different side); movement comes later. A camp is a tent and a pole flying a flag in its country's color, with a soldier standing in front of it for each hundred members (up to ten). Hovering over it shows a panel, and clicking it opens its popup (name, country, members, when it was raised, and its upkeep).
+
+Everything about it goes in the newsreel: **"Aldoria raises Port Aldor Militia 1-3-14 of 150 in Port Aldor for 1,500 coins"**, **"Aldoria pays 150 coins to keep its militia"**, **"40 members of Harbour Guard desert for want of pay, leaving 60"** (or **"All 100 members of Harbour Guard desert for want of pay, and it is gone"**), **"Harbour Guard passes from Aldoria to Brevon"** and **"Port Aldor Militia 1-3-14 is renamed Harbour Guard"**. A militia is saved in the day's file with the rest of the world (`militias`: its `id`, `name`, `country`, the `city` it was raised in, the `raised` date, its `members` and where its camp is, `x` and `z`) and carries forward. The rules are in `militia.rs` and `day/militias.rs`, and the drawing in `militia_view.rs` and `militia_popup.rs`.
 
 ## Calendar and saved game
 

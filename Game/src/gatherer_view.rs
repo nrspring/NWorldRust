@@ -127,7 +127,7 @@ pub fn under_ray(ray: (Vec3, Vec3), world: &World, gatherers: &[Gatherer]) -> Op
 }
 
 /// How far along the ray a box is first hit, if it is, with the box grown by `slop` all round.
-fn hit((origin, direction): (Vec3, Vec3), middle: Vec3, size: Vec3, slop: f32) -> Option<f32> {
+pub fn hit((origin, direction): (Vec3, Vec3), middle: Vec3, size: Vec3, slop: f32) -> Option<f32> {
     let half = size * 0.5 + Vec3::splat(slop);
     let (mut near, mut far) = (0.0f32, f32::MAX);
     for axis in 0..3 {

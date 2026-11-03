@@ -165,6 +165,12 @@ const TILE: [[u8; 3]; 3] = [[178, 88, 60], [160, 76, 54], [190, 104, 70]];
 const SLATE: [[u8; 3]; 4] = [[92, 98, 110], [82, 88, 100], [108, 112, 120], [74, 82, 96]];
 const COPPER: [[u8; 3]; 2] = [[104, 150, 130], [92, 138, 120]];
 
+/// About how far from its middle a city's buildings reach, in meters: the radius of a circle with room for as many
+/// building sites as it has, and a little more.
+pub fn radius(city: &City) -> f32 {
+    (SPACING * (building_count(city.size()) as f32 / std::f32::consts::PI).sqrt() + HOUSE_CLEARANCE).min(REACH)
+}
+
 /// The buildings of `city` on the ground of `world`, middle first. A church is two buildings, its
 /// nave and its tower.
 pub fn buildings(city: &City, world: &World) -> Vec<Building> {
