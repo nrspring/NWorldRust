@@ -3,8 +3,9 @@
 //! population, and each costs 10 coins to raise and 1 coin a day to keep. A member who isn't paid for deserts, and
 //! doesn't go back to a city.
 //!
-//! A militia belongs to a country, which can change. It stands in a camp on the ground just outside the city it was
-//! raised in, and for now it stays there.
+//! A militia belongs to a country, which can change. It starts as a parade drawn up on the ground just outside the city it
+//! was raised in, and can be moved from there (see [`crate::movement`]).
+
 
 use macroquad::math::{vec2, Vec2};
 use nworld_map::world::World;
@@ -14,6 +15,7 @@ use crate::calendar::Date;
 use crate::city::{self, City};
 use crate::city_layout;
 use crate::ids::{CityId, CountryId, MilitiaId};
+use crate::movement::DAILY_POINTS;
 use crate::text;
 
 /// The most members a militia can have.
@@ -29,10 +31,10 @@ pub const DAILY_UPKEEP: i64 = 1;
 
 /// How far outside the edge of a city its militia camp, in meters: the nearest, and the rings beyond that to try when
 /// the ground there is wet or high, or the places are taken.
-const CAMP_RINGS: [f32; 3] = [12.0, 28.0, 50.0];
+const CAMP_RINGS: [f32; 3] = [26.0, 52.0, 85.0];
 /// How many places round each ring are tried, and how close two camps may stand, in meters.
 const CAMP_TRIES: usize = 16;
-const CAMP_SPACING: f32 = 7.0;
+const CAMP_SPACING: f32 = 32.0;
 /// A turn of this many radians takes the next camp of a city well away from the last, however many there are.
 const GOLDEN_ANGLE: f32 = 2.399_963;
 
@@ -51,9 +53,17 @@ pub struct Militia {
     pub raised: Date,
     /// How many people are in it.
     pub members: u32,
-    /// Where its camp stands on the map, in meters.
+    /// Where it stands on the map, in meters: in a camp outside its city when it is raised, until it moves.
     pub x: f32,
     pub z: f32,
+    /// The movement points it has left today, which it gets all of back each day (see [`crate::movement`]). A militia
+    /// saved before it could move has all of them.
+    #[serde(default = "full_points")]
+    pub points: u32,
+}
+
+fn full_points() -> u32 {
+    DAILY_POINTS
 }
 
 /// A militia name as typed, tidied up. An error says what is wrong with it.

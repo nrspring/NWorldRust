@@ -8,6 +8,7 @@ use crate::day::DaySave;
 use crate::format::{money, thousands};
 use crate::ids::{CountryId, MilitiaId};
 use crate::militia;
+use crate::movement::DAILY_POINTS;
 
 const CARD_WIDTH: f32 = 380.0;
 const PADDING: f32 = 24.0;
@@ -102,7 +103,7 @@ impl MilitiaPopup {
 
         let country = day.country(unit.country);
         let error_height = if self.error.is_some() { 24.0 } else { 0.0 };
-        let height = ROWS_TOP + ROW_HEIGHT * 5.0 + 16.0 + error_height + BUTTON_HEIGHT + PADDING;
+        let height = ROWS_TOP + ROW_HEIGHT * 6.0 + 16.0 + error_height + BUTTON_HEIGHT + PADDING;
         let card = Rect::new((screen_w - CARD_WIDTH) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, CARD_WIDTH, height);
         style::card(card, 18.0, style::PANEL);
 
@@ -121,9 +122,9 @@ impl MilitiaPopup {
         // What there is to know, a row each. The country's can be clicked, to change it.
         let inner_x = card.x + PADDING;
         let inner_w = card.w - PADDING * 2.0;
-        let rows: Vec<Rect> = (0..5).map(|k| Rect::new(inner_x, card.y + ROWS_TOP + ROW_HEIGHT * k as f32, inner_w, ROW_HEIGHT)).collect();
-        let [name_row, country_row, members_row, raised_row, upkeep_row] = [rows[0], rows[1], rows[2], rows[3], rows[4]];
-        for y in [name_row.y, country_row.y, members_row.y, raised_row.y, upkeep_row.y, upkeep_row.bottom()] {
+        let rows: Vec<Rect> = (0..6).map(|k| Rect::new(inner_x, card.y + ROWS_TOP + ROW_HEIGHT * k as f32, inner_w, ROW_HEIGHT)).collect();
+        let [name_row, country_row, members_row, raised_row, upkeep_row, moves_row] = [rows[0], rows[1], rows[2], rows[3], rows[4], rows[5]];
+        for y in [name_row.y, country_row.y, members_row.y, raised_row.y, upkeep_row.y, moves_row.y, moves_row.bottom()] {
             draw_line(inner_x, y, inner_x + inner_w, y, 1.0, style::BORDER);
         }
 
@@ -175,9 +176,10 @@ impl MilitiaPopup {
         value_row("Members", &thousands(unit.members), members_row);
         value_row("Raised", &unit.raised.to_string(), raised_row);
         value_row("Upkeep", &format!("{} coins a day", money(militia::upkeep(unit.members))), upkeep_row);
+        value_row("Movement", &format!("{} of {} points left", unit.points, DAILY_POINTS), moves_row);
 
         if let Some(error) = &self.error {
-            style.text(error, inner_x, upkeep_row.bottom() + 24.0, 12, Weight::Regular, style::ERROR);
+            style.text(error, inner_x, moves_row.bottom() + 24.0, 12, Weight::Regular, style::ERROR);
         }
 
         // The button that closes it.

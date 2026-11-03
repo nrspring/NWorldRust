@@ -6,6 +6,7 @@ use super::DaySave;
 use crate::format;
 use crate::ids::{CityId, CountryId, MilitiaId};
 use crate::militia::{self, Militia};
+use crate::movement::DAILY_POINTS;
 use crate::newsreel::{Cost, Event, News};
 
 impl DaySave {
@@ -84,7 +85,7 @@ impl DaySave {
         }
         let id = MilitiaId::new();
         let name = militia::default_name(&name, self.date);
-        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y });
+        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS });
         self.newsreel.push(News::about(id, Event::MilitiaRaised { name, country, city, members, cost: vec![Cost::coins(cost)] }));
         Ok(())
     }
@@ -99,6 +100,31 @@ impl DaySave {
             self.newsreel.push(News::about(id, Event::MilitiaRenamed { from, to: name }));
         }
         Ok(())
+    }
+
+    /// Moves the militia with this id to `to`, which costs it `cost` of its movement points: that, and whether the ground
+    /// between is fit to cross, is for the caller to say (see [`crate::movement::reach`]). `region` is the number of the
+    /// map region it gets to, if the map has them. This is reported in the newsreel. An error says why it can't be done.
+    pub fn move_militia(&mut self, id: MilitiaId, to: Vec2, cost: u32, region: Option<u16>) -> Result<(), String> {
+        if !to.x.is_finite() || !to.y.is_finite() {
+            return Err("That is not a place on the map.".to_owned());
+        }
+        let militia = self.militias.iter_mut().find(|m| m.id == id).ok_or("There is no such militia.")?;
+        if cost > militia.points {
+            return Err(format!("{} has only {} movement points left, and that takes {cost}.", militia.title(), militia.points));
+        }
+        militia.points -= cost;
+        (militia.x, militia.z) = (to.x, to.y);
+        let name = militia.title().to_owned();
+        self.newsreel.push(News::about(id, Event::MilitiaMoved { name, points: cost, region }));
+        Ok(())
+    }
+
+    /// Gives every militia all its movement points again, for a new day.
+    pub fn rest_militia(&mut self) {
+        for militia in &mut self.militias {
+            militia.points = DAILY_POINTS;
+        }
     }
 
     /// Makes the militia with this id belong to `country`, which pays to keep it from now on. This is reported in the
@@ -148,6 +174,54 @@ mod tests {
     use crate::day::day;
 
     const CAMP: Vec2 = Vec2::new(40.0, -10.0);
+
+    #[test]
+    fn a_militia_starts_with_all_its_movement_points() {
+        let mut day = day_with_a_city();
+        day.raise_militia(day.cities[0].id, 20, CAMP).unwrap();
+        assert_eq!(day.militias[0].points, DAILY_POINTS);
+    }
+
+    #[test]
+    fn moving_costs_points_moves_the_militia_and_is_reported() {
+        let mut day = day_with_a_city();
+        day.raise_militia(day.cities[0].id, 20, CAMP).unwrap();
+        let id = day.militias[0].id;
+        day.move_militia(id, vec2(70.0, 5.0), 35, Some(0xC001)).unwrap();
+        let militia = day.militia(id).unwrap();
+        assert_eq!((militia.x, militia.z, militia.points), (70.0, 5.0, 165));
+        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::MilitiaMoved { name: "Port Aldor Militia 1-1-1".to_owned(), points: 35, region: Some(0xC001) })));
+        // It can't spend more than it has, and a refused move changes nothing.
+        let before = day.clone();
+        let err = day.move_militia(id, vec2(90.0, 5.0), 166, None).unwrap_err();
+        assert!(err.contains("only 165 movement points left") && err.contains("166"), "{err}");
+        assert!(day.move_militia(id, vec2(f32::NAN, 0.0), 1, None).is_err());
+        assert!(day.move_militia(MilitiaId::new(), vec2(1.0, 1.0), 1, None).is_err());
+        assert_eq!(day, before);
+        // All the points that are left can be spent.
+        day.move_militia(id, vec2(90.0, 5.0), 165, None).unwrap();
+        assert_eq!(day.militia(id).unwrap().points, 0);
+    }
+
+    #[test]
+    fn the_points_come_back_each_day_and_are_saved() {
+        let mut day = day_with_a_city();
+        day.raise_militia(day.cities[0].id, 20, CAMP).unwrap();
+        let id = day.militias[0].id;
+        day.move_militia(id, vec2(70.0, 5.0), 180, None).unwrap();
+        // They carry forward as they are, and the rule gives them back.
+        let mut tomorrow = day.following(Date { year: 1, month: 1, day: 2 });
+        assert_eq!(tomorrow.militia(id).unwrap().points, 20);
+        tomorrow.rest_militia();
+        assert_eq!(tomorrow.militia(id).unwrap().points, DAILY_POINTS);
+        assert_eq!(day.militia(id).unwrap().points, 20, "the day that ended is as it was");
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(json["militias"][0]["points"], 20);
+        // One saved before there were movement points has all of them.
+        let mut old = json;
+        old["militias"][0].as_object_mut().unwrap().remove("points");
+        assert_eq!(serde_json::from_value::<DaySave>(old).unwrap().militias[0].points, DAILY_POINTS);
+    }
 
     /// A day with a country that has 5,000 coins and a city of 2,000 people.
     fn day_with_a_city() -> DaySave {

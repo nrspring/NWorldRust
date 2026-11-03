@@ -35,6 +35,9 @@ mod hud;
 mod ids;
 mod militia;
 mod militia_popup;
+mod movement;
+mod movement_mesh;
+mod movement_view;
 mod militia_view;
 mod newsreel;
 mod resource_hover;
@@ -59,6 +62,7 @@ mod saves;
 #[cfg(test)]
 mod test_support;
 mod text;
+mod walk;
 mod title_type;
 mod toolbar;
 
@@ -89,6 +93,8 @@ use destroy_tool::DestroyTool;
 use gatherer::GathererKind;
 use gatherer_popup::GathererPopup;
 use militia_popup::MilitiaPopup;
+use movement_view::{MovementView, PanelAction};
+use walk::Walks;
 use gatherer_tool::GathererTool;
 use bridge_view::BridgeRenderer;
 use path::Kind;
@@ -285,6 +291,12 @@ async fn main() {
     let mut militia_popup = MilitiaPopup::default();
     // The popup for a new name for a militia: its id, and the popup.
     let mut naming_militia: Option<(ids::MilitiaId, Popup)> = None;
+    // The militia that was clicked, which shows where it can go, and why the last move couldn't be made.
+    let mut selected_militia: Option<ids::MilitiaId> = None;
+    let mut movement_view = MovementView::default();
+    let mut move_error: Option<String> = None;
+    // The militia that are walking to where they were moved, which is only for showing.
+    let mut walks = Walks::default();
     // The owned regions the map is showing, as (region, color), to know when they change.
     let mut shown_owners: Vec<(u16, Rgb)> = Vec::new();
     let mut autosave = Autosave::new(&day, get_time());
@@ -328,6 +340,8 @@ async fn main() {
                 naming_place = None;
             } else if naming_militia.is_some() {
                 naming_militia = None;
+            } else if selected_militia.is_some() {
+                selected_militia = None;
             } else if noting.is_some() {
                 noting = None;
             } else if path_tool.is_active() {
@@ -365,7 +379,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse));
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || (selected_militia.is_some() && movement_view::panel_rect().contains(mouse));
         if modal {
             camera.skip_frame();
         } else {
@@ -419,7 +433,15 @@ async fn main() {
         roads.draw(&world, &region_map, &day);
         bridges.draw(&world, &day);
         gatherer_view::draw(&world, &day);
-        militia_view::draw(&world, &day);
+        walks.update(dt);
+        militia_view::draw(&world, &day, &walks, time);
+        // Where the militia that was clicked can go, tinted over everything else on the map, once it has got where it is going.
+        if selected_militia.is_some_and(|id| day.militia(id).is_none()) {
+            selected_militia = None;
+        }
+        let at_rest = selected_militia.filter(|id| !walks.is_walking(*id));
+        movement_view.update(&world, &day, &paths, &roads, at_rest);
+        movement_view.draw();
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
         }
@@ -430,7 +452,7 @@ async fn main() {
         let gatherer_hover = if modal || over_interface || tool_on || hovered.is_some() { None } else { gatherer_view::under_ray(mouse_ray(&eye, mouse), &world, &day.gatherers) };
 
         // The militia under the mouse, if there is one and no city or gatherer is in front of it, which the tooltip tells about.
-        let militia_hover = if modal || over_interface || tool_on || hovered.is_some() || gatherer_hover.is_some() { None } else { militia_view::under_ray(mouse_ray(&eye, mouse), &world, &day.militias) };
+        let militia_hover = if modal || over_interface || tool_on || hovered.is_some() || gatherer_hover.is_some() { None } else { militia_view::under_ray(mouse_ray(&eye, mouse), &world, &day.militias, &walks) };
 
         // The label of a place under the mouse while the named places are showing.
         let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
@@ -542,9 +564,44 @@ async fn main() {
                 overlays_ui.close();
                 gatherer_popup.open(id);
             } else if let Some(id) = militia_hover {
+                // A click on a militia shows where it can go, and a second click on it opens its popup.
                 options_ui.close();
                 overlays_ui.close();
-                militia_popup.open(id);
+                move_error = None;
+                if selected_militia == Some(id) {
+                    militia_popup.open(id);
+                } else {
+                    selected_militia = Some(id);
+                }
+            } else if let Some(id) = selected_militia {
+                // With a militia selected, a click on a tinted spot moves it there, and any other click puts it away. While
+                // it is walking there is nothing tinted, and a click is left alone.
+                options_ui.close();
+                overlays_ui.close();
+                let target = pick_terrain(&eye, &world, mouse).and_then(|at| {
+                    let reach = movement_view.reach()?;
+                    Some((reach.snap(at), reach.cost_to(at)?.ceil() as u32, reach.route_to(at)?))
+                });
+                match target {
+                    _ if walks.is_walking(id) => {}
+                    Some((to, cost, way)) if cost > 0 => {
+                        // Only keep the move if it is saved too.
+                        let mut updated = day.clone();
+                        let region = world.region_at(to.x, to.y).map(|r| r.raw());
+                        match updated.move_militia(id, to, cost, region).and_then(|()| autosave.save_now(&saves, &updated)) {
+                            Ok(()) => {
+                                day = updated;
+                                move_error = None;
+                                walks.start(id, &way);
+                            }
+                            Err(message) => move_error = Some(message),
+                        }
+                    }
+                    _ => {
+                        selected_militia = None;
+                        move_error = None;
+                    }
+                }
             } else if let Some(id) = place_hover {
                 // With the named places showing, a click on the label of a place is for changing it.
                 options_ui.close();
@@ -667,6 +724,17 @@ async fn main() {
             }
             if placing {
                 hud::placing_prompt(&style, problem.as_deref());
+            }
+            if let Some(militia) = selected_militia.and_then(|id| day.militia(id)) {
+                let id = militia.id;
+                match movement_view::panel(&style, militia, move_error.as_deref()) {
+                    Some(PanelAction::Details) => militia_popup.open(id),
+                    Some(PanelAction::Deselect) => {
+                        selected_militia = None;
+                        move_error = None;
+                    }
+                    None => {}
+                }
             }
             if let Some(city) = hovered.and_then(|id| day.city(id)) {
                 hud::city_tooltip(&style, &day, city);

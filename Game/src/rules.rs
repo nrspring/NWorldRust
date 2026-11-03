@@ -39,6 +39,7 @@ pub const DAY_RULES: &[Rule] = &[
         apply: failures,
     },
     Rule { description: "Each woodcutter, sawmill, stonecutter or quarry that has a path, road or bridge route to a city of its country provides its wood or stone to the country each day: 100 from a woodcutter or stonecutter, and 1,000 from a sawmill or quarry.", apply: gather },
+    Rule { description: "Each militia gets all of its movement points back: 200 a day.", apply: militia_rest },
     Rule {
         description: "Each country pays 1 coin a day for each member of its militia, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
         apply: militia_upkeep,
@@ -81,6 +82,11 @@ fn gather(day: &mut DaySave) {
             }
         }
     }
+}
+
+/// Each militia has all its movement points again.
+fn militia_rest(day: &mut DaySave) {
+    day.rest_militia();
 }
 
 /// Each country pays to keep its militia (see [`DaySave::pay_militia`]). This comes last, after the income, so that a

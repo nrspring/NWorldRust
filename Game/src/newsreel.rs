@@ -258,6 +258,15 @@ pub enum Event {
     MilitiaTransferred { from: CountryId, to: CountryId, members: u32 },
     /// The subject is a militia, which was called `from` and is called `to`.
     MilitiaRenamed { from: String, to: String },
+    /// The subject is a militia called `name`, and it moved, which took `points` of its movement points, to somewhere in
+    /// the map region numbered `region`, if the map has regions.
+    MilitiaMoved {
+        #[serde(default)]
+        name: String,
+        points: u32,
+        #[serde(default)]
+        region: Option<u16>,
+    },
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -487,6 +496,14 @@ impl News {
                 format!("{name} passes from {} to {}", day.country_name(from), day.country_name(to))
             }
             Event::MilitiaRenamed { ref from, ref to } => format!("{from} is renamed {to}"),
+            Event::MilitiaMoved { ref name, points, region } => {
+                let name = if name.is_empty() { "A militia" } else { name };
+                let spent = format!("{} movement {}", thousands(points), if points == 1 { "point" } else { "points" });
+                match region {
+                    Some(region) => format!("{name} marches to {}, spending {spent}", day.region_label(region)),
+                    None => format!("{name} marches, spending {spent}"),
+                }
+            }
             Event::Note { ref text } => text.clone(),
         }
     }
@@ -888,6 +905,8 @@ mod tests {
         assert_eq!(headline(deserted("", 40, 60)), "40 members of Aldoria's militia desert for want of pay, leaving 60", "news from before militia had names");
         // A transfer names the militia if it is still there, and otherwise says how big it was.
         assert_eq!(headline(Event::MilitiaTransferred { from: aldoria, to: brevon, members: 30 }), "A militia of 30 passes from Aldoria to Brevon");
+        assert_eq!(headline(Event::MilitiaMoved { name: "Harbour Guard".to_owned(), points: 84, region: Some(0xC001) }), format!("Harbour Guard marches to {}, spending 84 movement points", day.region_label(0xC001)));
+        assert_eq!(headline(Event::MilitiaMoved { name: "Harbour Guard".to_owned(), points: 1, region: None }), "Harbour Guard marches, spending 1 movement point");
         assert_eq!(headline(Event::MilitiaRenamed { from: "Port Aldor Militia 1-1-1".to_owned(), to: "Harbour Guard".to_owned() }), "Port Aldor Militia 1-1-1 is renamed Harbour Guard");
         // A city that is gone is "a city", and the news survives the militia.
         assert_eq!(headline(raised("", CityId::new(), 5)), "Aldoria raises a militia of 5 in a city for 10,000 coins");
