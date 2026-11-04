@@ -1,6 +1,6 @@
 //! The militia popup, opened by clicking a militia: what there is to know of it, a way to change which country it
 //! belongs to, to combine it with another militia of its country in the same region, and to split some of its members
-//! off into a militia of their own.
+//! off into a militia of their own, and to disband it.
 
 use macroquad::prelude::*;
 use nworld_map::world::World;
@@ -40,6 +40,8 @@ pub enum Change {
     Merge { keep: MilitiaId, absorb: MilitiaId, regions: (Option<u16>, Option<u16>) },
     /// This many members of the militia split off into a militia that stands at this place.
     Split { id: MilitiaId, members: u32, at: Vec2 },
+    /// The militia is disbanded.
+    Disband(MilitiaId),
 }
 
 impl Change {
@@ -49,13 +51,14 @@ impl Change {
             Self::Country(militia, country) => day.set_militia_country(*militia, *country),
             Self::Merge { keep, absorb, regions } => day.merge_militia(*keep, *absorb, *regions),
             Self::Split { id, members, at } => day.split_militia(*id, *members, *at),
+            Self::Disband(id) => day.disband_militia(*id),
         }
     }
 
     /// The militia it is about, which can't be changed while they are walking.
     pub fn militia(&self) -> Vec<MilitiaId> {
         match self {
-            Self::Country(id, _) | Self::Split { id, .. } => vec![*id],
+            Self::Country(id, _) | Self::Split { id, .. } | Self::Disband(id) => vec![*id],
             Self::Merge { keep, absorb, .. } => vec![*keep, *absorb],
         }
     }
@@ -83,6 +86,8 @@ pub struct MilitiaPopup {
     /// whether it is being dragged.
     split: Option<u32>,
     dragging: bool,
+    /// Whether Disband has been clicked once, and is waiting for a second click to be sure.
+    disbanding: bool,
     /// Set when the name was clicked, to be renamed: the militia whose name it is, until `take_rename` takes it.
     rename: Option<MilitiaId>,
     /// Why the last change couldn't be made.
@@ -100,9 +105,10 @@ impl MilitiaPopup {
 
     /// What Esc does: closes the list of countries or of militia if one is showing, and otherwise the popup.
     pub fn escape(&mut self) {
-        if self.choosing || self.combining {
+        if self.choosing || self.combining || self.disbanding {
             self.choosing = false;
             self.combining = false;
+            self.disbanding = false;
         } else {
             self.militia = None;
         }
@@ -118,6 +124,7 @@ impl MilitiaPopup {
     pub fn fail(&mut self, message: String) {
         self.choosing = false;
         self.combining = false;
+        self.disbanding = false;
         self.error = Some(message);
     }
 
@@ -288,9 +295,19 @@ impl MilitiaPopup {
             style.text(error, inner_x, split_button.bottom() + 20.0, 12, Weight::Regular, style::ERROR);
         }
 
-        // The button that closes it.
-        let close = Rect::new(inner_x, card.bottom() - PADDING - BUTTON_HEIGHT, inner_w, BUTTON_HEIGHT);
+        // The buttons at the bottom: one that disbands it, which has to be clicked twice to be sure, and one that closes it.
+        let button_w = (inner_w - 10.0) * 0.5;
+        let disband = Rect::new(inner_x, card.bottom() - PADDING - BUTTON_HEIGHT, button_w, BUTTON_HEIGHT);
+        let close = Rect::new(disband.right() + 10.0, disband.y, button_w, BUTTON_HEIGHT);
+        let over_disband = disband.contains(mouse) && !listing;
         let over_close = close.contains(mouse) && !listing;
+        let (fill, label, color) = match (self.disbanding, over_disband) {
+            (true, _) => (style::ERROR, "Click again to disband", WHITE),
+            (false, true) => (style::BORDER_STRONG, "Disband", style::ERROR),
+            (false, false) => (style::HOVER, "Disband", style::ERROR),
+        };
+        style::rounded_rect(disband, 8.0, fill);
+        style.text_centered(label, disband, 14, Weight::Semibold, color);
         style::rounded_rect(close, 8.0, if over_close { style::BORDER_STRONG } else { style::HOVER });
         style.text_centered("Close", close, 14, Weight::Semibold, style::TEXT);
 
@@ -404,6 +421,17 @@ impl MilitiaPopup {
             used_click = true;
         }
 
+        // A click on Disband asks to be sure, and the next one disbands; a click anywhere else takes the question back.
+        if clicked && !used_click && over_disband {
+            if self.disbanding {
+                change = Some(Change::Disband(unit.id));
+            }
+            self.disbanding = !self.disbanding;
+            used_click = true;
+        } else if clicked {
+            self.disbanding = false;
+        }
+
         // A click on Close, or on the dimmed window outside the card, or Enter, closes the popup.
         let enter = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter);
         if change.is_none() && !used_click && ((enter && !listing) || (clicked && (over_close || !card.contains(mouse)))) {
@@ -466,5 +494,22 @@ mod tests {
         assert_eq!(day.militia(id).unwrap().country, brevon);
         assert!(Change::Country(id, CountryId::new()).apply(&mut day).is_err());
         assert!(Change::Country(MilitiaId::new(), brevon).apply(&mut day).is_err(), "it is not there");
+    }
+
+    #[test]
+    fn disbanding_removes_the_militia_and_asking_twice_is_the_players_to_do() {
+        let mut day = day();
+        let id = day.militias[0].id;
+        assert_eq!(Change::Disband(id).militia(), [id]);
+        Change::Disband(id).apply(&mut day).unwrap();
+        assert!(day.militias.is_empty());
+        assert!(Change::Disband(id).apply(&mut day).is_err(), "it is already gone");
+
+        // Esc takes back the question before it closes the popup.
+        let mut popup = MilitiaPopup { militia: Some(MilitiaId::new()), disbanding: true, ..MilitiaPopup::default() };
+        popup.escape();
+        assert!(popup.is_open() && !popup.disbanding);
+        popup.escape();
+        assert!(!popup.is_open());
     }
 }

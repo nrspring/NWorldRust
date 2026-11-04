@@ -272,6 +272,15 @@ pub enum Event {
     /// The subject is a militia called `name`, which split `members` of its people off into the new militia called
     /// `new_name`, leaving `remaining`.
     MilitiaSplit { name: String, new_name: String, members: u32, remaining: u32 },
+    /// The subject is a militia called `name` of `members` people, which was disbanded. `returned` of them went back to
+    /// the population of the city `city`, if there is one; the rest, and all of them if there is no city, went home.
+    MilitiaDisbanded {
+        name: String,
+        members: u32,
+        returned: u32,
+        #[serde(default)]
+        city: Option<CityId>,
+    },
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -512,6 +521,14 @@ impl News {
             Event::MilitiaMerged { ref name, ref absorbed, members } => format!("{absorbed} joins {name}, making {} members", thousands(members)),
             Event::MilitiaSplit { ref name, ref new_name, members, remaining } => {
                 format!("{name} splits off {} members as {new_name}, leaving {}", thousands(members), thousands(remaining))
+            }
+            Event::MilitiaDisbanded { ref name, members, returned, city } => {
+                let place = city.and_then(|id| day.city(id)).map(|city| city.name.as_str());
+                match (place, returned) {
+                    (Some(place), returned) if returned == members => format!("{name} is disbanded, and its {} members return to {place}", thousands(members)),
+                    (Some(place), returned) if returned > 0 => format!("{name} is disbanded, and {} of its {} members return to {place}", thousands(returned), thousands(members)),
+                    _ => format!("{name} is disbanded"),
+                }
             }
             Event::Note { ref text } => text.clone(),
         }
@@ -921,6 +938,11 @@ mod tests {
             headline(Event::MilitiaSplit { name: "Harbour Guard".to_owned(), new_name: "Harbour Guard Detachment".to_owned(), members: 120, remaining: 880 }),
             "Harbour Guard splits off 120 members as Harbour Guard Detachment, leaving 880"
         );
+        let disbanded = |returned, city| Event::MilitiaDisbanded { name: "Harbour Guard".to_owned(), members: 100, returned, city };
+        assert_eq!(headline(disbanded(100, Some(port))), "Harbour Guard is disbanded, and its 100 members return to Port Aldor");
+        assert_eq!(headline(disbanded(40, Some(port))), "Harbour Guard is disbanded, and 40 of its 100 members return to Port Aldor");
+        assert_eq!(headline(disbanded(0, Some(port))), "Harbour Guard is disbanded");
+        assert_eq!(headline(disbanded(0, None)), "Harbour Guard is disbanded");
         assert_eq!(headline(Event::MilitiaRenamed { from: "Port Aldor Militia 1-1-1".to_owned(), to: "Harbour Guard".to_owned() }), "Port Aldor Militia 1-1-1 is renamed Harbour Guard");
         // A city that is gone is "a city", and the news survives the militia.
         assert_eq!(headline(raised("", CityId::new(), 5)), "Aldoria raises a militia of 5 in a city for 10,000 coins");

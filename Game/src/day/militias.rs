@@ -3,6 +3,7 @@
 use macroquad::math::{vec2, Vec2};
 
 use super::DaySave;
+use crate::city;
 use crate::format;
 use crate::ids::{CityId, CountryId, MilitiaId};
 use crate::militia::{self, Militia};
@@ -183,6 +184,23 @@ impl DaySave {
         let new = Militia { id: new_id, name: new_name.clone(), x: at.x, z: at.y, members, ..unit.clone() };
         self.militias.push(new);
         self.newsreel.push(News::about(id, Event::MilitiaSplit { name, new_name, members, remaining }));
+        Ok(())
+    }
+
+    /// Disbands the militia with this id: it is gone, and its members go back to the population of the city it was raised
+    /// in, as far as the city has room for them (see [`crate::city::MAX_POPULATION`]); if the city is gone, so are they.
+    /// What it cost to raise is not given back. This is reported in the newsreel. An error says why it can't be done.
+    pub fn disband_militia(&mut self, id: MilitiaId) -> Result<(), String> {
+        let index = self.militias.iter().position(|m| m.id == id).ok_or("There is no such militia.")?;
+        let unit = self.militias.remove(index);
+        let mut returned = 0;
+        let mut home = None;
+        if let Some(found) = self.cities.iter_mut().find(|c| c.id == unit.city) {
+            returned = unit.members.min(city::MAX_POPULATION.saturating_sub(found.population));
+            found.population += returned;
+            home = Some(found.id);
+        }
+        self.newsreel.push(News::about(id, Event::MilitiaDisbanded { name: unit.title().to_owned(), members: unit.members, returned, city: home }));
         Ok(())
     }
 
@@ -626,6 +644,43 @@ mod tests {
             day.merge_militia(keep, absorb, regions).unwrap();
             assert_eq!(day.militia(keep).unwrap().name, name, "selected_first: {selected_first}");
         }
+    }
+
+    #[test]
+    fn a_disbanded_militia_is_gone_and_its_members_go_back_to_the_city() {
+        let mut day = day_with_a_city();
+        let (aldoria, port) = (day.countries[0].id, day.cities[0].id);
+        day.raise_militia(port, 150, CAMP).unwrap();
+        let (id, name, money) = (day.militias[0].id, day.militias[0].name.clone(), day.country(aldoria).unwrap().money);
+        day.disband_militia(id).unwrap();
+
+        assert!(day.militias.is_empty() && day.militia(id).is_none());
+        assert_eq!(day.cities[0].population, 2_000, "they are home again");
+        assert_eq!(day.country(aldoria).unwrap().money, money, "the coin is not given back");
+        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::MilitiaDisbanded { name, members: 150, returned: 150, city: Some(port) })));
+        // Once gone, it can't be disbanded again, and the city may raise another the same day.
+        assert!(day.disband_militia(id).is_err());
+        day.raise_militia(port, 10, CAMP).unwrap();
+    }
+
+    #[test]
+    fn a_full_city_takes_back_only_what_it_has_room_for_and_no_city_takes_none() {
+        let mut day = day_with_a_city();
+        let port = day.cities[0].id;
+        day.raise_militia(port, 100, CAMP).unwrap();
+        day.cities[0].population = city::MAX_POPULATION - 30;
+        let id = day.militias[0].id;
+        day.disband_militia(id).unwrap();
+        assert_eq!(day.cities[0].population, city::MAX_POPULATION);
+        assert!(matches!(day.newsreel.last().unwrap().event, Event::MilitiaDisbanded { members: 100, returned: 30, .. }));
+
+        day.cities[0].population = 500;
+        let mut tomorrow = day.following(Date { year: 1, month: 1, day: 2 });
+        tomorrow.raise_militia(port, 40, CAMP).unwrap();
+        tomorrow.cities.clear();
+        let id = tomorrow.militias[0].id;
+        tomorrow.disband_militia(id).unwrap();
+        assert!(matches!(tomorrow.newsreel.last().unwrap().event, Event::MilitiaDisbanded { members: 40, returned: 0, city: None, .. }));
     }
 
     #[test]
