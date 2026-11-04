@@ -15,6 +15,7 @@ mod gatherer;
 mod gatherer_popup;
 mod gatherer_tool;
 mod shipyard;
+mod shipyard_popup;
 mod shipyard_tool;
 mod shipyard_view;
 mod gatherer_view;
@@ -101,6 +102,7 @@ use movement_view::{MovementView, PanelAction};
 use walk::Walks;
 use gatherer_tool::GathererTool;
 use shipyard::ShipyardKind;
+use shipyard_popup::ShipyardPopup;
 use shipyard_tool::ShipyardTool;
 use bridge_view::BridgeRenderer;
 use path::Kind;
@@ -287,7 +289,7 @@ async fn main() {
     let mut destroy_tool = DestroyTool::default();
     // The tool for each kind of gatherer, in the order of the kinds.
     let mut gatherer_tools = GathererKind::ALL.map(GathererTool::new);
-    let mut shipyard_tools = ShipyardKind::ALL.map(ShipyardTool::new);
+    let mut shipyard_tools = ShipyardKind::BUILDABLE.map(ShipyardTool::new);
     let mut bridges = BridgeRenderer::default();
     // The popup that asks whether to end the day.
     let mut advance_popup = AdvancePopup::default();
@@ -296,6 +298,7 @@ async fn main() {
     let mut city_popup = CityPopup::default();
     // The popup for the gatherer that was clicked.
     let mut gatherer_popup = GathererPopup::default();
+    let mut shipyard_popup = ShipyardPopup::default();
     // The popup for the militia that was clicked.
     let mut militia_popup = MilitiaPopup::default();
     // The popup for a new name for a militia: its id, and the popup.
@@ -331,6 +334,8 @@ async fn main() {
                 city_popup.escape();
             } else if gatherer_popup.is_open() {
                 gatherer_popup.escape();
+            } else if shipyard_popup.is_open() {
+                shipyard_popup.escape();
             } else if militia_popup.is_open() {
                 militia_popup.escape();
             } else if country_menu.is_open() {
@@ -388,7 +393,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || militia_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || shipyard_popup.is_open() || militia_popup.is_open() || advance_popup.is_open();
         if modal {
             toolbar.close();
         }
@@ -611,10 +616,10 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 city_popup.open(id);
-            } else if shipyard_hover.is_some() {
-                // A shipyard has no popup yet: a click on it is left alone, and doesn't fall through to the map under it.
+            } else if let Some(id) = shipyard_hover {
                 options_ui.close();
                 overlays_ui.close();
+                shipyard_popup.open(id);
             } else if let Some(id) = gatherer_hover {
                 options_ui.close();
                 overlays_ui.close();
@@ -975,6 +980,15 @@ async fn main() {
         }
         if let Some(from) = city_popup.take_settle() {
             settling_from = Some(from);
+        }
+
+        if let Some(change) = shipyard_popup.show(&style, &day) {
+            // Only keep the change if it is saved too.
+            let mut updated = day.clone();
+            match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
+                Ok(()) => day = updated,
+                Err(message) => shipyard_popup.fail(message),
+            }
         }
 
         if let Some(change) = gatherer_popup.show(&style, &day) {

@@ -295,6 +295,16 @@ pub enum Event {
         region: Option<u16>,
         cost: Vec<Cost>,
     },
+    /// The subject is a shipyard, which the country `country` upgraded from `from` to `to` in the region numbered `region` for
+    /// `cost`.
+    ShipyardUpgraded {
+        from: ShipyardKind,
+        to: ShipyardKind,
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+        cost: Vec<Cost>,
+    },
     /// The subject is a shipyard of `kind`, which belonged to the country `country`, and it was destroyed. It is gone, so
     /// what the news says of it is kept here.
     ShipyardDestroyed {
@@ -554,6 +564,10 @@ impl News {
             Event::ShipyardBuilt { kind, country, region, ref cost } => {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
                 format!("{} builds {}{place}{}", day.country_name(country), kind.a_noun(), for_cost(cost))
+            }
+            Event::ShipyardUpgraded { from, to, country, region, ref cost } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                format!("{} upgrades its {}{place} to {}{}", day.country_name(country), from.noun(), to.a_noun(), for_cost(cost))
             }
             Event::ShipyardDestroyed { kind, country, region } => {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));

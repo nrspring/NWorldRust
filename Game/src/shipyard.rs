@@ -1,6 +1,7 @@
 //! Shipyards: where a country will build ships. A shipyard is a small one or a large one, belongs to the country that built
 //! it, which pays for it in coins, stone, wood and iron, and has to stand on a coast: dry land with the sea within a short
-//! way of it. (There are no ships to build yet.)
+//! way of it. Only a small one can be built; a small one can then be upgraded to a large one, for a price. (There are no ships
+//! to build yet.)
 
 use macroquad::prelude::*;
 use nworld_map::world::{Resource, WaterClass, World};
@@ -19,10 +20,13 @@ pub const SPACING: f32 = 25.0;
 /// How many places round a shipyard are looked at on each ring when looking for the sea.
 const COAST_DIRECTIONS: usize = 16;
 
-/// What a shipyard costs in coins.
+/// What a small shipyard costs to build in coins.
 pub const COST: i64 = 10_000;
-/// What a shipyard takes to build besides coins.
+/// What a small shipyard takes to build besides coins.
 pub const MATERIALS: [(Resource, u64); 3] = [(Resource::Stone, 1_000), (Resource::Forest, 1_000), (Resource::Iron, 500)];
+/// What upgrading a small shipyard to a large one costs in coins, and takes besides.
+pub const UPGRADE_COST: i64 = 10_000;
+pub const UPGRADE_MATERIALS: [(Resource, u64); 3] = [(Resource::Stone, 1_000), (Resource::Forest, 1_000), (Resource::Iron, 500)];
 
 /// How big a shipyard is.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -33,8 +37,18 @@ pub enum ShipyardKind {
 }
 
 impl ShipyardKind {
-    /// Every kind, the small one first, in the order the Buildings menu has them.
+    /// Every kind, the small one first.
     pub const ALL: [ShipyardKind; 2] = [ShipyardKind::Small, ShipyardKind::Large];
+    /// The kinds that can be built, which is all in the Buildings menu: only a small shipyard, which can then be upgraded.
+    pub const BUILDABLE: [ShipyardKind; 1] = [ShipyardKind::Small];
+
+    /// What it can be upgraded to, if it can be.
+    pub fn upgrade(self) -> Option<ShipyardKind> {
+        match self {
+            Self::Small => Some(Self::Large),
+            Self::Large => None,
+        }
+    }
 
     /// What to call one, in lower case: "small shipyard" or "large shipyard".
     pub fn noun(self) -> &'static str {
@@ -72,11 +86,9 @@ impl ShipyardKind {
         &MATERIALS
     }
 
-    /// Everything one costs, for the newsreel: coins first, and then each resource.
+    /// Everything one costs to build, for the newsreel: coins first, and then each resource.
     pub fn full_cost(self) -> Vec<Cost> {
-        let mut cost = vec![Cost::coins(self.cost())];
-        cost.extend(self.materials().iter().map(|(resource, amount)| Cost { asset: Asset::of(*resource), amount: *amount }));
-        cost
+        full_cost(self.cost(), self.materials())
     }
 
     /// Draws its icon, centered on `c` and about 16 pixels across times `s`, in `color`, with `accent` for what is marked
@@ -94,6 +106,18 @@ impl ShipyardKind {
             draw_triangle(vec2(c.x + x * s + 0.5 * s, c.y - 7.0 * s), vec2(c.x + x * s + 0.5 * s, c.y - 1.0 * s), vec2(c.x + x * s + 4.0 * s, c.y - 1.0 * s), accent);
         }
     }
+}
+
+/// `coins` and then each of `materials`, as costs for the newsreel.
+fn full_cost(coins: i64, materials: &[(Resource, u64)]) -> Vec<Cost> {
+    let mut cost = vec![Cost::coins(coins)];
+    cost.extend(materials.iter().map(|(resource, amount)| Cost { asset: Asset::of(*resource), amount: *amount }));
+    cost
+}
+
+/// Everything upgrading a shipyard costs, for the newsreel: coins first, and then each resource.
+pub fn upgrade_full_cost() -> Vec<Cost> {
+    full_cost(UPGRADE_COST, &UPGRADE_MATERIALS)
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -142,19 +166,41 @@ impl DaySave {
         self.shipyards.iter().find(|s| s.id == id)
     }
 
-    /// Why a shipyard of `kind` can't be built now, or `None` if one can: the country being played has to be there and
-    /// able to pay for it, in coins first, and then in stone, wood and iron.
-    pub fn shipyard_problem(&self, kind: ShipyardKind) -> Option<String> {
-        match self.player_country() {
-            None => Some(format!("There is no country yet to own {}.", kind.a_noun())),
-            Some(country) if country.money < kind.cost() => {
-                Some(format!("Not enough coin: {} costs {} coins, and {} has {}.", kind.a_noun(), format::money(kind.cost()), country.name, format::money(country.money)))
-            }
-            Some(country) => kind.materials().iter().find(|(resource, needed)| country.stock.get(*resource) < *needed).map(|(resource, needed)| {
-                let name = crate::country::resource_name(*resource);
-                format!("Not enough {name}: {} needs {} {name} as well as its coins, and {} has {}.", kind.a_noun(), format::thousands_u64(*needed), country.name, format::thousands_u64(country.stock.get(*resource)))
-            }),
+    /// Why the country being played can't pay `coins` and `materials` for `what` ("a small shipyard"), or `None` if it can:
+    /// the coins are asked for first, and then each resource in turn.
+    fn payment_problem(&self, what: &str, coins: i64, materials: &[(Resource, u64)]) -> Option<String> {
+        let country = self.player_country()?;
+        if country.money < coins {
+            return Some(format!("Not enough coin: {what} costs {} coins, and {} has {}.", format::money(coins), country.name, format::money(country.money)));
         }
+        materials.iter().find(|(resource, needed)| country.stock.get(*resource) < *needed).map(|(resource, needed)| {
+            let name = crate::country::resource_name(*resource);
+            format!("Not enough {name}: {what} needs {} {name} as well as its coins, and {} has {}.", format::thousands_u64(*needed), country.name, format::thousands_u64(country.stock.get(*resource)))
+        })
+    }
+
+    /// Why a shipyard of `kind` can't be built now, or `None` if one can: only a small one can be built, and the country
+    /// being played has to be there and able to pay for it, in coins first, and then in stone, wood and iron.
+    pub fn shipyard_problem(&self, kind: ShipyardKind) -> Option<String> {
+        if !ShipyardKind::BUILDABLE.contains(&kind) {
+            return Some(format!("{} can't be built: build a small shipyard and upgrade it.", kind.a_noun_capital()));
+        }
+        if self.player_country().is_none() {
+            return Some(format!("There is no country yet to own {}.", kind.a_noun()));
+        }
+        self.payment_problem(&kind.a_noun(), kind.cost(), kind.materials())
+    }
+
+    /// Why the shipyard with this id can't be upgraded now, or `None` if it can: it has to be one that can be, and its country
+    /// has to be the one being played, which pays for it, in coins first, and then in stone, wood and iron.
+    pub fn upgrade_problem(&self, id: ShipyardId) -> Option<String> {
+        let Some(yard) = self.shipyard(id) else { return Some("There is no such shipyard.".to_owned()) };
+        let Some(to) = yard.kind.upgrade() else { return Some(format!("{} can't be upgraded any more.", yard.kind.a_noun_capital())) };
+        let Some(player) = self.player_country() else { return Some("There is no country yet to pay for an upgrade.".to_owned()) };
+        if yard.country != player.id {
+            return Some(format!("This shipyard belongs to {}, and only {} can upgrade it.", self.country_name(yard.country), self.country_name(yard.country)));
+        }
+        self.payment_problem(&format!("upgrading to {}", to.a_noun()), UPGRADE_COST, &UPGRADE_MATERIALS)
     }
 
     /// Why the country being played can't have a shipyard at (`x`, `z`) in the region numbered `region`, or `None` if it
@@ -191,6 +237,25 @@ impl DaySave {
         Ok(())
     }
 
+    /// Upgrades the shipyard with this id to the next size, which its country, the one being played, pays for. It stays where
+    /// it is. This is reported in the newsreel. An error says why it can't be done, and nothing changes.
+    pub fn upgrade_shipyard(&mut self, id: ShipyardId) -> Result<(), String> {
+        if let Some(problem) = self.upgrade_problem(id) {
+            return Err(problem);
+        }
+        let Shipyard { kind, country, region, .. } = *self.shipyard(id).ok_or("There is no such shipyard.")?;
+        let to = kind.upgrade().ok_or("That shipyard can't be upgraded any more.")?;
+        self.add_money(country, -UPGRADE_COST)?;
+        for (resource, needed) in UPGRADE_MATERIALS {
+            self.add_resource(country, resource, -(needed as i64))?;
+        }
+        if let Some(yard) = self.shipyards.iter_mut().find(|s| s.id == id) {
+            yard.kind = to;
+        }
+        self.newsreel.push(News::about(id, Event::ShipyardUpgraded { from: kind, to, country, region, cost: upgrade_full_cost() }));
+        Ok(())
+    }
+
     /// Destroys the shipyard with this id, which costs nothing and pays nothing back, and reports it in the newsreel. An
     /// error says why it can't be done.
     pub fn destroy_shipyard(&mut self, id: ShipyardId) -> Result<(), String> {
@@ -221,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shipyard_costs_10000_coins_1000_stone_1000_wood_and_500_iron_whatever_its_size() {
+    fn a_shipyard_costs_10000_coins_1000_stone_1000_wood_and_500_iron_to_build_and_the_same_to_upgrade() {
         for kind in ShipyardKind::ALL {
             assert_eq!(kind.cost(), 10_000);
             assert_eq!(kind.materials(), &[(Resource::Stone, 1_000), (Resource::Forest, 1_000), (Resource::Iron, 500)]);
@@ -242,11 +307,70 @@ mod tests {
     }
 
     #[test]
-    fn a_large_shipyard_is_built_the_same_way() {
+    fn only_a_small_shipyard_can_be_built() {
         let mut day = day();
-        day.build_shipyard(ShipyardKind::Large, 0.0, 0.0, None).unwrap();
-        assert_eq!(day.shipyards[0].kind, ShipyardKind::Large);
-        assert!(day.newsreel.last().unwrap().headline(&day).starts_with("Aldoria builds a large shipyard for 10,000 coins"));
+        let before = day.clone();
+        assert_eq!(ShipyardKind::BUILDABLE, [ShipyardKind::Small]);
+        let err = day.build_shipyard(ShipyardKind::Large, 0.0, 0.0, None).unwrap_err();
+        assert!(err.contains("A large shipyard can't be built") && err.contains("upgrade"), "{err}");
+        assert_eq!(day, before);
+        assert_eq!(day.shipyard_problem(ShipyardKind::Small), None);
+    }
+
+    #[test]
+    fn a_small_shipyard_is_upgraded_to_a_large_one_for_a_price_and_stays_where_it_is() {
+        let mut day = day();
+        let aldoria = day.countries[0].id;
+        day.build_shipyard(ShipyardKind::Small, 10.0, 20.0, Some(0x4005)).unwrap();
+        let (id, built) = (day.shipyards[0].id, day.shipyards[0]);
+        assert_eq!(day.upgrade_problem(id), None);
+        day.upgrade_shipyard(id).unwrap();
+
+        let yard = *day.shipyard(id).unwrap();
+        assert_eq!(yard, Shipyard { kind: ShipyardKind::Large, ..built }, "only its size changed");
+        assert_eq!(day.shipyards.len(), 1);
+        let country = day.country(aldoria).unwrap();
+        assert_eq!(country.money, 0, "10,000 to build and 10,000 to upgrade");
+        assert_eq!((country.stock.stone, country.stock.wood, country.stock.iron), (0, 0, 1_000));
+        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::ShipyardUpgraded { from: ShipyardKind::Small, to: ShipyardKind::Large, country: aldoria, region: Some(0x4005), cost: upgrade_full_cost() })));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria upgrades its small shipyard in region 5 to a large shipyard for 10,000 coins, 1,000 stone, 1,000 wood and 500 iron");
+        // A large one is as big as it gets, and a shipyard that isn't there can't be upgraded.
+        assert!(day.upgrade_problem(id).unwrap().contains("A large shipyard can't be upgraded any more"));
+        assert!(day.upgrade_shipyard(id).is_err() && day.upgrade_shipyard(ShipyardId::new()).is_err());
+    }
+
+    #[test]
+    fn an_upgrade_needs_the_coin_and_each_material_and_the_players_own_country() {
+        let upgradable = |extra: i64| {
+            let mut day = day();
+            let id = day.countries[0].id;
+            day.add_money(id, extra).unwrap();
+            day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap();
+            // What is left after building: 10,000 coins, 1,000 stone, 1,000 wood and 1,500 iron.
+            day
+        };
+        let mut poor = upgradable(0);
+        let (id, yard) = (poor.countries[0].id, poor.shipyards[0].id);
+        poor.add_money(id, -1).unwrap();
+        let err = poor.upgrade_shipyard(yard).unwrap_err();
+        assert!(err.contains("Not enough coin") && err.contains("upgrading to a large shipyard costs 10,000") && err.contains("9,999"), "{err}");
+
+        for (resource, name, needed) in [(Resource::Stone, "stone", 1_000), (Resource::Forest, "wood", 1_000), (Resource::Iron, "iron", 500)] {
+            let mut day = upgradable(0);
+            let id = day.countries[0].id;
+            let has = day.country(id).unwrap().stock.get(resource);
+            day.add_resource(id, resource, -(has as i64 - needed as i64 + 1)).unwrap(); // One short.
+            let before = day.clone();
+            let err = day.upgrade_shipyard(day.shipyards[0].id).unwrap_err();
+            assert!(err.contains(&format!("Not enough {name}")) && err.contains(&format!("has {}", format::thousands_u64(needed - 1))), "{err}");
+            assert_eq!(day, before, "a refused upgrade changes nothing");
+        }
+
+        // Only the country that is being played can pay for it.
+        let mut day = upgradable(0);
+        let (brevon, yard) = (day.countries[1].id, day.shipyards[0].id);
+        day.shipyards[0].country = brevon;
+        assert!(day.upgrade_problem(yard).unwrap().contains("belongs to Brevon"));
     }
 
     #[test]
@@ -262,11 +386,11 @@ mod tests {
             let id = day.countries[0].id;
             day.add_resource(id, resource, -(2_000 - needed as i64 + 1)).unwrap(); // One short.
             let before = day.clone();
-            let err = day.build_shipyard(ShipyardKind::Large, 0.0, 0.0, None).unwrap_err();
+            let err = day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap_err();
             assert!(err.contains(&format!("Not enough {name}")) && err.contains(&format!("has {}", format::thousands_u64(needed - 1))), "{err}");
             assert_eq!(day, before, "a refused shipyard changes nothing");
             day.add_resource(id, resource, 1).unwrap();
-            day.build_shipyard(ShipyardKind::Large, 0.0, 0.0, None).unwrap();
+            day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap();
         }
         assert!(DaySave::new(Date::FIRST, "x").shipyard_problem(ShipyardKind::Small).unwrap().contains("no country"));
     }
@@ -279,7 +403,7 @@ mod tests {
         day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
         let before = day.clone();
         assert!(day.build_shipyard(ShipyardKind::Small, 100.0, 0.0, Some(0x4009)).unwrap_err().contains("belongs to Brevon"));
-        assert!(day.build_shipyard(ShipyardKind::Large, 10.0, 0.0, Some(0x4005)).unwrap_err().contains("too close to another small shipyard"));
+        assert!(day.build_shipyard(ShipyardKind::Small, 10.0, 0.0, Some(0x4005)).unwrap_err().contains("too close to another small shipyard"));
         assert!(day.build_shipyard(ShipyardKind::Small, f32::NAN, 0.0, None).is_err());
         assert_eq!(day, before, "nothing was taken for any of them");
         day.build_shipyard(ShipyardKind::Small, SPACING, 0.0, Some(0x4005)).unwrap();
@@ -299,7 +423,8 @@ mod tests {
     #[test]
     fn shipyards_are_saved_and_carry_forward_and_a_day_saved_before_them_has_none() {
         let mut day = day();
-        day.build_shipyard(ShipyardKind::Large, 5.0, 6.0, Some(0x4005)).unwrap();
+        day.build_shipyard(ShipyardKind::Small, 5.0, 6.0, Some(0x4005)).unwrap();
+        day.upgrade_shipyard(day.shipyards[0].id).unwrap();
         let json = serde_json::to_value(&day).unwrap();
         assert_eq!(json["shipyards"][0]["kind"], "large");
         assert_eq!(serde_json::from_value::<DaySave>(json.clone()).unwrap(), day);

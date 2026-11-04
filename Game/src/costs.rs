@@ -105,7 +105,12 @@ impl Buildable {
         let mut lines = vec![(format!("{}: {}.", self.label(), self.cost_text()), style::TEXT), (self.output(), style::TEXT_MUTED)];
         match self {
             Self::Gatherer(kind) => lines.push((format!("Only one {} to a region.", kind.same_resource_text()), style::TEXT_MUTED)),
-            Self::Shipyard(_) => lines.push(("Has to stand on the coast.".to_owned(), style::TEXT_MUTED)),
+            Self::Shipyard(kind) => {
+                lines.push(("Has to stand on the coast.".to_owned(), style::TEXT_MUTED));
+                if let Some(to) = kind.upgrade() {
+                    lines.push((format!("Click it afterwards to upgrade it to {} for {}.", to.a_noun(), crate::newsreel::cost_text(&crate::shipyard::upgrade_full_cost())), style::TEXT_MUTED));
+                }
+            }
             _ => lines.push(("A failed one is mended by building it again, for the same.".to_owned(), style::TEXT_MUTED)),
         }
         lines
@@ -155,7 +160,7 @@ mod tests {
         assert_eq!(Buildable::Way(Kind::Road).cost_text(), "100 coins a segment");
         assert_eq!(Buildable::Bridge.cost_text(), "1,000 coins, 100 wood and 500 stone");
         assert_eq!(Buildable::Gatherer(GathererKind::Stonecutter).cost_text(), "1,000 coins");
-        for kind in ShipyardKind::ALL {
+        for kind in ShipyardKind::BUILDABLE {
             assert_eq!(Buildable::Shipyard(kind).cost(), kind.cost());
             assert_eq!(Buildable::Shipyard(kind).cost_text(), "10,000 coins, 1,000 stone, 1,000 wood and 500 iron");
         }
