@@ -145,6 +145,13 @@ id_type!(
     EventId
 );
 
+impl MilitiaId {
+    /// The first part of the id, up to its first hyphen: eight hexadecimal digits, like "3f9a2b1c".
+    pub fn short(self) -> String {
+        self.0.hyphenated().to_string().chars().take(8).collect()
+    }
+}
+
 impl CityId {
     /// A number made from the id, for anything that should come out the same for the same city every
     /// time, like where its buildings stand.

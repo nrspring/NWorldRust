@@ -73,18 +73,10 @@ pub fn clean_name(typed: &str) -> Result<String, String> {
     text::clean(typed, MAX_NAME_CHARS, "a name for your militia")
 }
 
-/// What a militia raised in the city called `city` on `date` is called until it is renamed: "Port Aldor Militia 1-3-14".
-pub fn default_name(city: &str, date: Date) -> String {
-    format!("{city} Militia {date}")
-}
-
-/// What a group split off a militia called `name` is called until it is renamed: "Harbour Guard Detachment", kept short
-/// enough to be a name.
-pub fn split_name(name: &str) -> String {
-    const SUFFIX: &str = " Detachment";
-    let room = MAX_NAME_CHARS - SUFFIX.len();
-    let base: String = name.chars().take(room).collect();
-    format!("{}{SUFFIX}", base.trim_end())
+/// What a militia with this id that was raised in the city called `city` (or split off one that was) is called until it
+/// is renamed: the city and the first part of its id, like "Port Aldor 3f9a2b1c".
+pub fn default_name(city: &str, id: MilitiaId) -> String {
+    format!("{city} {}", id.short())
 }
 
 /// Where a group split off the militia standing at `from` can stand: a little way off, on dry land in the same map
@@ -165,10 +157,11 @@ mod tests {
     }
 
     #[test]
-    fn a_militia_starts_named_for_its_city_and_the_day_and_a_name_is_tidied() {
-        let date = Date { year: 1, month: 3, day: 14 };
-        assert_eq!(default_name("Port Aldor", date), "Port Aldor Militia 1-3-14");
-        assert!(clean_name(&default_name(&"a".repeat(crate::city::MAX_NAME_CHARS), Date { year: 99, month: 10, day: 20 })).is_ok(), "the longest default fits");
+    fn a_militia_starts_named_for_its_city_and_its_id_and_a_name_is_tidied() {
+        let id = MilitiaId::from_u128(0x3f9a2b1c_5a47_4d0e_9b6a_7c1d2e8f4a90);
+        assert_eq!(id.short(), "3f9a2b1c");
+        assert_eq!(default_name("Port Aldor", id), "Port Aldor 3f9a2b1c");
+        assert!(clean_name(&default_name(&"a".repeat(crate::city::MAX_NAME_CHARS), id)).is_ok(), "the longest default fits");
         assert_eq!(clean_name("  Port   Guard ").unwrap(), "Port Guard");
         assert_eq!(clean_name(" ").unwrap_err(), "Enter a name for your militia.");
         assert!(clean_name(&"a".repeat(MAX_NAME_CHARS + 1)).is_err());

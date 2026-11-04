@@ -84,7 +84,7 @@ impl DaySave {
             city.population -= members;
         }
         let id = MilitiaId::new();
-        let name = militia::default_name(&name, self.date);
+        let name = militia::default_name(&name, id);
         self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS });
         self.newsreel.push(News::about(id, Event::MilitiaRaised { name, country, city, members, cost: vec![Cost::coins(cost)] }));
         Ok(())
@@ -131,8 +131,9 @@ impl DaySave {
 
     /// Combines the militia `absorb` into the militia `keep`: they must belong to the same country and stand in the same
     /// map region (`regions` says which region each is in, `keep`'s first), and can't have more than 1,000 members
-    /// between them. `keep` stays where it is, with its name, and has the members of both and the fewer movement points
-    /// of the two; `absorb` is gone. This is reported in the newsreel. An error says why it can't be done.
+    /// between them. `keep` stays where it is, and has the members of both and the fewer movement points of the two; `absorb`
+    /// is gone. The whole is called by the name of the bigger of the two, and by `keep`'s if they are as big as each
+    /// other. This is reported in the newsreel. An error says why it can't be done.
     pub fn merge_militia(&mut self, keep: MilitiaId, absorb: MilitiaId, regions: (Option<u16>, Option<u16>)) -> Result<(), String> {
         if keep == absorb {
             return Err("A militia can't be combined with itself.".to_owned());
@@ -148,19 +149,23 @@ impl DaySave {
         if members > u64::from(militia::MAX_MEMBERS) {
             return Err(format!("Together they would be {} members, and a militia can't have more than {}.", format::thousands_u64(members), format::thousands(militia::MAX_MEMBERS)));
         }
-        let (points, absorbed, name) = (first.points.min(second.points), second.title().to_owned(), first.title().to_owned());
+        // The name of the bigger of the two goes to the whole, and `keep` (the one that was selected) wins a tie.
+        let (bigger, smaller) = if second.members > first.members { (second, first) } else { (first, second) };
+        let (points, name, absorbed) = (first.points.min(second.points), bigger.name.clone(), smaller.title().to_owned());
+        let kept_title = bigger.title().to_owned();
         self.militias.retain(|m| m.id != absorb);
         if let Some(unit) = self.militias.iter_mut().find(|m| m.id == keep) {
             unit.members = members as u32;
             unit.points = points;
+            unit.name = name;
         }
-        self.newsreel.push(News::about(keep, Event::MilitiaMerged { name, absorbed, members: members as u32 }));
+        self.newsreel.push(News::about(keep, Event::MilitiaMerged { name: kept_title, absorbed, members: members as u32 }));
         Ok(())
     }
 
     /// Splits `members` of the members of the militia with this id off into a militia of their own, which belongs to the
-    /// same country, is from the same city, has the same movement points left, and stands at `at`. It is called "…
-    /// Detachment". The militia keeps the rest, and at least 1 member of it and of the new one is needed. This is reported
+    /// same country, is from the same city, has the same movement points left, and stands at `at`. It is named like any
+    /// new militia, for the city and its own id. The militia keeps the rest, and at least 1 member of it and of the new one is needed. This is reported
     /// in the newsreel. An error says why it can't be done.
     pub fn split_militia(&mut self, id: MilitiaId, members: u32, at: Vec2) -> Result<(), String> {
         if !at.x.is_finite() || !at.y.is_finite() {
@@ -171,9 +176,11 @@ impl DaySave {
             return Err(format!("{} has {} members, and can only split off from 1 to {} of them.", unit.title(), format::thousands(unit.members), format::thousands(unit.members.saturating_sub(1))));
         }
         unit.members -= members;
-        let (name, remaining) = (unit.title().to_owned(), unit.members);
-        let new_name = militia::split_name(&name);
-        let new = Militia { id: MilitiaId::new(), name: new_name.clone(), x: at.x, z: at.y, members, ..unit.clone() };
+        let (name, remaining, city) = (unit.title().to_owned(), unit.members, unit.city);
+        let new_id = MilitiaId::new();
+        let new_name = militia::default_name(self.city(city).map_or("Militia", |c| c.name.as_str()), new_id);
+        let unit = self.militias.iter().find(|m| m.id == id).ok_or("There is no such militia.")?;
+        let new = Militia { id: new_id, name: new_name.clone(), x: at.x, z: at.y, members, ..unit.clone() };
         self.militias.push(new);
         self.newsreel.push(News::about(id, Event::MilitiaSplit { name, new_name, members, remaining }));
         Ok(())
@@ -249,7 +256,7 @@ mod tests {
         day.move_militia(id, vec2(70.0, 5.0), 35, Some(0xC001)).unwrap();
         let militia = day.militia(id).unwrap();
         assert_eq!((militia.x, militia.z, militia.points), (70.0, 5.0, 165));
-        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::MilitiaMoved { name: "Port Aldor Militia 1-1-1".to_owned(), points: 35, region: Some(0xC001) })));
+        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::MilitiaMoved { name: format!("Port Aldor {}", id.short()), points: 35, region: Some(0xC001) })));
         // It can't spend more than it has, and a refused move changes nothing.
         let before = day.clone();
         let err = day.move_militia(id, vec2(90.0, 5.0), 166, None).unwrap_err();
@@ -305,7 +312,7 @@ mod tests {
         assert_eq!((militia.country, militia.city, militia.members, militia.raised), (aldoria, port, 150, day.date));
         assert_eq!((militia.x, militia.z), (40.0, -10.0));
         assert_eq!(day.militia(militia.id), Some(&militia));
-        assert_eq!(day.newsreel.last(), Some(&News::about(militia.id, Event::MilitiaRaised { name: "Port Aldor Militia 1-1-1".to_owned(), country: aldoria, city: port, members: 150, cost: vec![Cost::coins(1_500)] })));
+        assert_eq!(day.newsreel.last(), Some(&News::about(militia.id, Event::MilitiaRaised { name: format!("Port Aldor {}", militia.id.short()), country: aldoria, city: port, members: 150, cost: vec![Cost::coins(1_500)] })));
     }
 
     #[test]
@@ -417,21 +424,21 @@ mod tests {
     }
 
     #[test]
-    fn a_militia_is_named_for_its_city_and_the_day_and_can_be_renamed() {
+    fn a_militia_is_named_for_its_city_and_its_id_and_can_be_renamed() {
         let mut day = day_with_a_city();
         let port = day.cities[0].id;
         day.raise_militia(port, 30, CAMP).unwrap();
         let id = day.militias[0].id;
-        assert_eq!(day.militias[0].name, "Port Aldor Militia 1-1-1");
-        // On another day, the day is in the name.
+        assert_eq!(day.militias[0].name, format!("Port Aldor {}", id.short()));
+        // On another day it is the same, with the id of the new one.
         let mut later = day.following(Date { year: 2, month: 5, day: 9 });
         later.raise_militia(port, 30, CAMP).unwrap();
-        assert_eq!(later.militias[1].name, "Port Aldor Militia 2-5-9");
+        assert_eq!(later.militias[1].name, format!("Port Aldor {}", later.militias[1].id.short()));
 
         let news = day.newsreel.len();
         day.rename_militia(id, "  Harbour   Guard ").unwrap();
         assert_eq!(day.militia(id).unwrap().name, "Harbour Guard");
-        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::MilitiaRenamed { from: "Port Aldor Militia 1-1-1".to_owned(), to: "Harbour Guard".to_owned() })));
+        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::MilitiaRenamed { from: format!("Port Aldor {}", id.short()), to: "Harbour Guard".to_owned() })));
         // The same name again is no change, and a bad one or a missing militia is refused.
         let before = day.clone();
         day.rename_militia(id, "Harbour Guard").unwrap();
@@ -549,7 +556,7 @@ mod tests {
         assert_ne!(new.id, first);
         assert_eq!((new.members, new.points, new.country, new.city, new.raised), (120, 150, original.country, original.city, original.raised));
         assert_eq!((new.x, new.z), (30.0, 40.0));
-        assert_eq!(new.name, format!("{} Detachment", original.name));
+        assert_eq!(new.name, format!("Port Aldor {}", new.id.short()), "named for the city and its own id");
         let total: u32 = day.militias.iter().filter(|m| m.city == original.city).map(|m| m.members).sum();
         assert_eq!(total, 300 + 200 + 100, "nobody is made or lost");
         assert!(matches!(&day.newsreel.last().unwrap().event, Event::MilitiaSplit { members: 120, remaining: 180, .. }));
@@ -582,11 +589,43 @@ mod tests {
     }
 
     #[test]
-    fn a_split_name_fits_in_a_name() {
-        assert_eq!(militia::split_name("Harbour Guard"), "Harbour Guard Detachment");
-        let long = militia::split_name(&"a".repeat(militia::MAX_NAME_CHARS));
-        assert!(long.chars().count() <= militia::MAX_NAME_CHARS && long.ends_with(" Detachment"));
-        assert!(militia::clean_name(&long).is_ok());
+    fn a_split_group_is_named_for_the_city_of_the_militia_and_not_for_its_name() {
+        let (mut day, first, _, _) = day_with_three_militia();
+        day.rename_militia(first, "Harbour Guard").unwrap();
+        day.split_militia(first, 10, vec2(5.0, 5.0)).unwrap();
+        let new = day.militias.last().unwrap();
+        assert_eq!(new.name, format!("Port Aldor {}", new.id.short()));
+        assert_eq!(day.militia(first).unwrap().name, "Harbour Guard");
+        assert!(matches!(&day.newsreel.last().unwrap().event, Event::MilitiaSplit { name, new_name, .. } if name == "Harbour Guard" && *new_name == new.name));
+    }
+
+    #[test]
+    fn the_name_of_the_bigger_of_two_combined_militia_is_kept_and_the_selected_one_wins_a_tie() {
+        let regions = (Some(7), Some(7));
+        // The selected one is bigger: it keeps its name.
+        let (mut day, first, second, _) = day_with_three_militia();
+        let (bigger, smaller) = (day.militia(first).unwrap().name.clone(), day.militia(second).unwrap().name.clone());
+        day.merge_militia(first, second, regions).unwrap();
+        assert_eq!(day.militia(first).unwrap().name, bigger);
+        assert!(matches!(&day.newsreel.last().unwrap().event, Event::MilitiaMerged { name, absorbed, .. } if *name == bigger && *absorbed == smaller));
+
+        // The selected one is smaller: the other's name goes to the whole, which stays where the selected one was.
+        let (mut day, first, second, _) = day_with_three_militia();
+        let (at, name) = (day.militia(second).unwrap().x, day.militia(first).unwrap().name.clone());
+        day.merge_militia(second, first, regions).unwrap();
+        let whole = day.militia(second).unwrap();
+        assert_eq!((whole.name.as_str(), whole.x, whole.members), (name.as_str(), at, 500));
+        assert!(day.militia(first).is_none());
+
+        // The same size: the selected one's name, whichever it is.
+        for selected_first in [true, false] {
+            let (mut day, first, second, _) = day_with_three_militia();
+            day.militias.iter_mut().find(|m| m.id == first).unwrap().members = 200;
+            let (keep, absorb) = if selected_first { (first, second) } else { (second, first) };
+            let name = day.militia(keep).unwrap().name.clone();
+            day.merge_militia(keep, absorb, regions).unwrap();
+            assert_eq!(day.militia(keep).unwrap().name, name, "selected_first: {selected_first}");
+        }
     }
 
     #[test]
@@ -620,7 +659,7 @@ mod tests {
         assert_eq!(day.cities[0].population, 1_900, "the 40 who left are not back in the city");
         assert_eq!(
             day.newsreel,
-            [News::about(aldoria, Event::MilitiaPaid { amount: 60 }), News::about(id, Event::MilitiaDeserted { name: "Port Aldor Militia 1-1-1".to_owned(), country: aldoria, deserters: 40, remaining: 60 })]
+            [News::about(aldoria, Event::MilitiaPaid { amount: 60 }), News::about(id, Event::MilitiaDeserted { name: format!("Port Aldor {}", id.short()), country: aldoria, deserters: 40, remaining: 60 })]
         );
     }
 
@@ -630,6 +669,7 @@ mod tests {
             let mut day = day_with_a_city();
             let (aldoria, port) = (day.countries[0].id, day.cities[0].id);
             day.raise_militia(port, 100, CAMP).unwrap();
+            let kept = day.militias[0].name.clone();
             let current = day.country(aldoria).unwrap().money;
             day.add_money(aldoria, money - current).unwrap();
             day.newsreel.clear();
@@ -639,7 +679,7 @@ mod tests {
             assert_eq!(day.country(aldoria).unwrap().money, money, "and nothing is paid");
             assert_eq!(day.newsreel.len(), 1, "{money}: no payment to report, only the desertion");
             assert!(matches!(day.newsreel[0].event, Event::MilitiaDeserted { deserters: 100, remaining: 0, .. }));
-        assert!(matches!(&day.newsreel[0].event, Event::MilitiaDeserted { name, .. } if name == "Port Aldor Militia 1-1-1"), "the name is kept, for the militia is gone");
+        assert!(matches!(&day.newsreel[0].event, Event::MilitiaDeserted { name, .. } if *name == kept), "the name is kept, for the militia is gone");
         }
     }
 
