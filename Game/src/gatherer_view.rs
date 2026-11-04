@@ -16,6 +16,18 @@ use crate::gatherer::{Gatherer, GathererKind};
 use crate::ids::GathererId;
 use crate::pieces::{self, Piece};
 
+/// The color of the mark that stands for a kind of gatherer when it is seen from far off.
+fn mark(kind: GathererKind) -> Color {
+    match kind {
+        GathererKind::Woodcutter | GathererKind::Sawmill => PINE,
+        GathererKind::Stonecutter | GathererKind::Quarry => STONE,
+        GathererKind::IronMine => RUST,
+        GathererKind::CopperMine => COPPER,
+        GathererKind::SulphurPit => SULPHUR,
+        GathererKind::OilWell => OIL,
+    }
+}
+
 /// How big the figure on a coin is, as a share of the coin, so that it can be made out from far off.
 const FIGURE_SCALE: f32 = 1.15;
 /// A country that can't be found (which can't happen while it owns one) is shown in gray.
@@ -116,7 +128,12 @@ fn parts_at(world: &World, kind: GathererKind, x: f32, z: f32, eye: Vec3, countr
     let (half, thickness) = tile_size(kind);
     let mut parts: Vec<Piece> = pieces::tile(foot, half * r, thickness * r, country).into();
     let top = pieces::tile_top(foot, half * r, thickness * r);
-    parts.extend(pieces::flatten(figure(kind, top, r * FIGURE_SCALE), top.y, pieces::FLAT));
+    if pieces::is_far(eye, vec3(x, ground, z)) {
+        // From far off, only a mark of what it is: a small square of its color on the tile.
+        parts.push(Piece::block_on(top, vec3(0.5 * r, 0.05 * r, 0.5 * r), mark(kind)));
+    } else {
+        parts.extend(pieces::flatten(figure(kind, top, r * FIGURE_SCALE), top.y, pieces::FLAT));
+    }
     parts
 }
 
@@ -200,6 +217,24 @@ mod tests {
     }
 
     #[test]
+    fn from_far_off_it_is_only_a_marker_of_its_kind_on_the_tile() {
+        let world = world();
+        let mark_of = |kind| {
+            let gatherer = of_kind(&world, kind);
+            let near = parts(&world, &gatherer, eye_over(&gatherer, &world, 300.0), COUNTRY);
+            let far = parts(&world, &gatherer, eye_over(&gatherer, &world, pieces::FAR + 500.0), COUNTRY);
+            assert!(far.len() < near.len(), "{kind:?}: less to draw from far off: {} against {}", far.len(), near.len());
+            assert_eq!(far.len(), 4, "the three squares of the tile and a marker");
+            assert_eq!(far[..3].iter().map(|p| p.color).collect::<Vec<_>>(), near[..3].iter().map(|p| p.color).collect::<Vec<_>>(), "the tile is the same");
+            far[3].color
+        };
+        assert_ne!(mark_of(GathererKind::Woodcutter), mark_of(GathererKind::Stonecutter));
+        assert_ne!(mark_of(GathererKind::IronMine), mark_of(GathererKind::CopperMine));
+        assert_ne!(mark_of(GathererKind::SulphurPit), mark_of(GathererKind::OilWell));
+        assert_eq!(mark_of(GathererKind::Woodcutter), mark_of(GathererKind::Sawmill), "the lesser and the greater of a kind share its color");
+    }
+
+    #[test]
     fn each_kind_has_a_figure_of_its_own() {
         let world = world();
         let signature = |kind: GathererKind| {
@@ -240,8 +275,8 @@ mod tests {
         let across = |distance: f32| parts(&world, &gatherer, eye_over(&gatherer, &world, distance), COUNTRY)[0].size.x;
         assert!(across(50.0) >= 16.0, "close up it is still a token: {}", across(50.0));
         assert!(across(3_000.0) > across(1_000.0) && across(1_000.0) > across(300.0));
-        assert!(across(3_000.0) > 100.0, "from 3 km it is over 100 m across: {}", across(3_000.0));
-        assert!(across(1_000_000.0) <= 290.0, "but not so big that it covers a region");
+        assert!(across(3_000.0) > 60.0, "from 3 km it is over 60 m across: {}", across(3_000.0));
+        assert!(across(1_000_000.0) <= 120.0, "but not so big that it covers a region: {}", across(1_000_000.0));
     }
 
     #[test]

@@ -12,9 +12,12 @@ use nworld_map::world::World;
 /// How much of the distance to the camera a token's radius is, so that a token is a few percent of the screen across, and
 /// the least and the most it is, in meters: it is not so small close up that it can't be seen, nor so big far off that it
 /// covers a whole region.
-const SCREEN_SHARE: f32 = 0.022;
+const SCREEN_SHARE: f32 = 0.012;
 const MIN_RADIUS: f32 = 8.0;
-const MAX_RADIUS: f32 = 140.0;
+const MAX_RADIUS: f32 = 48.0;
+/// How far from the camera a token is drawn as a plain marker, with none of the detail of a figure or a stack: from this far,
+/// the rings and the figures would only be clutter, and what is wanted is a mark of whose it is and what kind.
+pub const FAR: f32 = 2_500.0;
 /// How far from the mouse's ray, as a fraction of how far away it is, a piece still counts as pointed at, so that a thin one
 /// can be hit from far away.
 const HOVER_SLOP: f32 = 0.006;
@@ -135,6 +138,11 @@ pub fn radius_at(eye: Vec3, at: Vec3) -> f32 {
     (eye.distance(at) * SCREEN_SHARE).clamp(MIN_RADIUS, MAX_RADIUS)
 }
 
+/// Whether a token at `at` is far enough from a camera at `eye` to be drawn as a plain marker.
+pub fn is_far(eye: Vec3, at: Vec3) -> bool {
+    eye.distance(at) > FAR
+}
+
 /// The height of the ground a token of `radius` standing at (`x`, `z`) stands on: the highest ground under it, so that none
 /// of it is buried.
 pub fn ground_under(world: &World, x: f32, z: f32, radius: f32) -> f32 {
@@ -253,8 +261,11 @@ mod tests {
         let radius = |distance: f32| radius_at(vec3(0.0, distance, 0.0), at);
         assert_eq!(radius(100.0), MIN_RADIUS, "close up it keeps a size that can be seen");
         assert_eq!(radius(100_000.0), MAX_RADIUS, "far off it does not cover regions");
-        assert!(radius(2_000.0) > radius(1_000.0) && radius(1_000.0) > radius(500.0), "it grows with the distance");
-        assert!((radius(2_000.0) - 44.0).abs() < 1e-3);
+        assert!(radius(3_000.0) > radius(2_000.0) && radius(2_000.0) > radius(1_000.0), "it grows with the distance");
+        assert!((radius(2_000.0) - 24.0).abs() < 1e-3);
+        assert!(MAX_RADIUS * 2.0 <= 100.0, "and is never more than about 100 m across");
+        let (near, far) = (vec3(0.0, FAR - 1.0, 0.0), vec3(0.0, FAR + 1.0, 0.0));
+        assert!(!is_far(near, at) && is_far(far, at));
     }
 
     #[test]

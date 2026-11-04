@@ -40,6 +40,9 @@ pub fn coins_for(members: u32) -> usize {
 /// color on it, hopping to the time `marching` if it is walking.
 fn parts(world: &World, militia: &Militia, at: Vec2, marching: Option<f32>, country: Color, eye: Vec3) -> Vec<Piece> {
     let r = pieces::radius_at(eye, vec3(at.x, world.surface_height(at.x, at.y), at.y));
+    if pieces::is_far(eye, vec3(at.x, world.surface_height(at.x, at.y), at.y)) {
+        return far_marker(world, at, r, marching, country);
+    }
     let hop = marching.map_or(0.0, |time| (time * HOP_RATE).sin().abs() * HOP_HEIGHT * r);
     let foot = vec3(at.x, pieces::ground_under(world, at.x, at.y, r), at.y) + vec3(0.0, hop, 0.0);
     let mut parts = Vec::new();
@@ -65,6 +68,13 @@ fn parts(world: &World, militia: &Militia, at: Vec2, marching: Option<f32>, coun
     ];
     parts.extend(pieces::flatten(pawn, top.y, pieces::FLAT));
     parts
+}
+
+/// A militia seen from far off: a flat gold round with a disc of its country's color on it, and nothing else.
+fn far_marker(world: &World, at: Vec2, r: f32, marching: Option<f32>, country: Color) -> Vec<Piece> {
+    let hop = marching.map_or(0.0, |time| (time * HOP_RATE).sin().abs() * HOP_HEIGHT * r);
+    let foot = vec3(at.x, pieces::ground_under(world, at.x, at.y, r), at.y) + vec3(0.0, hop, 0.0);
+    vec![Piece::disc(foot, r, 0.1 * r, GOLD), Piece::disc(foot + vec3(0.0, 0.1 * r, 0.0), 0.62 * r, 0.06 * r, country)]
 }
 
 /// Draws the militia of `day`, as seen by the camera that is set, which must still be the one the map was drawn with, and
@@ -185,7 +195,22 @@ mod tests {
         let across = |distance: f32| parts(&world, &militia(300, at), at, None, COUNTRY, eye_over(at, &world, distance))[0].size.x;
         assert!(across(50.0) >= 16.0, "close up: {}", across(50.0));
         assert!(across(3_000.0) > across(1_000.0) && across(1_000.0) > across(300.0));
-        assert!(across(3_000.0) > 100.0, "{}", across(3_000.0));
+        assert!(across(3_000.0) > 60.0, "{}", across(3_000.0));
+    }
+
+    #[test]
+    fn from_far_off_it_is_only_a_gold_round_with_the_countrys_color_on_it() {
+        let world = test_support::small_continent();
+        let at = test_support::inland_spot(&world, 50.0);
+        let near = parts(&world, &militia(1_000, at), at, None, COUNTRY, eye_over(at, &world, 300.0));
+        let far = parts(&world, &militia(1_000, at), at, None, COUNTRY, eye_over(at, &world, pieces::FAR + 500.0));
+        assert!(far.len() == 2 && far.len() < near.len());
+        assert_eq!((far[0].shape, far[0].color), (pieces::Shape::Disc, GOLD), "still a gold round, so it is still not mistaken for a fixed thing");
+        assert_eq!(far[1].color, COUNTRY);
+        assert!(far[1].size.x < far[0].size.x);
+        // It still hops when walking, and is picked where it is.
+        let hopping = parts(&world, &militia(1_000, at), at, Some(0.05), COUNTRY, eye_over(at, &world, pieces::FAR + 500.0));
+        assert!(hopping[0].middle.y >= far[0].middle.y);
     }
 
     #[test]
