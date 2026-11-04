@@ -1,11 +1,12 @@
-//! Drawing the gatherers. A woodcutter and a stonecutter are each a cabin with a dark roof and a pile of what they
-//! gather beside it, in logs or in gray stone. A sawmill and a quarry, the greater ones, are bigger and have more to
-//! them: a sawmill is a long hall with a tall chimney, a lean-to, stacks of logs and of planks, and a quarry is a
-//! stepped pit of stone with a crane over it, a hut and stacks of cut blocks. Each flies a flag in the color of the
-//! country it belongs to on a pole. The iron mine, the copper mine, the sulphur pit and the oil well are the size of the
-//! greater ones, and each has its own look: a headframe over a shaft, a hall under a green roof, a stepped yellow pit,
-//! and a derrick over a pump house and tanks. All are built bigger than life, so that they can be seen over the trees. This is the
-//! game's own drawing, and not part of drawing the map.
+//! Drawing the gatherers, as tiles: a square tile with a dark edge, a frame in the color of the country it belongs to and a pale
+//! square in the middle with a little figure of what it gathers standing on it, in that resource's own color: a pine for a woodcutter, a pair of pines and a plank for a
+//! sawmill, a boulder for a stonecutter, steps of cut stone for a quarry, an ingot for an iron mine, a stack of coins for a
+//! copper mine, a yellow heap for a sulphur pit and a black drop for an oil well. The lesser gatherers, the woodcutter and
+//! the stonecutter, have the smaller, thinner tile. A gatherer is fixed, and so stands on a square, and a unit that can move
+//! stands on a round gold base (see [`crate::militia_view`]), so that they are told apart at a glance. The tokens are sized by how far the camera is from them (see
+//! [`crate::pieces`]), so that they can be seen on the map from far off. They are low, like the pieces of a flat game: from above
+//! they are what they are, and only from a low angle are they seen to have a body. This is the game's own drawing, and not part of
+//! drawing the map.
 
 use macroquad::prelude::*;
 use nworld_map::world::World;
@@ -13,100 +14,131 @@ use nworld_map::world::World;
 use crate::day::DaySave;
 use crate::gatherer::{Gatherer, GathererKind};
 use crate::ids::GathererId;
+use crate::pieces::{self, Piece};
 
-/// How far from a part of it, as a fraction of how far away it is, the mouse can be and still be on it, so that the
-/// thin pole can be hit from far away.
-const HOVER_SLOP: f32 = 0.006;
-/// How far apart the points are along the edge of the ground a preview covers, and how high above the ground it is held.
-const FOOTPRINT_EVERY: f32 = 4.0;
-const FOOTPRINT_HOLD: f32 = 0.6;
-const POLE: Color = Color::new(0.82, 0.80, 0.74, 1.0);
-/// A country that can't be found (which can't happen while it owns one) is flown in gray.
+/// How big the figure on a coin is, as a share of the coin, so that it can be made out from far off.
+const FIGURE_SCALE: f32 = 1.15;
+/// A country that can't be found (which can't happen while it owns one) is shown in gray.
 const NO_COUNTRY: Color = Color::new(0.6, 0.6, 0.6, 1.0);
 
-/// How many times bigger than life it is, so that it stands out over the forest it is in: the greater ones more.
-fn scale(kind: GathererKind) -> f32 {
-    if kind.greater() {
-        3.0
-    } else {
-        2.0
-    }
-}
-
-/// How tall its flag pole is, in life-size meters, which is the tallest part of it.
-fn pole_height(kind: GathererKind) -> f32 {
-    if kind.greater() {
-        9.0
-    } else {
-        7.0
-    }
-}
-
-/// How high the top of a gatherer of `kind` stands over the ground, in meters, which is for holding things over it.
+/// How high the top of a gatherer of `kind` stands over the ground, in meters, for holding things over it: about as high as a
+/// token is close up.
 pub fn height(kind: GathererKind) -> f32 {
-    pole_height(kind) * scale(kind)
+    if kind.greater() { 27.0 } else { 14.0 }
 }
 
-/// The colors a kind of gatherer is made of: its walls, its roof, the pile of what it has gathered beside it, and
-/// timber or planks for what else it has.
-struct Palette {
-    wall: Color,
-    roof: Color,
-    pile: Color,
-    trim: Color,
+const fn c(r: f32, g: f32, b: f32) -> Color {
+    Color::new(r, g, b, 1.0)
 }
 
-impl Palette {
-    fn of(kind: GathererKind) -> Self {
-        let c = |r: f32, g: f32, b: f32| Color::new(r, g, b, 1.0);
-        match kind {
-            // Log walls and a dark roof, with a pile of logs.
-            GathererKind::Woodcutter => Self { wall: c(0.50, 0.34, 0.20), roof: c(0.27, 0.19, 0.14), pile: c(0.68, 0.50, 0.30), trim: c(0.68, 0.50, 0.30) },
-            // Gray stone walls and a slate roof, with a pile of cut blocks.
-            GathererKind::Stonecutter => Self { wall: c(0.58, 0.58, 0.60), roof: c(0.22, 0.25, 0.30), pile: c(0.80, 0.80, 0.82), trim: c(0.45, 0.33, 0.20) },
-            // Dark timber walls under a red roof, with logs, and stacks of pale planks.
-            GathererKind::Sawmill => Self { wall: c(0.47, 0.31, 0.19), roof: c(0.52, 0.21, 0.16), pile: c(0.68, 0.50, 0.30), trim: c(0.86, 0.72, 0.50) },
-            // Pale stone in steps, with a slate roof, and a timber crane.
-            GathererKind::Quarry => Self { wall: c(0.62, 0.59, 0.54), roof: c(0.22, 0.25, 0.30), pile: c(0.82, 0.82, 0.84), trim: c(0.45, 0.33, 0.20) },
-            // Dark rock round the shaft, rust-red ore, and timber for the headframe.
-            GathererKind::IronMine => Self { wall: c(0.36, 0.37, 0.41), roof: c(0.45, 0.22, 0.15), pile: c(0.58, 0.30, 0.20), trim: c(0.55, 0.42, 0.28) },
-            // Copper-brown walls under a green roof of verdigris, with bright copper ore.
-            GathererKind::CopperMine => Self { wall: c(0.55, 0.35, 0.22), roof: c(0.25, 0.55, 0.48), pile: c(0.82, 0.47, 0.26), trim: c(0.55, 0.40, 0.25) },
-            // Yellow rock in steps, and bright heaps of sulphur.
-            GathererKind::SulphurPit => Self { wall: c(0.78, 0.70, 0.25), roof: c(0.40, 0.36, 0.22), pile: c(0.94, 0.86, 0.30), trim: c(0.45, 0.33, 0.20) },
-            // A dark pad and pump house, steel tanks, and a yellow derrick.
-            GathererKind::OilWell => Self { wall: c(0.20, 0.21, 0.23), roof: c(0.62, 0.20, 0.14), pile: c(0.42, 0.45, 0.50), trim: c(0.78, 0.66, 0.20) },
-        }
+const PINE: Color = c(0.16, 0.48, 0.22);
+const TRUNK: Color = c(0.45, 0.30, 0.18);
+const PLANK: Color = c(0.80, 0.64, 0.40);
+const STONE: Color = c(0.64, 0.64, 0.68);
+const STONE_LIGHT: Color = c(0.82, 0.82, 0.85);
+const IRON: Color = c(0.52, 0.55, 0.62);
+const RUST: Color = c(0.66, 0.30, 0.20);
+const COPPER: Color = c(0.84, 0.48, 0.26);
+const SULPHUR: Color = c(0.95, 0.86, 0.28);
+const OIL: Color = c(0.10, 0.10, 0.13);
+const OIL_PAD: Color = c(0.34, 0.36, 0.42);
+const OIL_SHINE: Color = c(0.55, 0.60, 0.70);
+
+/// The tile a kind of gatherer stands on: how wide a half of it is, as a share of the token's radius, and how thick.
+fn tile_size(kind: GathererKind) -> (f32, f32) {
+    if kind.greater() { (1.2, 0.2) } else { (1.0, 0.13) }
+}
+
+/// A pine of `scale` (1 is a tall one) with its foot at `foot`, `r` being the radius of the token: a trunk and three tiers of
+/// branches, each a little lighter or darker than the next, so that from above it is rings.
+fn pine(pieces: &mut Vec<Piece>, foot: Vec3, r: f32, scale: f32) {
+    let s = r * scale;
+    pieces.push(Piece::disc(foot, 0.11 * s, 0.24 * s, TRUNK));
+    for (k, (radius, shade)) in [(0.46, 0.8), (0.34, 1.0), (0.22, 1.25)].into_iter().enumerate() {
+        pieces.push(Piece::cone(foot + vec3(0.0, (0.18 + 0.36 * k as f32) * s, 0.0), radius * s, 0.62 * s, pieces::shade(PINE, shade)));
     }
 }
 
-/// `color` made lighter (over 1) or darker (under 1).
-fn shade(color: Color, by: f32) -> Color {
-    Color::new((color.r * by).min(1.0), (color.g * by).min(1.0), (color.b * by).min(1.0), color.a)
+/// The figure that stands on the coin of a gatherer of `kind`, with the middle of its foot at `top`, `r` being the radius of
+/// the token.
+fn figure(kind: GathererKind, top: Vec3, r: f32) -> Vec<Piece> {
+    let at = |dx: f32, dz: f32, up: f32| top + vec3(dx * r, up * r, dz * r);
+    let mut pieces = Vec::new();
+    match kind {
+        GathererKind::Woodcutter => pine(&mut pieces, at(0.0, 0.0, 0.0), r, 1.0),
+        GathererKind::Sawmill => {
+            pine(&mut pieces, at(-0.42, 0.1, 0.0), r, 0.85);
+            pine(&mut pieces, at(0.42, -0.1, 0.0), r, 0.85);
+            pieces.push(Piece::block_on(at(0.0, 0.5, 0.0), vec3(1.0, 0.14, 0.34) * r, PLANK));
+            pieces.push(Piece::block_on(at(0.0, 0.5, 0.14), vec3(0.9, 0.14, 0.34) * r, PLANK));
+        }
+        GathererKind::Stonecutter => {
+            pieces.push(Piece::block_on(at(-0.12, 0.0, 0.0), vec3(0.7, 0.5, 0.58) * r, STONE));
+            pieces.push(Piece::block_on(at(0.4, 0.2, 0.0), vec3(0.36, 0.3, 0.34) * r, STONE_LIGHT));
+        }
+        GathererKind::Quarry => {
+            pieces.push(Piece::block_on(at(0.0, 0.0, 0.0), vec3(1.3, 0.3, 0.9) * r, STONE));
+            pieces.push(Piece::block_on(at(0.0, 0.0, 0.3), vec3(0.95, 0.3, 0.66) * r, STONE_LIGHT));
+            pieces.push(Piece::block_on(at(0.0, 0.0, 0.6), vec3(0.6, 0.3, 0.42) * r, STONE));
+        }
+        GathererKind::IronMine => {
+            pieces.push(Piece::block_on(at(0.0, 0.0, 0.0), vec3(1.0, 0.28, 0.56) * r, IRON));
+            pieces.push(Piece::block_on(at(0.0, 0.0, 0.28), vec3(0.76, 0.26, 0.42) * r, RUST));
+        }
+        GathererKind::CopperMine => {
+            // A stack of coins that narrows, so that from above it is rings.
+            for k in 0..4 {
+                let rim = if k % 2 == 0 { COPPER } else { pieces::shade(COPPER, 0.78) };
+                pieces.push(Piece::disc(at(0.0, 0.0, 0.14 * k as f32), (0.56 - 0.07 * k as f32) * r, 0.14 * r, rim));
+            }
+        }
+        GathererKind::SulphurPit => {
+            pieces.push(Piece::cone(at(-0.12, 0.0, 0.0), 0.58 * r, 0.5 * r, pieces::shade(SULPHUR, 0.85)));
+            pieces.push(Piece::cone(at(-0.12, 0.0, 0.3), 0.36 * r, 0.5 * r, SULPHUR));
+            pieces.push(Piece::cone(at(-0.12, 0.0, 0.6), 0.18 * r, 0.3 * r, pieces::shade(SULPHUR, 1.12)));
+            pieces.push(Piece::cone(at(0.46, 0.22, 0.0), 0.28 * r, 0.4 * r, pieces::shade(SULPHUR, 0.7)));
+        }
+        GathererKind::OilWell => {
+            pieces.push(Piece::disc(at(0.0, 0.0, 0.0), 0.62 * r, 0.12 * r, OIL_PAD));
+            pieces.push(Piece::ball(at(0.0, 0.0, 0.56), 0.46 * r, OIL));
+            pieces.push(Piece::ball(at(-0.16, -0.16, 0.8), 0.13 * r, OIL_SHINE));
+        }
+    }
+    pieces
 }
 
-/// A box that is part of a gatherer: where its middle is, how big it is across, and its color.
-struct Part {
-    middle: Vec3,
-    size: Vec3,
-    color: Color,
+/// The pieces of a gatherer of `kind` standing at (`x`, `z`) in the color `country`, for a camera at `eye`: the coin, and the
+/// figure on it.
+fn parts_at(world: &World, kind: GathererKind, x: f32, z: f32, eye: Vec3, country: Color) -> Vec<Piece> {
+    let ground = world.surface_height(x, z);
+    let r = pieces::radius_at(eye, vec3(x, ground, z));
+    let foot = vec3(x, pieces::ground_under(world, x, z, r), z);
+    let (half, thickness) = tile_size(kind);
+    let mut parts: Vec<Piece> = pieces::tile(foot, half * r, thickness * r, country).into();
+    let top = pieces::tile_top(foot, half * r, thickness * r);
+    parts.extend(pieces::flatten(figure(kind, top, r * FIGURE_SCALE), top.y, pieces::FLAT));
+    parts
 }
 
-/// Draws the gatherers of `day`, as seen by the camera that is set, which must still be the one the map was drawn
-/// with.
-pub fn draw(world: &World, day: &DaySave) {
+fn parts(world: &World, gatherer: &Gatherer, eye: Vec3, country: Color) -> Vec<Piece> {
+    parts_at(world, gatherer.kind, gatherer.x, gatherer.z, eye, country)
+}
+
+/// Draws the gatherers of `day`, as seen by the camera that is set, which must still be the one the map was drawn with, and
+/// is at `eye`.
+pub fn draw(world: &World, day: &DaySave, eye: Vec3) {
     for gatherer in &day.gatherers {
-        let flag = day.country(gatherer.country).map_or(NO_COUNTRY, |c| c.color.color());
-        for part in parts(world, gatherer, flag) {
-            draw_cube(part.middle, part.size, None, part.color);
+        let country = day.country(gatherer.country).map_or(NO_COUNTRY, |c| c.color.color());
+        for piece in parts(world, gatherer, eye, country) {
+            piece.draw();
         }
     }
 }
 
-/// Draws a frame of `color` round each part of `gatherer`, to mark it out, as seen by the camera that is set.
-pub fn outline(world: &World, gatherer: &Gatherer, color: Color) {
-    for part in parts(world, gatherer, WHITE) {
-        draw_cube_wires(part.middle, part.size * 1.04, color);
+/// Draws a frame of `color` round each piece of `gatherer`, to mark it out, as seen by the camera that is set, at `eye`.
+pub fn outline(world: &World, gatherer: &Gatherer, eye: Vec3, color: Color) {
+    for piece in parts(world, gatherer, eye, WHITE) {
+        piece.draw_frame(color);
     }
 }
 
@@ -115,351 +147,132 @@ pub fn outline(world: &World, gatherer: &Gatherer, color: Color) {
 pub fn under_ray(ray: (Vec3, Vec3), world: &World, gatherers: &[Gatherer]) -> Option<GathererId> {
     gatherers
         .iter()
-        .filter_map(|gatherer| {
-            let nearest = parts(world, gatherer, WHITE)
-                .iter()
-                .filter_map(|part| hit(ray, part.middle, part.size, ray.0.distance(part.middle) * HOVER_SLOP))
-                .min_by(f32::total_cmp)?;
-            Some((nearest, gatherer.id))
-        })
+        .filter_map(|gatherer| Some((pieces::first_hit(ray, &parts(world, gatherer, ray.0, WHITE))?, gatherer.id)))
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, id)| id)
 }
 
-/// How far along the ray a box is first hit, if it is, with the box grown by `slop` all round.
-pub fn hit((origin, direction): (Vec3, Vec3), middle: Vec3, size: Vec3, slop: f32) -> Option<f32> {
-    let half = size * 0.5 + Vec3::splat(slop);
-    let (mut near, mut far) = (0.0f32, f32::MAX);
-    for axis in 0..3 {
-        let (low, high) = (middle[axis] - half[axis], middle[axis] + half[axis]);
-        if direction[axis].abs() < 1e-8 {
-            if origin[axis] < low || origin[axis] > high {
-                return None;
-            }
-        } else {
-            let (a, b) = ((low - origin[axis]) / direction[axis], (high - origin[axis]) / direction[axis]);
-            near = near.max(a.min(b));
-            far = far.min(a.max(b));
-            if near > far {
-                return None;
-            }
-        }
+/// Draws where a gatherer of `kind` would stand if it were built at `at`, so that it can be seen against the region: a frame
+/// round each piece of it, and a ring on the ground round it, in `color`. As seen by the camera that is set, at `eye`.
+pub fn preview(world: &World, kind: GathererKind, at: Vec2, eye: Vec3, color: Color) {
+    for piece in parts_at(world, kind, at.x, at.y, eye, WHITE) {
+        piece.draw_frame(color);
     }
-    Some(near)
-}
-
-/// Draws where a gatherer of `kind` would stand if it were built at `at`, so that its size can be seen against the
-/// region: a frame round each part of it, and the ground it covers marked out, in `color`. As seen by the camera that
-/// is set.
-pub fn preview(world: &World, kind: GathererKind, at: Vec2, color: Color) {
-    let parts = parts_at(world, kind, at.x, at.y, WHITE);
-    for part in &parts {
-        draw_cube_wires(part.middle, part.size * 1.04, color);
-    }
-    // The ground it covers, from the farthest its parts reach, held just over the ground along each side.
-    let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
-    for part in &parts {
-        let half = vec2(part.size.x, part.size.z) * 0.5;
-        low = low.min(vec2(part.middle.x, part.middle.z) - half);
-        high = high.max(vec2(part.middle.x, part.middle.z) + half);
-    }
-    let corners = [low, vec2(high.x, low.y), high, vec2(low.x, high.y), low];
-    for pair in corners.windows(2) {
-        let steps = (pair[0].distance(pair[1]) / FOOTPRINT_EVERY).ceil().max(1.0) as usize;
-        let point = |k: usize| {
-            let p = pair[0].lerp(pair[1], k as f32 / steps as f32);
-            vec3(p.x, world.surface_height(p.x, p.y) + FOOTPRINT_HOLD, p.y)
-        };
-        for k in 0..steps {
-            draw_line_3d(point(k), point(k + 1), color);
-        }
-    }
-}
-
-/// The parts of one gatherer, flying `flag`. Each stands on the ground at its own place, so that the whole follows a
-/// slope. The last two are its flag pole and its flag.
-fn parts(world: &World, gatherer: &Gatherer, flag: Color) -> Vec<Part> {
-    parts_at(world, gatherer.kind, gatherer.x, gatherer.z, flag)
-}
-
-/// The parts of a gatherer of `kind` standing at (`x`, `z`), flying `flag`.
-fn parts_at(world: &World, kind: GathererKind, x: f32, z: f32, flag: Color) -> Vec<Part> {
-    let (look, s) = (Palette::of(kind), scale(kind));
-    let ground = |dx: f32, dz: f32| world.surface_height(x + dx * s, z + dz * s);
-    // A part standing `rise` above the ground at (`dx`, `dz`) from the gatherer, in life-size meters.
-    let part = |dx: f32, dz: f32, rise: f32, size: Vec3, color: Color| {
-        let size = size * s;
-        Part { middle: vec3(x + dx * s, ground(dx, dz) + rise * s + size.y * 0.5, z + dz * s), size, color }
-    };
-    // The main building stands on the highest ground under it, so that none of it is buried.
-    let (reach_x, reach_z) = if kind.greater() { (6.0, 4.5) } else { (2.5, 2.0) };
-    let base = [(-reach_x, -reach_z), (reach_x, -reach_z), (-reach_x, reach_z), (reach_x, reach_z), (0.0, 0.0)].iter().map(|(dx, dz)| ground(*dx, *dz)).fold(f32::MIN, f32::max);
-    let lift = (base - ground(0.0, 0.0)) / s;
-    let mut parts = match kind {
-        GathererKind::Woodcutter | GathererKind::Stonecutter => vec![
-            part(0.0, 0.0, lift, vec3(5.0, 2.6, 4.0), look.wall),
-            part(0.0, 0.0, lift + 2.6, vec3(5.8, 0.5, 4.8), look.roof),
-            part(0.0, 0.0, lift + 3.1, vec3(4.0, 0.5, 3.0), look.roof),
-            part(4.2, 0.5, 0.0, vec3(2.4, 0.9, 1.0), look.pile),
-            part(4.2, 0.5, 0.9, vec3(2.0, 0.8, 0.9), look.pile),
-        ],
-        GathererKind::Sawmill => vec![
-            // The hall, under a roof of three tiers.
-            part(0.0, 0.0, lift, vec3(9.0, 3.4, 6.0), look.wall),
-            part(0.0, 0.0, lift + 3.4, vec3(10.4, 0.6, 7.4), look.roof),
-            part(0.0, 0.0, lift + 4.0, vec3(7.6, 0.8, 4.8), look.roof),
-            part(0.0, 0.0, lift + 4.8, vec3(9.0, 0.5, 1.2), look.roof),
-            // A tall chimney.
-            part(3.2, 1.5, lift + 4.0, vec3(1.2, 4.5, 1.2), shade(look.roof, 0.55)),
-            // A lean-to at the side.
-            part(-6.4, 0.5, 0.0, vec3(3.4, 2.2, 4.4), look.wall),
-            part(-6.4, 0.5, 2.2, vec3(4.0, 0.4, 5.0), look.roof),
-            // Logs in three layers, and planks in two.
-            part(6.8, -1.6, 0.0, vec3(2.4, 1.0, 5.0), look.pile),
-            part(6.8, -1.6, 1.0, vec3(2.4, 1.0, 4.2), look.pile),
-            part(6.8, -1.6, 2.0, vec3(2.4, 1.0, 3.4), look.pile),
-            part(0.0, 4.6, 0.0, vec3(5.0, 1.2, 1.4), look.trim),
-            part(0.0, 4.6, 1.2, vec3(4.2, 0.8, 1.2), look.trim),
-        ],
-        GathererKind::Quarry => vec![
-            // The pit, in three steps going up.
-            part(0.0, 0.0, lift, vec3(12.0, 1.0, 9.0), shade(look.wall, 0.8)),
-            part(0.0, 0.0, lift + 1.0, vec3(9.6, 1.0, 7.0), look.wall),
-            part(0.0, 0.0, lift + 2.0, vec3(7.2, 1.0, 5.0), shade(look.wall, 1.15)),
-            // A hut for the workers.
-            part(-6.6, -1.5, 0.0, vec3(3.4, 2.4, 3.6), shade(look.wall, 0.9)),
-            part(-6.6, -1.5, 2.4, vec3(4.0, 0.5, 4.2), look.roof),
-            // A crane: a mast, a boom, and a block on a cable.
-            part(4.6, -3.2, 0.0, vec3(0.8, 9.0, 0.8), look.trim),
-            part(2.4, -3.2, 8.2, vec3(5.6, 0.5, 0.5), look.trim),
-            part(0.2, -3.2, 6.4, vec3(0.15, 1.8, 0.15), POLE),
-            part(0.2, -3.2, 5.2, vec3(1.2, 1.2, 1.2), look.pile),
-            // Cut blocks stacked about.
-            part(5.4, 2.4, 0.0, vec3(2.4, 1.2, 2.4), look.pile),
-            part(5.4, 2.4, 1.2, vec3(1.8, 1.0, 1.8), look.pile),
-            part(-2.4, 4.2, 0.0, vec3(3.0, 1.0, 1.6), look.pile),
-        ],
-        GathererKind::IronMine => vec![
-            // The rock the shaft is cut into, with a timbered mouth in front of it.
-            part(0.0, 0.0, lift, vec3(10.0, 3.0, 7.0), look.wall),
-            part(0.0, -3.7, 0.0, vec3(3.2, 2.2, 0.6), shade(look.wall, 0.3)),
-            part(-1.8, -3.8, 0.0, vec3(0.5, 2.4, 0.7), look.trim),
-            part(1.8, -3.8, 0.0, vec3(0.5, 2.4, 0.7), look.trim),
-            part(0.0, -3.8, 2.2, vec3(4.2, 0.5, 0.7), look.trim),
-            // A headframe over the shaft, with its wheel.
-            part(-1.5, 3.6, 0.0, vec3(0.6, 7.0, 0.6), look.trim),
-            part(1.5, 3.6, 0.0, vec3(0.6, 7.0, 0.6), look.trim),
-            part(0.0, 3.6, 7.0, vec3(4.2, 0.6, 0.6), look.trim),
-            part(0.0, 3.6, 6.2, vec3(1.6, 1.6, 0.3), shade(look.wall, 0.7)),
-            // A hut under a rusty roof, and heaps of ore.
-            part(-6.4, 0.5, 0.0, vec3(3.4, 2.4, 3.6), shade(look.wall, 0.9)),
-            part(-6.4, 0.5, 2.4, vec3(4.0, 0.5, 4.2), look.roof),
-            part(6.2, 1.0, 0.0, vec3(2.8, 1.2, 3.0), look.pile),
-            part(6.2, 1.0, 1.2, vec3(2.0, 0.9, 2.0), look.pile),
-        ],
-        GathererKind::CopperMine => vec![
-            // A hall under a green roof of two tiers, with a chimney.
-            part(0.0, 0.0, lift, vec3(8.0, 3.2, 6.0), look.wall),
-            part(0.0, 0.0, lift + 3.2, vec3(9.2, 0.6, 7.2), look.roof),
-            part(0.0, 0.0, lift + 3.8, vec3(6.4, 0.7, 4.4), look.roof),
-            part(2.8, 1.2, lift + 3.8, vec3(1.1, 4.2, 1.1), shade(look.roof, 0.5)),
-            // A shed where the ore is carted in.
-            part(-6.4, 1.0, 0.0, vec3(3.4, 2.2, 4.0), shade(look.wall, 0.85)),
-            part(-6.4, 1.0, 2.2, vec3(4.0, 0.4, 4.6), look.roof),
-            // Heaps of ore, and a long bin.
-            part(6.4, -1.0, 0.0, vec3(3.0, 1.2, 3.4), look.pile),
-            part(6.4, -1.0, 1.2, vec3(2.2, 1.0, 2.4), look.pile),
-            part(0.0, 4.4, 0.0, vec3(5.0, 1.0, 1.4), look.pile),
-            part(0.0, 4.4, 1.0, vec3(4.0, 0.8, 1.2), look.trim),
-        ],
-        GathererKind::SulphurPit => vec![
-            // The pit, in three steps going up.
-            part(0.0, 0.0, lift, vec3(11.0, 1.0, 8.0), shade(look.wall, 0.8)),
-            part(0.0, 0.0, lift + 1.0, vec3(8.4, 1.0, 6.0), look.wall),
-            part(0.0, 0.0, lift + 2.0, vec3(5.8, 1.0, 4.0), shade(look.wall, 1.15)),
-            // A stack to let the fumes out.
-            part(3.0, -2.6, 0.0, vec3(1.0, 6.0, 1.0), shade(look.roof, 0.7)),
-            part(3.0, -2.6, 6.0, vec3(1.6, 0.5, 1.6), shade(look.roof, 0.5)),
-            // A hut for the workers.
-            part(-6.4, -1.0, 0.0, vec3(3.4, 2.4, 3.6), shade(look.wall, 0.7)),
-            part(-6.4, -1.0, 2.4, vec3(4.0, 0.5, 4.2), look.roof),
-            // Heaps of sulphur.
-            part(5.8, 2.8, 0.0, vec3(2.6, 1.2, 2.6), look.pile),
-            part(5.8, 2.8, 1.2, vec3(1.8, 1.0, 1.8), look.pile),
-            part(-2.4, 4.4, 0.0, vec3(3.0, 1.0, 1.6), look.pile),
-        ],
-        GathererKind::OilWell => vec![
-            // A pad, with a derrick standing on it: four legs, a crown, and braces between them.
-            part(0.0, 0.0, lift, vec3(8.0, 0.6, 8.0), shade(look.wall, 1.3)),
-            part(-1.6, -1.6, lift + 0.6, vec3(0.5, 7.2, 0.5), look.trim),
-            part(1.6, -1.6, lift + 0.6, vec3(0.5, 7.2, 0.5), look.trim),
-            part(-1.6, 1.6, lift + 0.6, vec3(0.5, 7.2, 0.5), look.trim),
-            part(1.6, 1.6, lift + 0.6, vec3(0.5, 7.2, 0.5), look.trim),
-            part(0.0, 0.0, lift + 7.8, vec3(2.4, 0.6, 2.4), look.trim),
-            part(0.0, -1.6, lift + 2.6, vec3(3.2, 0.3, 0.3), look.trim),
-            part(0.0, 1.6, lift + 5.0, vec3(3.2, 0.3, 0.3), look.trim),
-            // A pump house under a red roof.
-            part(-5.8, 0.5, 0.0, vec3(3.4, 2.4, 3.6), look.wall),
-            part(-5.8, 0.5, 2.4, vec3(4.0, 0.5, 4.2), look.roof),
-            // Two tanks, and the pipe to them.
-            part(6.4, -1.4, 0.0, vec3(3.2, 2.6, 3.2), look.pile),
-            part(6.4, 2.4, 0.0, vec3(3.2, 2.6, 3.2), look.pile),
-            part(3.4, 0.0, 0.4, vec3(3.0, 0.35, 0.35), look.wall),
-        ],
-    };
-    // The flag pole, away from the rest, and the flag hung from the top of it.
-    let (pole_x, pole_z) = if kind.greater() { (-6.8, -5.2) } else { (-3.8, -2.4) };
-    let pole_height = pole_height(kind);
-    let pole = part(pole_x, pole_z, 0.0, vec3(0.22, pole_height, 0.22), POLE);
-    let flag_at = pole.middle + vec3(1.0 * s, (pole_height * 0.5 - 0.8) * s, 0.0);
-    parts.push(pole);
-    parts.push(Part { middle: flag_at, size: vec3(1.8, 1.1, 0.12) * s, color: flag });
-    parts
+    let r = pieces::radius_at(eye, vec3(at.x, world.surface_height(at.x, at.y), at.y));
+    pieces::draw_square(world, at.x, at.y, tile_size(kind).0 * r, color);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::calendar::Date;
     use crate::ids::CountryId;
-    use nworld_map::world::SEA_LEVEL;
+    use crate::test_support;
 
     fn world() -> World {
-        let mut world = World::new(512.0, 512.0);
-        let (nx, nz) = world.samples();
-        world.set_terrain(vec![10.0; nx * nz], vec![SEA_LEVEL; nx * nz]);
-        world
+        test_support::small_continent()
     }
 
-    fn gatherer() -> Gatherer {
-        Gatherer { id: GathererId::new(), kind: GathererKind::Woodcutter, country: CountryId::new(), x: 0.0, z: 0.0, region: 1, operating: false }
+    fn of_kind(world: &World, kind: GathererKind) -> Gatherer {
+        let at = test_support::inland_spot(world, 40.0);
+        Gatherer { id: GathererId::new(), kind, country: CountryId::new(), x: at.x, z: at.y, region: 1, operating: false }
     }
 
-    fn of_kind(kind: GathererKind) -> Gatherer {
-        Gatherer { kind, ..gatherer() }
+    fn eye_over(gatherer: &Gatherer, world: &World, distance: f32) -> Vec3 {
+        vec3(gatherer.x, world.surface_height(gatherer.x, gatherer.z) + distance, gatherer.z + 1.0)
     }
 
-    #[test]
-    fn it_is_twice_the_size_of_a_cabin_of_life_size() {
-        assert_eq!(scale(GathererKind::Woodcutter), 2.0);
-        let parts = parts(&world(), &gatherer(), WHITE);
-        assert_eq!(parts[0].size, vec3(10.0, 5.2, 8.0), "the walls");
-        assert_eq!(parts.len(), 7);
-        // Everything stands on or above the ground at 10 meters, none of it buried.
-        assert!(parts.iter().all(|p| p.middle.y - p.size.y * 0.5 >= 10.0 - 1e-3));
-        // The flag, which is in the country's color, flies high on the pole.
-        let flag = parts.last().unwrap();
-        assert_eq!(flag.color, WHITE);
-        assert!(flag.middle.y > 10.0 + 12.0, "it flies over 12 meters up");
-        let tallest = parts.iter().map(|p| p.middle.y + p.size.y * 0.5).fold(f32::MIN, f32::max);
-        assert!(tallest >= 10.0 + 14.0, "the pole is 14 meters tall");
-    }
+    const COUNTRY: Color = Color::new(0.2, 0.4, 0.9, 1.0);
 
     #[test]
-    fn a_sawmill_and_a_quarry_are_bigger_and_have_more_to_them_than_the_lesser_ones() {
+    fn every_gatherer_is_a_square_tile_in_its_countrys_color_with_a_figure_on_it() {
         let world = world();
-        let reach = |parts: &[Part]| {
-            let (mut low, mut high) = (vec3(f32::MAX, f32::MAX, f32::MAX), vec3(f32::MIN, f32::MIN, f32::MIN));
-            for p in parts {
-                low = low.min(p.middle - p.size * 0.5);
-                high = high.max(p.middle + p.size * 0.5);
+        for kind in GathererKind::ALL {
+            let gatherer = of_kind(&world, kind);
+            let parts = parts(&world, &gatherer, eye_over(&gatherer, &world, 300.0), COUNTRY);
+            assert!(parts.len() >= 5, "{kind:?}: a tile of three squares and a figure");
+            assert!(parts[..3].iter().all(|p| p.shape == pieces::Shape::Block), "{kind:?}: a square, not a round");
+            assert_eq!(parts[1].color, COUNTRY, "the frame is the country's color");
+            assert_eq!(parts[0].color, pieces::TILE_EDGE, "with a dark edge");
+            assert_eq!(parts[2].color, pieces::MEDALLION, "and a pale square for the figure");
+            assert!(parts[3..].iter().all(|p| p.middle.y >= parts[2].top() - 0.5), "the figure stands on it");
+        }
+    }
+
+    #[test]
+    fn each_kind_has_a_figure_of_its_own() {
+        let world = world();
+        let signature = |kind: GathererKind| {
+            let gatherer = of_kind(&world, kind);
+            let parts = parts(&world, &gatherer, eye_over(&gatherer, &world, 300.0), COUNTRY);
+            let mut colors: Vec<[u8; 3]> = parts[3..].iter().map(|p| [(p.color.r * 255.0) as u8, (p.color.g * 255.0) as u8, (p.color.b * 255.0) as u8]).collect();
+            colors.sort_unstable();
+            colors.dedup();
+            (parts[3..].iter().map(|p| p.shape as u8).collect::<Vec<_>>(), colors)
+        };
+        let all: Vec<_> = GathererKind::ALL.iter().map(|k| signature(*k)).collect();
+        for (n, a) in all.iter().enumerate() {
+            for b in &all[n + 1..] {
+                assert_ne!(a, b, "two kinds look the same");
             }
-            high - low
+        }
+    }
+
+    #[test]
+    fn the_greater_ones_have_the_bigger_and_thicker_tile() {
+        let world = world();
+        let width = |kind| {
+            let gatherer = of_kind(&world, kind);
+            let parts = parts(&world, &gatherer, eye_over(&gatherer, &world, 300.0), COUNTRY);
+            (parts[0].size.x, parts[0].size.y)
         };
         for (lesser, greater) in [(GathererKind::Woodcutter, GathererKind::Sawmill), (GathererKind::Stonecutter, GathererKind::Quarry)] {
-            let (small, big) = (parts(&world, &of_kind(lesser), WHITE), parts(&world, &of_kind(greater), WHITE));
-            assert_eq!(scale(greater), 3.0);
-            assert!(big.len() >= small.len() + 5, "{greater:?} has {} parts to {}", big.len(), small.len());
-            let (a, b) = (reach(&small), reach(&big));
-            assert!(b.x > a.x * 2.0 && b.z > a.z * 1.5 && b.y > a.y, "{a:?} against {b:?}");
-            // Everything stands on the ground, none of it buried, and the flag is last, in its country's color.
-            assert!(big.iter().all(|p| p.middle.y - p.size.y * 0.5 >= 10.0 - 1e-3));
-            assert_eq!(big.last().unwrap().color, WHITE);
-            // Nothing is taller than its pole, which the icons over it are held above.
-            let tallest = big.iter().map(|p| p.middle.y + p.size.y * 0.5 - 10.0).fold(f32::MIN, f32::max);
-            assert!((tallest - height(greater)).abs() < 1e-3, "{tallest} against {}", height(greater));
+            let (a, b) = (width(lesser), width(greater));
+            assert!(b.0 > a.0 && b.1 > a.1, "{greater:?} {b:?} over {lesser:?} {a:?}");
         }
-        assert_eq!(height(GathererKind::Sawmill), 27.0);
-        assert!(height(GathererKind::Quarry) > height(GathererKind::Stonecutter));
-        // The hall of the sawmill, which stands in the middle.
-        let hall = parts(&world, &of_kind(GathererKind::Sawmill), WHITE)[0].size;
-        assert!((hall - vec3(27.0, 10.2, 18.0)).abs().max_element() < 1e-3, "{hall:?}");
+        assert_eq!(width(GathererKind::IronMine), width(GathererKind::Sawmill), "the mines are greater ones too");
     }
 
     #[test]
-    fn the_mines_the_pit_and_the_well_are_the_size_of_the_greater_ones_and_stand_on_the_ground_under_their_poles() {
+    fn a_token_is_big_enough_to_see_from_far_away_and_grows_with_the_distance() {
         let world = world();
-        for kind in [GathererKind::IronMine, GathererKind::CopperMine, GathererKind::SulphurPit, GathererKind::OilWell] {
-            assert_eq!(scale(kind), 3.0);
-            let parts = parts(&world, &of_kind(kind), WHITE);
-            assert!(parts.len() >= 12, "{kind:?} has {} parts", parts.len());
-            assert!(parts.iter().all(|p| p.middle.y - p.size.y * 0.5 >= 10.0 - 1e-3), "{kind:?} is not buried");
-            let tallest = parts.iter().map(|p| p.middle.y + p.size.y * 0.5 - 10.0).fold(f32::MIN, f32::max);
-            assert!((tallest - height(kind)).abs() < 1e-3, "{kind:?}: {tallest} against {}", height(kind));
-            assert_eq!(parts.last().unwrap().color, WHITE, "the flag is last, in its country's color");
-        }
+        let gatherer = of_kind(&world, GathererKind::Woodcutter);
+        let across = |distance: f32| parts(&world, &gatherer, eye_over(&gatherer, &world, distance), COUNTRY)[0].size.x;
+        assert!(across(50.0) >= 16.0, "close up it is still a token: {}", across(50.0));
+        assert!(across(3_000.0) > across(1_000.0) && across(1_000.0) > across(300.0));
+        assert!(across(3_000.0) > 100.0, "from 3 km it is over 100 m across: {}", across(3_000.0));
+        assert!(across(1_000_000.0) <= 290.0, "but not so big that it covers a region");
     }
 
     #[test]
-    fn a_greater_one_is_pointed_at_by_its_hall_its_crane_or_its_pole() {
+    fn it_stands_on_the_highest_ground_under_it_so_none_of_it_is_buried() {
         let world = world();
-        let down_at = |x: f32, z: f32| (vec3(x, 100.0, z), vec3(0.0, -1.0, 0.0));
-        let sawmill = of_kind(GathererKind::Sawmill);
-        assert_eq!(under_ray(down_at(0.0, 0.0), &world, &[sawmill]), Some(sawmill.id));
-        assert_eq!(under_ray(down_at(-20.4, -15.6), &world, &[sawmill]), Some(sawmill.id), "the pole");
-        assert_eq!(under_ray(down_at(0.0, 40.0), &world, &[sawmill]), None);
-        let quarry = of_kind(GathererKind::Quarry);
-        assert_eq!(under_ray(down_at(13.8, -9.6), &world, &[quarry]), Some(quarry.id), "the crane mast");
+        let gatherer = of_kind(&world, GathererKind::Quarry);
+        let parts = parts(&world, &gatherer, eye_over(&gatherer, &world, 400.0), COUNTRY);
+        let ground = world.surface_height(gatherer.x, gatherer.z);
+        assert!(parts[0].middle.y - parts[0].size.y * 0.5 >= ground - 1e-3);
     }
 
     #[test]
-    fn a_ray_at_the_cabin_hits_it_and_one_that_misses_does_not() {
+    fn a_ray_at_the_token_hits_it_and_one_that_misses_does_not_and_the_nearer_is_the_one_pointed_at() {
         let world = world();
-        let cutter = gatherer();
-        let down_at = |x: f32, z: f32| (vec3(x, 100.0, z), vec3(0.0, -1.0, 0.0));
-        assert_eq!(under_ray(down_at(0.0, 0.0), &world, &[cutter]), Some(cutter.id));
-        assert_eq!(under_ray(down_at(30.0, 0.0), &world, &[cutter]), None);
-        // The pole, which is thin, is hit too.
-        assert_eq!(under_ray(down_at(-7.6, -4.8), &world, &[cutter]), Some(cutter.id));
-        // From the side, at the height of the walls.
-        assert_eq!(under_ray((vec3(-60.0, 12.0, 0.0), vec3(1.0, 0.0, 0.0)), &world, &[cutter]), Some(cutter.id));
-        // Looking away from it, it is not there.
-        assert_eq!(under_ray((vec3(-60.0, 12.0, 0.0), vec3(-1.0, 0.0, 0.0)), &world, &[cutter]), None);
+        let near = of_kind(&world, GathererKind::Woodcutter);
+        let mut far = near.clone();
+        far.id = GathererId::new();
+        far.x += 400.0;
+        let over = |g: &Gatherer| (vec3(g.x, world.surface_height(g.x, g.z) + 200.0, g.z), vec3(0.0, -1.0, 0.0));
+        assert_eq!(under_ray(over(&near), &world, &[near.clone(), far.clone()]), Some(near.id));
+        assert_eq!(under_ray(over(&far), &world, &[near.clone(), far.clone()]), Some(far.id));
+        let aside = (vec3(near.x + 200.0, 300.0, near.z), vec3(0.0, -1.0, 0.0));
+        assert_eq!(under_ray(aside, &world, &[near]), None);
     }
 
     #[test]
-    fn each_kind_has_a_look_of_its_own_and_the_same_shape() {
-        let world = world();
-        let (wood, stone) = (gatherer(), Gatherer { kind: GathererKind::Stonecutter, ..gatherer() });
-        let (a, b) = (parts(&world, &wood, WHITE), parts(&world, &stone, WHITE));
-        assert_eq!(a.len(), b.len());
-        assert!(a.iter().zip(&b).all(|(p, q)| p.middle == q.middle && p.size == q.size), "the same shape");
-        assert_ne!(a[0].color, b[0].color, "the walls differ");
-        assert_ne!(a[3].color, b[3].color, "and so does the pile");
-        assert_eq!(a[5].color, b[5].color, "the pole is the same");
-        // Stone walls are gray, and not brown like logs.
-        let c = b[0].color;
-        assert!((c.r - c.g).abs() < 0.05 && (c.g - c.b).abs() < 0.1);
-        assert!(a[0].color.r > a[0].color.b + 0.2);
-        // The greater ones are of the lesser one's materials: a sawmill is timber and a quarry is stone.
-        let (sawmill, quarry) = (parts(&world, &of_kind(GathererKind::Sawmill), WHITE), parts(&world, &of_kind(GathererKind::Quarry), WHITE));
-        assert!(sawmill[0].color.r > sawmill[0].color.b + 0.2, "timber is brown");
-        assert!((quarry[1].color.r - quarry[1].color.b).abs() < 0.12, "stone is gray");
-    }
-
-    #[test]
-    fn of_two_in_line_the_nearer_is_the_one_pointed_at() {
-        let world = world();
-        let (near, far) = (Gatherer { x: -40.0, ..gatherer() }, Gatherer { x: 40.0, ..gatherer() });
-        let ray = (vec3(-200.0, 12.0, 0.0), vec3(1.0, 0.0, 0.0));
-        assert_eq!(under_ray(ray, &world, &[far, near]), Some(near.id));
-    }
-
-    #[test]
-    fn a_box_is_hit_from_outside_and_from_inside() {
-        let (middle, size) = (vec3(0.0, 0.0, 0.0), vec3(2.0, 2.0, 2.0));
-        assert_eq!(hit((vec3(-5.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0)), middle, size, 0.0), Some(4.0));
-        assert_eq!(hit((vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0)), middle, size, 0.0), Some(0.0));
-        assert_eq!(hit((vec3(-5.0, 3.0, 0.0), vec3(1.0, 0.0, 0.0)), middle, size, 0.0), None);
-        assert_eq!(hit((vec3(-5.0, 1.5, 0.0), vec3(1.0, 0.0, 0.0)), middle, size, 1.0), Some(3.0), "slop widens the box");
+    fn only_the_gatherers_of_the_day_are_drawn_from_its_countries() {
+        // (Drawing needs the window, so this is only that the day and the pieces fit together.)
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        assert!(day.gatherers.is_empty());
+        assert!(height(GathererKind::Quarry) > height(GathererKind::Woodcutter));
     }
 }

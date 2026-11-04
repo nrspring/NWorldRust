@@ -131,7 +131,7 @@ impl DestroyTool {
 
         if let Some(Target::Gatherer(id)) = self.hovered {
             if let Some(gatherer) = day.gatherer(id) {
-                gatherer_view::outline(scene.world, gatherer, RED);
+                gatherer_view::outline(scene.world, gatherer, scene.eye.position, RED);
             }
         }
         if let Some(Target::Built(thing)) = self.hovered {

@@ -3,7 +3,7 @@
 //! population, and each costs 10 coins to raise and 1 coin a day to keep. A member who isn't paid for deserts, and
 //! doesn't go back to a city.
 //!
-//! A militia belongs to a country, which can change. It starts as a parade drawn up on the ground just outside the city it
+//! A militia belongs to a country, which can change. It starts as a pawn standing on the ground just outside the city it
 //! was raised in, and can be moved from there (see [`crate::movement`]).
 
 
@@ -31,10 +31,10 @@ pub const DAILY_UPKEEP: i64 = 1;
 
 /// How far outside the edge of a city its militia camp, in meters: the nearest, and the rings beyond that to try when
 /// the ground there is wet or high, or the places are taken.
-const CAMP_RINGS: [f32; 3] = [26.0, 52.0, 85.0];
+const CAMP_RINGS: [f32; 3] = [20.0, 42.0, 70.0];
 /// How many places round each ring are tried, and how close two camps may stand, in meters.
 const CAMP_TRIES: usize = 16;
-const CAMP_SPACING: f32 = 32.0;
+const CAMP_SPACING: f32 = 22.0;
 /// A turn of this many radians takes the next camp of a city well away from the last, however many there are.
 const GOLDEN_ANGLE: f32 = 2.399_963;
 

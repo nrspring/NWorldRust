@@ -14,9 +14,6 @@ const SHORTEST: f32 = 0.6;
 const LONGEST: f32 = 5.0;
 /// How many points either side of one a way is smoothed over, which takes the steps of the cells out of it.
 const SMOOTHING: usize = 3;
-/// How much more of the way has to go along the other axis than along the one a militia faces for it to turn: so that a way
-/// that goes across a diagonal doesn't have it turning this way and that.
-const TURN_BIAS: f32 = 1.3;
 
 /// One militia on its way.
 #[derive(Clone, Debug)]
@@ -31,45 +28,25 @@ struct Walk {
 }
 
 impl Walk {
-    /// Where it is, how far along the way, from 0 to 1 and eased, so that it starts and stops gently, and the way it is
-    /// going.
-    fn at(&self) -> (Vec2, Vec2) {
+    /// Where it is, how far along the way, from 0 to 1 and eased, so that it starts and stops gently.
+    fn at(&self) -> Vec2 {
         let t = (self.elapsed / self.duration).clamp(0.0, 1.0);
         let mut left = t * t * (3.0 - 2.0 * t) * self.length;
         for pair in self.way.windows(2) {
             let step = pair[0].distance(pair[1]);
             if left <= step && step > 0.0 {
-                return (pair[0].lerp(pair[1], left / step), pair[1] - pair[0]);
+                return pair[0].lerp(pair[1], left / step);
             }
             left -= step;
         }
-        let last = self.way.len().saturating_sub(2);
-        (*self.way.last().unwrap_or(&Vec2::ZERO), self.way.get(last + 1).zip(self.way.get(last)).map_or(Vec2::ZERO, |(b, a)| *b - *a))
+        *self.way.last().unwrap_or(&Vec2::ZERO)
     }
 }
 
-/// Which of the four quarter turns faces along `heading`, if it is facing `current` now: 0 towards +z, 1 towards +x, 2
-/// towards -z and 3 towards -x. It keeps facing the way it is unless the heading is clearly the other way.
-fn facing_for(heading: Vec2, current: u8) -> u8 {
-    if heading.length_squared() == 0.0 {
-        return current;
-    }
-    let (along_x, along_z) = (heading.x.abs(), heading.y.abs());
-    let on_x = current % 2 == 1;
-    let to_x = if on_x { along_x * TURN_BIAS >= along_z } else { along_x > along_z * TURN_BIAS };
-    match (to_x, if to_x { heading.x >= 0.0 } else { heading.y >= 0.0 }) {
-        (true, true) => 1,
-        (true, false) => 3,
-        (false, true) => 0,
-        (false, false) => 2,
-    }
-}
-
-/// The militia that are walking now, and which way each that has walked is facing.
+/// The militia that are walking now.
 #[derive(Default)]
 pub struct Walks {
     walks: Vec<Walk>,
-    facings: Vec<(MilitiaId, u8)>,
 }
 
 /// `way` with each point taken to the average of those round it, which keeps its ends.
@@ -97,25 +74,12 @@ impl Walks {
         }
     }
 
-    /// Lets `seconds` pass, and turns the walkers to the way they are going. The walks that are over are done with.
+    /// Lets `seconds` pass. The walks that are over are done with.
     pub fn update(&mut self, seconds: f32) {
         for walk in &mut self.walks {
             walk.elapsed += seconds;
-            let (_, heading) = walk.at();
-            let now = self.facings.iter().find(|(id, _)| *id == walk.id).map_or(0, |(_, facing)| *facing);
-            let facing = facing_for(heading, now);
-            match self.facings.iter_mut().find(|(id, _)| *id == walk.id) {
-                Some(entry) => entry.1 = facing,
-                None => self.facings.push((walk.id, facing)),
-            }
         }
         self.walks.retain(|walk| walk.elapsed < walk.duration);
-    }
-
-    /// Which way the militia with this id faces, in quarter turns (0 towards +z, 1 towards +x, 2 towards -z, 3 towards -x):
-    /// the way it last walked, and towards +z if it never has.
-    pub fn facing(&self, id: MilitiaId) -> u8 {
-        self.facings.iter().find(|(f, _)| *f == id).map_or(0, |(_, facing)| *facing)
     }
 
     /// Whether the militia with this id is walking.
@@ -125,7 +89,7 @@ impl Walks {
 
     /// Where to show `militia`: part of the way along its walk if it is walking, and otherwise where it is.
     pub fn position(&self, militia: &Militia) -> Vec2 {
-        self.walks.iter().find(|walk| walk.id == militia.id).map_or(Vec2::new(militia.x, militia.z), |walk| walk.at().0)
+        self.walks.iter().find(|walk| walk.id == militia.id).map_or(Vec2::new(militia.x, militia.z), Walk::at)
     }
 
 }
@@ -151,7 +115,6 @@ mod tests {
         let unit = militia(vec2(5.0, 6.0));
         assert_eq!(walks.position(&unit), vec2(5.0, 6.0));
         assert!(!walks.is_walking(unit.id));
-        assert_eq!(walks.facing(unit.id), 0, "it faces south until it has walked");
     }
 
     #[test]
@@ -210,29 +173,6 @@ mod tests {
         assert_eq!(walks.walks.len(), 1);
         walks.start(unit.id, &[vec2(3.0, 3.0)]);
         assert!(!walks.is_walking(unit.id));
-    }
-
-    #[test]
-    fn a_militia_turns_to_face_the_way_it_walks_and_keeps_facing_that_way() {
-        let mut walks = Walks::default();
-        let unit = militia(Vec2::ZERO);
-        for (way, facing) in [(vec2(100.0, 0.0), 1), (vec2(0.0, 100.0), 0), (vec2(-100.0, 0.0), 3), (vec2(0.0, -100.0), 2)] {
-            walks.start(unit.id, &[Vec2::ZERO, way]);
-            walks.update(0.1);
-            assert_eq!(walks.facing(unit.id), facing, "{way}");
-            walks.update(10.0);
-            assert!(!walks.is_walking(unit.id));
-            assert_eq!(walks.facing(unit.id), facing, "it keeps facing the way it went");
-        }
-    }
-
-    #[test]
-    fn a_way_across_a_diagonal_does_not_turn_it_this_way_and_that() {
-        assert_eq!(facing_for(vec2(1.0, 1.05), 1), 1, "close to diagonal, it stays facing x");
-        assert_eq!(facing_for(vec2(1.0, 1.05), 0), 0, "and one facing z stays facing z");
-        assert_eq!(facing_for(vec2(1.0, 2.0), 1), 0, "but a clear turn is made");
-        assert_eq!(facing_for(vec2(2.0, 1.0), 0), 1);
-        assert_eq!(facing_for(Vec2::ZERO, 3), 3, "no heading, no turn");
     }
 
     #[test]

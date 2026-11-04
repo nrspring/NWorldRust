@@ -47,6 +47,7 @@ mod options;
 mod path;
 mod path_tool;
 mod path_view;
+mod pieces;
 mod overlays;
 mod person;
 mod placement;
@@ -432,9 +433,9 @@ async fn main() {
         paths.draw(&world, &region_map, &day);
         roads.draw(&world, &region_map, &day);
         bridges.draw(&world, &day);
-        gatherer_view::draw(&world, &day);
+        gatherer_view::draw(&world, &day, eye.position);
         walks.update(dt);
-        militia_view::draw(&world, &day, &walks, time);
+        militia_view::draw(&world, &day, &walks, time, eye.position);
         // Where the militia that was clicked can go, tinted over everything else on the map, once it has got where it is going.
         if selected_militia.is_some_and(|id| day.militia(id).is_none()) {
             selected_militia = None;
