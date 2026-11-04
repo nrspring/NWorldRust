@@ -195,6 +195,15 @@ This is all in the game (`city*.rs`); the map and the generic map view know noth
               "x": -120.0, "z": 441.4, "population": 100 } ]
 ```
 
+## Shipyards
+
+A shipyard is where a country will build ships (there are none yet, so for now a shipyard only stands there). There are two sizes, **a small shipyard and a large shipyard**, each with a row in the *Buildings* menu below the gatherers. Either one costs **10,000 coins, 1,000 stone, 1,000 wood and 500 iron**, paid by the country being played, which owns it. (The two cost the same for now; the constants are in `shipyard.rs`.)
+
+- **It has to be on a coast.** Click dry ground with the sea (shallow or deep water, not a river or lake) within 30 m of it. The marker follows the mouse, green where one could go and red where it can't, with the reason in the prompt: off the map, not dry land, not on the coast, in a region another country owns, or too close (25 m) to another shipyard.
+- **It is drawn as a tile** in its country's color with a ship on slipways and a crane on it; the large one has the wider tile, a longer ship and two cranes. Hovering shows a panel with its country and region.
+- **The destroy tool removes one** for nothing, and nothing is paid back. A country that owns a shipyard can't be deleted.
+- It goes in the newsreel: **"Aldoria builds a small shipyard in region 5 for 10,000 coins, 1,000 stone, 1,000 wood and 500 iron"** and **"Aldoria's small shipyard in region 5 is destroyed"**. A shipyard is saved in the day's file (`shipyards`: its `id`, `kind` (`small` or `large`), `country`, `x`, `z` and `region`) and carries forward. The rules are in `shipyard.rs`, the tool in `shipyard_tool.rs` and the drawing in `shipyard_view.rs`.
+
 ## Militia
 
 The first unit. A **militia** is a group of a city's people under arms, and it belongs to a country. It is made in the city popup, under **Raise militia**: a slider chooses how many members, and the button says what it will cost.

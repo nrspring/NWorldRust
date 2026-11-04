@@ -13,6 +13,7 @@ use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::format::{capitalized, money, thousands, thousands_u64};
 use crate::gatherer::GathererKind;
+use crate::shipyard::ShipyardKind;
 use crate::ids::{CityId, CountryId, EventId, GathererId, Guid, NoteId, PersonId};
 use crate::rgb::Rgb;
 use crate::text;
@@ -285,6 +286,23 @@ pub enum Event {
     /// The subject is a militia called `name` of `members` people, which was disbanded. The members are gone: they don't
     /// go back to a city.
     MilitiaDisbanded { name: String, members: u32 },
+    /// The subject is a shipyard of `kind`, which the country `country` built, in the region numbered `region` if the map has
+    /// regions, for `cost`.
+    ShipyardBuilt {
+        kind: ShipyardKind,
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+        cost: Vec<Cost>,
+    },
+    /// The subject is a shipyard of `kind`, which belonged to the country `country`, and it was destroyed. It is gone, so
+    /// what the news says of it is kept here.
+    ShipyardDestroyed {
+        kind: ShipyardKind,
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+    },
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -533,6 +551,14 @@ impl News {
                 format!("{name} splits off {} members as {new_name}, leaving {}", thousands(members), thousands(remaining))
             }
             Event::MilitiaDisbanded { ref name, members } => format!("{name} is disbanded, and its {} disappear{}", if members == 1 { "1 member".to_owned() } else { format!("{} members", thousands(members)) }, if members == 1 { "s" } else { "" }),
+            Event::ShipyardBuilt { kind, country, region, ref cost } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                format!("{} builds {}{place}{}", day.country_name(country), kind.a_noun(), for_cost(cost))
+            }
+            Event::ShipyardDestroyed { kind, country, region } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                format!("{}'s {}{place} is destroyed", day.country_name(country), kind.noun())
+            }
             Event::Note { ref text } => text.clone(),
         }
     }

@@ -15,6 +15,7 @@ use crate::format;
 use crate::gatherer::GathererKind;
 use crate::hud;
 use crate::path::{Kind, PATH_COST, ROAD_COST};
+use crate::shipyard::ShipyardKind;
 
 /// A thing that can be built, and so has a cost.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -23,6 +24,7 @@ pub enum Buildable {
     Way(Kind),
     Bridge,
     Gatherer(GathererKind),
+    Shipyard(ShipyardKind),
 }
 
 impl Buildable {
@@ -33,6 +35,7 @@ impl Buildable {
             Self::Way(Kind::Road) => "Road",
             Self::Bridge => "Bridge",
             Self::Gatherer(kind) => kind.label(),
+            Self::Shipyard(kind) => kind.label(),
         }
     }
 
@@ -43,6 +46,7 @@ impl Buildable {
             Self::Way(Kind::Road) => ROAD_COST,
             Self::Bridge => BRIDGE_COST,
             Self::Gatherer(kind) => kind.cost(),
+            Self::Shipyard(kind) => kind.cost(),
         }
     }
 
@@ -52,6 +56,7 @@ impl Buildable {
             Self::Way(_) => &[],
             Self::Bridge => &BRIDGE_MATERIALS,
             Self::Gatherer(kind) => kind.materials(),
+            Self::Shipyard(kind) => kind.materials(),
         }
     }
 
@@ -90,6 +95,7 @@ impl Buildable {
             Self::Way(Kind::Road) => format!("Joins regions into routes. Fails {} of days.", percent(ROAD_FAILURE)),
             Self::Bridge => format!("Carries a route across a river. Fails {} of days.", percent(BRIDGE_FAILURE)),
             Self::Gatherer(kind) => format!("Provides {} {} a day while it has a route to a city.", format::thousands_u64(kind.daily_yield()), kind.product()),
+            Self::Shipyard(_) => "Where ships will be built. There are no ships yet.".to_owned(),
         }
     }
 
@@ -99,6 +105,7 @@ impl Buildable {
         let mut lines = vec![(format!("{}: {}.", self.label(), self.cost_text()), style::TEXT), (self.output(), style::TEXT_MUTED)];
         match self {
             Self::Gatherer(kind) => lines.push((format!("Only one {} to a region.", kind.same_resource_text()), style::TEXT_MUTED)),
+            Self::Shipyard(_) => lines.push(("Has to stand on the coast.".to_owned(), style::TEXT_MUTED)),
             _ => lines.push(("A failed one is mended by building it again, for the same.".to_owned(), style::TEXT_MUTED)),
         }
         lines
@@ -148,6 +155,10 @@ mod tests {
         assert_eq!(Buildable::Way(Kind::Road).cost_text(), "100 coins a segment");
         assert_eq!(Buildable::Bridge.cost_text(), "1,000 coins, 100 wood and 500 stone");
         assert_eq!(Buildable::Gatherer(GathererKind::Stonecutter).cost_text(), "1,000 coins");
+        for kind in ShipyardKind::ALL {
+            assert_eq!(Buildable::Shipyard(kind).cost(), kind.cost());
+            assert_eq!(Buildable::Shipyard(kind).cost_text(), "10,000 coins, 1,000 stone, 1,000 wood and 500 iron");
+        }
     }
 
     #[test]

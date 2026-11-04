@@ -140,6 +140,10 @@ id_type!(
     MilitiaId
 );
 id_type!(
+    /// The id of a shipyard.
+    ShipyardId
+);
+id_type!(
     /// The id of a happening in the newsreel that is about no one thing with an id of its own, such as a stretch of
     /// road failing, a river being named or a day beginning.
     EventId

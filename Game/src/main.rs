@@ -14,6 +14,9 @@ mod costs;
 mod gatherer;
 mod gatherer_popup;
 mod gatherer_tool;
+mod shipyard;
+mod shipyard_tool;
+mod shipyard_view;
 mod gatherer_view;
 mod bridge_view;
 mod calendar;
@@ -97,6 +100,8 @@ use militia_popup::MilitiaPopup;
 use movement_view::{MovementView, PanelAction};
 use walk::Walks;
 use gatherer_tool::GathererTool;
+use shipyard::ShipyardKind;
+use shipyard_tool::ShipyardTool;
 use bridge_view::BridgeRenderer;
 use path::Kind;
 use path_tool::{PathTool, Scene};
@@ -282,6 +287,7 @@ async fn main() {
     let mut destroy_tool = DestroyTool::default();
     // The tool for each kind of gatherer, in the order of the kinds.
     let mut gatherer_tools = GathererKind::ALL.map(GathererTool::new);
+    let mut shipyard_tools = ShipyardKind::ALL.map(ShipyardTool::new);
     let mut bridges = BridgeRenderer::default();
     // The popup that asks whether to end the day.
     let mut advance_popup = AdvancePopup::default();
@@ -361,6 +367,8 @@ async fn main() {
                 destroy_tool.escape();
             } else if let Some(tool) = gatherer_tools.iter_mut().find(|tool| tool.is_active()) {
                 tool.escape();
+            } else if let Some(tool) = shipyard_tools.iter_mut().find(|tool| tool.is_active()) {
+                tool.escape();
             } else {
                 break;
             }
@@ -387,7 +395,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || (selected_militia.is_some() && movement_view::panel_rect().contains(mouse));
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || (selected_militia.is_some() && movement_view::panel_rect().contains(mouse));
         if modal {
             camera.skip_frame();
         } else {
@@ -429,8 +437,13 @@ async fn main() {
                 tool.deactivate();
             }
         }
+        for tool in &mut shipyard_tools {
+            if day.shipyard_problem(tool.kind()).is_some() {
+                tool.deactivate();
+            }
+        }
         // Whether one of the tools is on, and so the map is not for anything else.
-        let tool_on = path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() || gatherer_tools.iter().any(|tool| tool.is_active());
+        let tool_on = path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() || gatherer_tools.iter().any(|tool| tool.is_active()) || shipyard_tools.iter().any(|tool| tool.is_active());
         // A new city that can no longer be paid for, or settled from the city it was to be, is given up.
         if settling_from.is_some_and(|from| day.settle_problem(from).is_some()) {
             settling_from = None;
@@ -450,6 +463,7 @@ async fn main() {
         roads.draw(&world, &region_map, &day);
         bridges.draw(&world, &day);
         gatherer_view::draw(&world, &day, eye.position);
+        shipyard_view::draw(&world, &day, eye.position);
         walks.update(dt);
         militia_view::draw(&world, &day, &walks, time, eye.position);
         // Where the militia that was clicked can go, tinted over everything else on the map, once it has got where it is going.
@@ -468,18 +482,21 @@ async fn main() {
         // The gatherer under the mouse, if there is one and no city is in front of it, which the tooltip tells about.
         let gatherer_hover = if modal || over_interface || tool_on || hovered.is_some() { None } else { gatherer_view::under_ray(mouse_ray(&eye, mouse), &world, &day.gatherers) };
 
+        // The shipyard under the mouse, if there is one and no city or gatherer is in front of it, which the tooltip tells about.
+        let shipyard_hover = if modal || over_interface || tool_on || hovered.is_some() || gatherer_hover.is_some() { None } else { shipyard_view::under_ray(mouse_ray(&eye, mouse), &world, &day.shipyards) };
+
         // The militia under the mouse, if there is one and no city or gatherer is in front of it, which the tooltip tells about.
-        let militia_hover = if modal || over_interface || tool_on || hovered.is_some() || gatherer_hover.is_some() { None } else { militia_view::under_ray(mouse_ray(&eye, mouse), &world, &day.militias, &walks) };
+        let militia_hover = if modal || over_interface || tool_on || hovered.is_some() || gatherer_hover.is_some() || shipyard_hover.is_some() { None } else { militia_view::under_ray(mouse_ray(&eye, mouse), &world, &day.militias, &walks) };
 
         // The label of a place under the mouse while the named places are showing.
-        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
+        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             region_labels::place_under(&style, &day, &world, &eye, mouse)
         } else {
             None
         };
         // The river or lake under the mouse while the named places are showing, with a little give so that a thin river can be
         // hit when the camera is far away.
-        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
+        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 1.5, 40.0);
             ground_at().and_then(|at| water_bodies.near(at.x, at.y, reach))
         } else {
@@ -551,6 +568,24 @@ async fn main() {
                     }
                 }
             }
+        } else if !modal && shipyard_tools.iter().any(|tool| tool.is_active()) {
+            // With a shipyard tool on, a click is for building one of its size where the mouse is.
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            if let Some(tool) = shipyard_tools.iter_mut().find(|tool| tool.is_active()) {
+                let kind = tool.kind();
+                if let Some((at, region)) = tool.update(&scene, &day, clicked) {
+                    // Only keep the shipyard if it is saved too.
+                    let mut updated = day.clone();
+                    match updated.build_shipyard(kind, at.x, at.y, region).and_then(|()| autosave.save_now(&saves, &updated)) {
+                        Ok(()) => {
+                            day = updated;
+                            tool.built();
+                            claim_prompt.placed_in(&day, &region.into_iter().collect::<Vec<_>>());
+                        }
+                        Err(message) => tool.fail(message),
+                    }
+                }
+            }
         } else if !modal && destroy_tool.is_active() {
             // With the destroy tool on, a click is for destroying the path, road, bridge or gatherer the mouse is on.
             let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
@@ -576,6 +611,10 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 city_popup.open(id);
+            } else if shipyard_hover.is_some() {
+                // A shipyard has no popup yet: a click on it is left alone, and doesn't fall through to the map under it.
+                options_ui.close();
+                overlays_ui.close();
             } else if let Some(id) = gatherer_hover {
                 options_ui.close();
                 overlays_ui.close();
@@ -653,13 +692,13 @@ async fn main() {
 
         // The region under the mouse, for a note about it while the region names are showing, unless it is a river or
         // lake that is under the mouse and the named places are showing.
-        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
+        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             ground_at().and_then(|at| world.region_at(at.x, at.y))
         } else {
             None
         };
         // The resource under the mouse, for a note about what it is, when nothing else has the mouse.
-        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
+        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 2.5, 40.0);
             ground_at().and_then(|at| resource_hover::deposit_near(&world, at.x, at.y, reach))
         } else {
@@ -757,6 +796,8 @@ async fn main() {
                 hud::city_tooltip(&style, &day, city);
             } else if let Some(gatherer) = gatherer_hover.and_then(|id| day.gatherer(id)) {
                 gatherer_tool::tooltip(&style, &day, gatherer, gatherer.operating);
+            } else if let Some(shipyard) = shipyard_hover.and_then(|id| day.shipyard(id)) {
+                shipyard_tool::tooltip(&style, &day, shipyard);
             } else if let Some(militia) = militia_hover.and_then(|id| day.militia(id)) {
                 militia_view::tooltip(&style, &day, militia);
             } else if let Some(id) = water_hover {
@@ -777,10 +818,11 @@ async fn main() {
             // Only one of the tools is on at a time: the one that was just turned on wins.
             let mut was_on = vec![path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
             was_on.extend(gatherer_tools.iter().map(|tool| tool.is_active()));
+            was_on.extend(shipyard_tools.iter().map(|tool| tool.is_active()));
             let destroy_button = destroy_tool.show_button(&style, footer, overlays_ui.button().x - 8.0);
             // The Travel and Buildings buttons are lit while a tool in them is on, and the open one has its tools in a
             // panel above it.
-            let lit = [path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active(), gatherer_tools.iter().any(|tool| tool.is_active())];
+            let lit = [path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active(), gatherer_tools.iter().any(|tool| tool.is_active()) || shipyard_tools.iter().any(|tool| tool.is_active())];
             match toolbar.show(&style, footer, destroy_button.x - 8.0, lit) {
                 Some((Menu::Travel, panel)) => {
                     path_tool.show_row(&style, toolbar::row_rect(panel, 0), panel, path_problem.as_ref(), no_regions);
@@ -792,11 +834,16 @@ async fn main() {
                         let problem = day.gatherer_problem(tool.kind());
                         tool.show_row(&style, toolbar::row_rect(panel, n), panel, problem.as_deref());
                     }
+                    for (n, tool) in shipyard_tools.iter_mut().enumerate() {
+                        let problem = day.shipyard_problem(tool.kind());
+                        tool.show_row(&style, toolbar::row_rect(panel, GathererKind::ALL.len() + n), panel, problem.as_deref());
+                    }
                 }
                 None => {}
             }
             let mut now_on = vec![path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
             now_on.extend(gatherer_tools.iter().map(|tool| tool.is_active()));
+            now_on.extend(shipyard_tools.iter().map(|tool| tool.is_active()));
             // Turning a tool on or off puts the menu away, so that the map is clear for it.
             if now_on != was_on {
                 toolbar.close();
@@ -820,12 +867,21 @@ async fn main() {
                         tool.deactivate();
                     }
                 }
+                for (n, tool) in shipyard_tools.iter_mut().enumerate() {
+                    let at = 4 + GathererKind::ALL.len() + n;
+                    if was_on[at] && now_on[at] {
+                        tool.deactivate();
+                    }
+                }
             }
             path_tool.show_prompt(&style, &day);
             road_tool.show_prompt(&style, &day);
             bridge_tool.show_prompt(&style, &day);
             destroy_tool.show_prompt(&style, &day);
             for tool in &mut gatherer_tools {
+                tool.show_prompt(&style, &day);
+            }
+            for tool in &mut shipyard_tools {
                 tool.show_prompt(&style, &day);
             }
             if overlays_ui.is_open() && !overlays_was_open {

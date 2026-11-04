@@ -9,6 +9,7 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
 use crate::gatherer::GathererKind;
+use crate::shipyard::ShipyardKind;
 use crate::hud;
 
 const BUTTON_HEIGHT: f32 = 36.0;
@@ -44,11 +45,11 @@ impl Menu {
         }
     }
 
-    /// How many tools it has: a path, a road and a bridge, or one for each kind of gatherer.
+    /// How many tools it has: a path, a road and a bridge, or one for each kind of gatherer and of shipyard.
     fn rows(self) -> usize {
         match self {
             Self::Travel => 3,
-            Self::Buildings => GathererKind::ALL.len(),
+            Self::Buildings => GathererKind::ALL.len() + ShipyardKind::ALL.len(),
         }
     }
 }
