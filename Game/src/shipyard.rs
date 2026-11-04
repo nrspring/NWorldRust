@@ -256,6 +256,25 @@ impl DaySave {
         Ok(())
     }
 
+    /// Transfers the shipyard with this id to `country`, which is reported in the newsreel unless it belonged to it already.
+    /// The region it stands in can't belong to a different country from that. An error says why it can't be done, and nothing
+    /// changes.
+    pub fn set_shipyard_country(&mut self, id: ShipyardId, country: CountryId) -> Result<(), String> {
+        self.country(country).ok_or("There is no such country.")?;
+        let Shipyard { kind, region, country: from, .. } = *self.shipyard(id).ok_or("There is no such shipyard.")?;
+        if from == country {
+            return Ok(());
+        }
+        if let Some(problem) = self.city_region_problem(country, region) {
+            return Err(problem);
+        }
+        if let Some(yard) = self.shipyards.iter_mut().find(|s| s.id == id) {
+            yard.country = country;
+        }
+        self.newsreel.push(News::about(id, Event::ShipyardTransferred { from, to: country, kind, region }));
+        Ok(())
+    }
+
     /// Destroys the shipyard with this id, which costs nothing and pays nothing back, and reports it in the newsreel. An
     /// error says why it can't be done.
     pub fn destroy_shipyard(&mut self, id: ShipyardId) -> Result<(), String> {
@@ -407,6 +426,36 @@ mod tests {
         assert!(day.build_shipyard(ShipyardKind::Small, f32::NAN, 0.0, None).is_err());
         assert_eq!(day, before, "nothing was taken for any of them");
         day.build_shipyard(ShipyardKind::Small, SPACING, 0.0, Some(0x4005)).unwrap();
+    }
+
+    #[test]
+    fn a_shipyard_changes_country_and_the_change_is_reported_once() {
+        let mut day = day();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
+        let id = day.shipyards[0].id;
+        let news = day.newsreel.len();
+
+        day.set_shipyard_country(id, brevon).unwrap();
+        assert_eq!(day.shipyard(id).unwrap().country, brevon);
+        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::ShipyardTransferred { from: aldoria, to: brevon, kind: ShipyardKind::Small, region: Some(0x4005) })));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "The small shipyard in region 5 is transferred from Aldoria to Brevon");
+        let before = day.clone();
+        day.set_shipyard_country(id, brevon).unwrap();
+        assert_eq!(day, before, "the same country again is no change");
+        assert_eq!(day.newsreel.len(), news + 1);
+
+        assert!(day.set_shipyard_country(id, CountryId::new()).is_err());
+        assert!(day.set_shipyard_country(ShipyardId::new(), aldoria).is_err());
+        // Brevon can't be given a shipyard in a region that Aldoria has a city in, and a city of Aldoria's keeps the region.
+        let mut day = self::tests::day();
+        let brevon = day.countries[1].id;
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4007)).unwrap();
+        day.build_shipyard(ShipyardKind::Small, 100.0, 0.0, Some(0x4007)).unwrap();
+        let before = day.clone();
+        let err = day.set_shipyard_country(day.shipyards[0].id, brevon).unwrap_err();
+        assert!(err.contains("belongs to Aldoria"), "{err}");
+        assert_eq!(day, before);
     }
 
     #[test]
