@@ -70,7 +70,7 @@ fn amount_text(asset: Asset, amount: u64) -> String {
 }
 
 /// What it cost, as a list: "10 coins", or "1,000 coins, 100 wood and 500 stone". Nothing for no cost.
-fn cost_text(cost: &[Cost]) -> String {
+pub fn cost_text(cost: &[Cost]) -> String {
     let parts: Vec<String> = cost.iter().map(|c| amount_text(c.asset, c.amount)).collect();
     match parts.as_slice() {
         [] => String::new(),
@@ -102,6 +102,16 @@ pub struct News {
 pub enum Event {
     /// The subject is a country, and it was founded.
     CountryFounded,
+    /// The subject is a city of 100 people, which the country `country` settled in the region numbered `region` (if the
+    /// map has regions) with people from its city `from`, for `cost`.
+    CitySettled {
+        population: u32,
+        #[serde(default)]
+        region: Option<u16>,
+        country: CountryId,
+        from: CityId,
+        cost: Vec<Cost>,
+    },
     /// The subject is a person, and they joined the country `country`. Their title and name are kept here too, since
     /// they go with their country if it is deleted. News saved before this has none of the three.
     PersonJoined {
@@ -380,6 +390,12 @@ impl News {
                     (Some(city), Some(country)) => format!("{} founds {}{place}, a city of {population} people", day.country_name(country), city.name),
                     _ => format!("A city{place} of {population} people is founded"),
                 }
+            }
+            Event::CitySettled { population, region, country, from, ref cost } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let name = day.city(CityId::from(self.subject)).map_or("a new city", |city| city.name.as_str());
+                let origin = day.city(from).map_or("another city", |city| city.name.as_str());
+                format!("{} settles {name}{place}, a city of {population} people from {origin}{}", day.country_name(country), for_cost(cost))
             }
             Event::RegionOwnerChanged { region, from, to } => {
                 let label = capitalized(&day.region_label(region));

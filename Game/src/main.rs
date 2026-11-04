@@ -251,6 +251,8 @@ async fn main() {
     let mut clicks = ClickTracker::default();
     // The popup for the name of the city being founded, and where it is going.
     let mut naming_city: Option<(Vec2, Popup)> = None;
+    // The city that the people for a new city are being taken from, while the player chooses where it goes.
+    let mut settling_from: Option<ids::CityId> = None;
     // The popup for the name of the region that was clicked while the region names are showing, and its number.
     let mut naming_region: Option<(u16, Popup)> = None;
     // The same for a river or a lake: its number, whether it is a lake, and the popup.
@@ -343,6 +345,8 @@ async fn main() {
                 naming_place = None;
             } else if naming_militia.is_some() {
                 naming_militia = None;
+            } else if settling_from.is_some() {
+                settling_from = None;
             } else if selected_militia.is_some() {
                 selected_militia = None;
             } else if noting.is_some() {
@@ -427,7 +431,11 @@ async fn main() {
         }
         // Whether one of the tools is on, and so the map is not for anything else.
         let tool_on = path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() || gatherer_tools.iter().any(|tool| tool.is_active());
-        let placing = !modal && day.cities.is_empty() && !tool_on;
+        // A new city that can no longer be paid for, or settled from the city it was to be, is given up.
+        if settling_from.is_some_and(|from| day.settle_problem(from).is_some()) {
+            settling_from = None;
+        }
+        let placing = !modal && (day.cities.is_empty() || settling_from.is_some()) && !tool_on;
         let site = if placing && !over_interface { ground_at() } else { None };
         // Why the city can't go there: the ground, or the region belonging to another country.
         let problem = site.and_then(|at| {
@@ -435,6 +443,7 @@ async fn main() {
                 let country = day.player_country()?.id;
                 day.city_region_problem(country, world.region_at(at.x, at.y).map(|r| r.raw()))
             })
+            .or_else(|| day.crowding_problem(at.x, at.y))
         });
         cities.draw(&world, &day.cities, &eye);
         paths.draw(&world, &region_map, &day);
@@ -731,7 +740,7 @@ async fn main() {
                 }
             }
             if placing {
-                hud::placing_prompt(&style, problem.as_deref());
+                hud::placing_prompt(&style, settling_from.and_then(|from| day.city(from)).map(|city| city.name.as_str()), problem.as_deref());
             }
             if let Some(militia) = selected_militia.and_then(|id| day.militia(id)) {
                 let id = militia.id;
@@ -908,6 +917,9 @@ async fn main() {
                 Err(message) => city_popup.fail(message),
             }
         }
+        if let Some(from) = city_popup.take_settle() {
+            settling_from = Some(from);
+        }
 
         if let Some(change) = gatherer_popup.show(&style, &day) {
             // Only keep the change if it is saved too.
@@ -967,9 +979,15 @@ async fn main() {
             if let Some(typed) = popup.show(&style) {
                 // Only keep the city if it is saved too.
                 let mut updated = day.clone();
-                match updated.found_city(&typed[0], at.x, at.y, world.region_at(at.x, at.y).map(|r| r.raw())).and_then(|()| autosave.save_now(&saves, &updated)) {
+                let region = world.region_at(at.x, at.y).map(|r| r.raw());
+                let made = match settling_from {
+                    Some(from) => updated.settle_city(from, &typed[0], at.x, at.y, region),
+                    None => updated.found_city(&typed[0], at.x, at.y, region),
+                };
+                match made.and_then(|()| autosave.save_now(&saves, &updated)) {
                     Ok(()) => {
                         day = updated;
+                        settling_from = None;
                         camera.fly_to(*at, NEW_CITY_VIEW_DISTANCE);
                         founded = true;
                     }

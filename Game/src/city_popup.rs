@@ -7,8 +7,10 @@ use nworld_view::style::{self, Style, Weight};
 
 use crate::day::DaySave;
 use crate::format::{money, thousands};
+use crate::city;
 use crate::ids::{CityId, CountryId};
 use crate::militia;
+use crate::newsreel::cost_text;
 use crate::options;
 use crate::popup::{self, Icon};
 
@@ -27,6 +29,8 @@ const FADE_IN: f64 = 0.22;
 /// The room for raising a militia: its heading, the slider for how many, and the button.
 const MILITIA_HEIGHT: f32 = 36.0 + 30.0 + BUTTON_HEIGHT + 12.0;
 const SLIDER_HEIGHT: f32 = 30.0;
+/// The room for settling a new city: its heading, the cost or the reason it can't be done, and the button.
+const SETTLE_HEIGHT: f32 = 12.0 + 36.0 + 30.0 + 6.0 + BUTTON_HEIGHT;
 
 /// What the player changed about the city in the popup.
 #[derive(Debug, PartialEq)]
@@ -86,6 +90,8 @@ pub struct CityPopup {
     /// whether it is being dragged.
     members: Option<u32>,
     dragging: bool,
+    /// Set when the button for settling a new city was clicked: the city the settlers come from, until `take_settle` takes it.
+    settle: Option<CityId>,
     /// Why the last change couldn't be made.
     error: Option<String>,
 }
@@ -106,6 +112,12 @@ impl CityPopup {
         } else {
             self.city = None;
         }
+    }
+
+    /// The city whose button for settling a new city was clicked since this was last called, if one was. The popup closes
+    /// when it is, for the player to choose where the new city goes.
+    pub fn take_settle(&mut self) -> Option<CityId> {
+        self.settle.take()
     }
 
     /// Shows why the change that `show` gave couldn't be made.
@@ -134,7 +146,7 @@ impl CityPopup {
         let country = day.country(city.country);
         let error_lines = self.error.as_deref().map_or_else(Vec::new, |error| wrap(style, error, CARD_WIDTH - PADDING * 2.0, 12));
         let error_height = if error_lines.is_empty() { 0.0 } else { 10.0 + 15.0 * error_lines.len() as f32 };
-        let height = ROWS_TOP + ROW_HEIGHT * 3.0 + 16.0 + MILITIA_HEIGHT + error_height + BUTTON_HEIGHT + PADDING;
+        let height = ROWS_TOP + ROW_HEIGHT * 3.0 + 16.0 + MILITIA_HEIGHT + SETTLE_HEIGHT + error_height + BUTTON_HEIGHT + PADDING;
         let card = Rect::new((screen_w - CARD_WIDTH) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, CARD_WIDTH, height);
         style::card(card, 18.0, style::PANEL);
 
@@ -245,8 +257,33 @@ impl CityPopup {
             }
         }
 
+        // Settling a new city from this one: what it costs, or why it can't be done, and a button that closes the popup for
+        // the player to choose the place on the map.
+        let settle_row = Rect::new(inner_x, raise.bottom() + 12.0, inner_w, 36.0);
+        let settle_note = Rect::new(inner_x, settle_row.bottom(), inner_w, 30.0);
+        let settle_button = Rect::new(inner_x, settle_note.bottom() + 6.0, inner_w, BUTTON_HEIGHT);
+        let settle_problem = day.settle_problem(city.id);
+        let settling = settle_problem.is_none();
+        style.text_mid("Settle new city", inner_x, settle_row.center().y, 13, Weight::Regular, style::TEXT_MUTED);
+        let people = format!("{} people from here", thousands(city::SETTLERS));
+        style.text_mid(&people, settle_row.right() - style.measure(&people, 14, Weight::Semibold).width, settle_row.center().y, 14, Weight::Semibold, if settling { style::TEXT } else { style::TEXT_MUTED });
+        let note = settle_problem.clone().unwrap_or_else(|| format!("Costs {}.", cost_text(&city::settle_cost())));
+        let note_lines = wrap(style, &note, settle_note.w, 12);
+        for (n, line) in note_lines.iter().take(2).enumerate() {
+            style.text_mid(line, settle_note.x, settle_note.center().y + (n as f32 - (note_lines.len().min(2) as f32 - 1.0) * 0.5) * 15.0, 12, Weight::Regular, style::TEXT_MUTED);
+        }
+        let over_settle = settle_button.contains(mouse) && !self.choosing && settling;
+        let fill = if !settling { style::HOVER } else if over_settle { style::ACCENT_HOVER } else { style::ACCENT };
+        style::rounded_rect(settle_button, 8.0, fill);
+        style.text_centered("Settle a new city", settle_button, 14, Weight::Semibold, if settling { WHITE } else { style::TEXT_MUTED });
+        if clicked && over_settle {
+            self.settle = Some(city.id);
+            self.city = None;
+            return change;
+        }
+
         for (n, line) in error_lines.iter().enumerate() {
-            style.text(line, inner_x, raise.bottom() + 20.0 + n as f32 * 15.0, 12, Weight::Regular, style::ERROR);
+            style.text(line, inner_x, settle_button.bottom() + 20.0 + n as f32 * 15.0, 12, Weight::Regular, style::ERROR);
         }
 
         // The button that closes it.

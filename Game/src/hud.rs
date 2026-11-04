@@ -267,16 +267,20 @@ pub fn resource_tooltip(style: &Style, deposit: Deposit) {
     style.text_mid(&what, panel.x + 16.0, panel.y + 14.0 + 22.0 + 9.0, 12, Weight::Regular, style::TEXT_MUTED);
 }
 
-/// The prompt for placing the first city, above the footer. `problem` says why the city can't go
-/// where the mouse is, if it can't.
-pub fn placing_prompt(style: &Style, problem: Option<&str>) {
+/// The prompt for placing a city, above the footer: the first city, or a new one settled with people from the city called
+/// `settling_from`. `problem` says why the city can't go where the mouse is, if it can't.
+pub fn placing_prompt(style: &Style, settling_from: Option<&str>, problem: Option<&str>) {
     let panel = Rect::new((screen_width() - 460.0) * 0.5, screen_height() - FOOTER_HEIGHT - MARGIN - 72.0, 460.0, 72.0);
     style::card(panel, 12.0, style::GLASS);
-    style.text_mid("Found your first city", panel.x + 20.0, panel.y + 24.0, 16, Weight::Semibold, style::TEXT);
+    let title = settling_from.map_or_else(|| "Found your first city".to_owned(), |from| format!("Settle a new city from {from}"));
+    style.text_mid(&title, panel.x + 20.0, panel.y + 24.0, 16, Weight::Semibold, style::TEXT);
     match problem {
         Some(problem) => style.text_mid(problem, panel.x + 20.0, panel.y + 48.0, 14, Weight::Regular, style::ERROR),
         None => style.text_mid(
-            &format!("Click on dry land to place it. It starts with {} people.", crate::city::INITIAL_POPULATION),
+            &match settling_from {
+                Some(_) => format!("Click on dry land to place it. It takes {} people. Esc to cancel.", crate::city::SETTLERS),
+                None => format!("Click on dry land to place it. It starts with {} people.", crate::city::INITIAL_POPULATION),
+            },
             panel.x + 20.0,
             panel.y + 48.0,
             14,

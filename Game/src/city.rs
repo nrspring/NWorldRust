@@ -1,11 +1,13 @@
 //! Cities. Each belongs to a country, stands somewhere on the map, and has a population.
 
 use nworld_map::regions::MOUNTAIN_HEIGHT;
-use nworld_map::world::{WaterClass, World};
+use nworld_map::world::{Resource, WaterClass, World};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{CityId, CountryId};
+use crate::newsreel::Cost;
 use crate::text;
+use crate::transfer::Asset;
 
 /// The longest a city's name can be, in characters.
 pub const MAX_NAME_CHARS: usize = 32;
@@ -18,6 +20,21 @@ pub const MAX_POPULATION: u32 = 100_000;
 /// The population at which a city stops growing in size. With more people than this it is the same
 /// size, though the population goes on up to [`MAX_POPULATION`].
 pub const FULL_SIZE_POPULATION: u32 = 50_000;
+
+/// How many people a country takes from one of its cities to settle a new one, which is also the population the new city
+/// starts with.
+pub const SETTLERS: u32 = INITIAL_POPULATION;
+/// What settling a new city costs in coins.
+pub const SETTLE_COINS: i64 = 10_000;
+/// What settling a new city costs in each resource, besides coins.
+pub const SETTLE_MATERIALS: [(Resource, u64); 3] = [(Resource::Forest, 1_000), (Resource::Stone, 1_000), (Resource::Iron, 100)];
+
+/// Everything settling a new city costs, besides the people: coins first, and then the resources.
+pub fn settle_cost() -> Vec<Cost> {
+    let mut cost = vec![Cost::coins(SETTLE_COINS)];
+    cost.extend(SETTLE_MATERIALS.iter().map(|(resource, amount)| Cost { asset: Asset::of(*resource), amount: *amount }));
+    cost
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct City {
