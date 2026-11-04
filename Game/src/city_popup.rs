@@ -67,7 +67,7 @@ fn wrap(style: &Style, text: &str, width: f32, size: u16) -> Vec<String> {
 
 /// How many members the slider says for a mouse at `x` over a track from `left` for `width`, of 1 up to `most`: the far left is 1 and the
 /// far right is all of them.
-fn members_at(x: f32, left: f32, width: f32, most: u32) -> u32 {
+pub(crate) fn members_at(x: f32, left: f32, width: f32, most: u32) -> u32 {
     let along = ((x - left) / width).clamp(0.0, 1.0);
     1 + (along * most.saturating_sub(1) as f32).round() as u32
 }

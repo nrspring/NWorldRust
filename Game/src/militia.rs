@@ -35,6 +35,8 @@ const CAMP_RINGS: [f32; 3] = [20.0, 42.0, 70.0];
 /// How many places round each ring are tried, and how close two camps may stand, in meters.
 const CAMP_TRIES: usize = 16;
 const CAMP_SPACING: f32 = 22.0;
+/// How far from a militia the group split off it can stand, in meters: the nearest, and the rings beyond that to try.
+const SPLIT_RINGS: [f32; 3] = [24.0, 40.0, 64.0];
 /// A turn of this many radians takes the next camp of a city well away from the last, however many there are.
 const GOLDEN_ANGLE: f32 = 2.399_963;
 
@@ -74,6 +76,32 @@ pub fn clean_name(typed: &str) -> Result<String, String> {
 /// What a militia raised in the city called `city` on `date` is called until it is renamed: "Port Aldor Militia 1-3-14".
 pub fn default_name(city: &str, date: Date) -> String {
     format!("{city} Militia {date}")
+}
+
+/// What a group split off a militia called `name` is called until it is renamed: "Harbour Guard Detachment", kept short
+/// enough to be a name.
+pub fn split_name(name: &str) -> String {
+    const SUFFIX: &str = " Detachment";
+    let room = MAX_NAME_CHARS - SUFFIX.len();
+    let base: String = name.chars().take(room).collect();
+    format!("{}{SUFFIX}", base.trim_end())
+}
+
+/// Where a group split off the militia standing at `from` can stand: a little way off, on dry land in the same map
+/// region (`region` says which region a place is in), and not on top of the militia at `taken`. `None` if there is
+/// no such ground near it.
+pub fn split_spot(world: &World, from: Vec2, taken: &[Vec2], region: &dyn Fn(Vec2) -> Option<u16>) -> Option<Vec2> {
+    let here = region(from);
+    for distance in SPLIT_RINGS {
+        for k in 0..CAMP_TRIES {
+            let angle = std::f32::consts::TAU * k as f32 / CAMP_TRIES as f32;
+            let at = from + vec2(angle.cos(), angle.sin()) * distance;
+            if city::site_problem(world, at.x, at.y).is_none() && region(at) == here && taken.iter().all(|other| other.distance(at) >= CAMP_SPACING) {
+                return Some(at);
+            }
+        }
+    }
+    None
 }
 
 impl Militia {

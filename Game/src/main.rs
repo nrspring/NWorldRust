@@ -918,11 +918,23 @@ async fn main() {
             }
         }
 
-        if let Some(change) = militia_popup.show(&style, &day) {
-            // Only keep the change if it is saved too.
+        if let Some(change) = militia_popup.show(&style, &day, &world) {
+            // Only keep the change if it is saved too. A militia that is still marching to where it was moved can't be
+            // combined or split until it has got there.
             let mut updated = day.clone();
-            match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
-                Ok(()) => day = updated,
+            let marching = change.militia().into_iter().find(|id| walks.is_walking(*id));
+            let result = match marching {
+                Some(id) if !matches!(change, militia_popup::Change::Country(..)) => Err(format!("{} is still marching.", day.militia(id).map_or("A militia", |m| m.title()))),
+                _ => change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)),
+            };
+            match result {
+                Ok(()) => {
+                    // A militia that has been combined into another is no longer there to be selected.
+                    if selected_militia.is_some_and(|id| updated.militia(id).is_none()) {
+                        selected_militia = None;
+                    }
+                    day = updated;
+                }
                 Err(message) => militia_popup.fail(message),
             }
         }

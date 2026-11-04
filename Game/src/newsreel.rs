@@ -267,6 +267,11 @@ pub enum Event {
         #[serde(default)]
         region: Option<u16>,
     },
+    /// The subject is a militia called `name`, which the militia called `absorbed` joined, making `members` of them.
+    MilitiaMerged { name: String, absorbed: String, members: u32 },
+    /// The subject is a militia called `name`, which split `members` of its people off into the new militia called
+    /// `new_name`, leaving `remaining`.
+    MilitiaSplit { name: String, new_name: String, members: u32, remaining: u32 },
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -503,6 +508,10 @@ impl News {
                     Some(region) => format!("{name} marches to {}, spending {spent}", day.region_label(region)),
                     None => format!("{name} marches, spending {spent}"),
                 }
+            }
+            Event::MilitiaMerged { ref name, ref absorbed, members } => format!("{absorbed} joins {name}, making {} members", thousands(members)),
+            Event::MilitiaSplit { ref name, ref new_name, members, remaining } => {
+                format!("{name} splits off {} members as {new_name}, leaving {}", thousands(members), thousands(remaining))
             }
             Event::Note { ref text } => text.clone(),
         }
@@ -907,6 +916,11 @@ mod tests {
         assert_eq!(headline(Event::MilitiaTransferred { from: aldoria, to: brevon, members: 30 }), "A militia of 30 passes from Aldoria to Brevon");
         assert_eq!(headline(Event::MilitiaMoved { name: "Harbour Guard".to_owned(), points: 84, region: Some(0xC001) }), format!("Harbour Guard marches to {}, spending 84 movement points", day.region_label(0xC001)));
         assert_eq!(headline(Event::MilitiaMoved { name: "Harbour Guard".to_owned(), points: 1, region: None }), "Harbour Guard marches, spending 1 movement point");
+        assert_eq!(headline(Event::MilitiaMerged { name: "Harbour Guard".to_owned(), absorbed: "Port Guard".to_owned(), members: 1_000 }), "Port Guard joins Harbour Guard, making 1,000 members");
+        assert_eq!(
+            headline(Event::MilitiaSplit { name: "Harbour Guard".to_owned(), new_name: "Harbour Guard Detachment".to_owned(), members: 120, remaining: 880 }),
+            "Harbour Guard splits off 120 members as Harbour Guard Detachment, leaving 880"
+        );
         assert_eq!(headline(Event::MilitiaRenamed { from: "Port Aldor Militia 1-1-1".to_owned(), to: "Harbour Guard".to_owned() }), "Port Aldor Militia 1-1-1 is renamed Harbour Guard");
         // A city that is gone is "a city", and the news survives the militia.
         assert_eq!(headline(raised("", CityId::new(), 5)), "Aldoria raises a militia of 5 in a city for 10,000 coins");

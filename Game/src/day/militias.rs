@@ -120,6 +120,65 @@ impl DaySave {
         Ok(())
     }
 
+    /// The militia that the one with this id could be combined with, or could be if there were room: the others of its
+    /// country that stand in the same map region as it, where `region` says which region a militia is in. Nothing if
+    /// the map has no region where it stands.
+    pub fn merge_partners(&self, id: MilitiaId, region: &dyn Fn(&Militia) -> Option<u16>) -> Vec<&Militia> {
+        let Some(unit) = self.militia(id) else { return Vec::new() };
+        let Some(here) = region(unit) else { return Vec::new() };
+        self.militias.iter().filter(|m| m.id != id && m.country == unit.country && region(m) == Some(here)).collect()
+    }
+
+    /// Combines the militia `absorb` into the militia `keep`: they must belong to the same country and stand in the same
+    /// map region (`regions` says which region each is in, `keep`'s first), and can't have more than 1,000 members
+    /// between them. `keep` stays where it is, with its name, and has the members of both and the fewer movement points
+    /// of the two; `absorb` is gone. This is reported in the newsreel. An error says why it can't be done.
+    pub fn merge_militia(&mut self, keep: MilitiaId, absorb: MilitiaId, regions: (Option<u16>, Option<u16>)) -> Result<(), String> {
+        if keep == absorb {
+            return Err("A militia can't be combined with itself.".to_owned());
+        }
+        let (first, second) = (self.militia(keep).ok_or("There is no such militia.")?, self.militia(absorb).ok_or("There is no such militia.")?);
+        if first.country != second.country {
+            return Err(format!("{} and {} belong to different countries.", first.title(), second.title()));
+        }
+        if regions.0.is_none() || regions.0 != regions.1 {
+            return Err(format!("{} and {} are not in the same region.", first.title(), second.title()));
+        }
+        let members = u64::from(first.members) + u64::from(second.members);
+        if members > u64::from(militia::MAX_MEMBERS) {
+            return Err(format!("Together they would be {} members, and a militia can't have more than {}.", format::thousands_u64(members), format::thousands(militia::MAX_MEMBERS)));
+        }
+        let (points, absorbed, name) = (first.points.min(second.points), second.title().to_owned(), first.title().to_owned());
+        self.militias.retain(|m| m.id != absorb);
+        if let Some(unit) = self.militias.iter_mut().find(|m| m.id == keep) {
+            unit.members = members as u32;
+            unit.points = points;
+        }
+        self.newsreel.push(News::about(keep, Event::MilitiaMerged { name, absorbed, members: members as u32 }));
+        Ok(())
+    }
+
+    /// Splits `members` of the members of the militia with this id off into a militia of their own, which belongs to the
+    /// same country, is from the same city, has the same movement points left, and stands at `at`. It is called "…
+    /// Detachment". The militia keeps the rest, and at least 1 member of it and of the new one is needed. This is reported
+    /// in the newsreel. An error says why it can't be done.
+    pub fn split_militia(&mut self, id: MilitiaId, members: u32, at: Vec2) -> Result<(), String> {
+        if !at.x.is_finite() || !at.y.is_finite() {
+            return Err("That is not a place on the map.".to_owned());
+        }
+        let unit = self.militias.iter_mut().find(|m| m.id == id).ok_or("There is no such militia.")?;
+        if members == 0 || members >= unit.members {
+            return Err(format!("{} has {} members, and can only split off from 1 to {} of them.", unit.title(), format::thousands(unit.members), format::thousands(unit.members.saturating_sub(1))));
+        }
+        unit.members -= members;
+        let (name, remaining) = (unit.title().to_owned(), unit.members);
+        let new_name = militia::split_name(&name);
+        let new = Militia { id: MilitiaId::new(), name: new_name.clone(), x: at.x, z: at.y, members, ..unit.clone() };
+        self.militias.push(new);
+        self.newsreel.push(News::about(id, Event::MilitiaSplit { name, new_name, members, remaining }));
+        Ok(())
+    }
+
     /// Gives every militia all its movement points again, for a new day.
     pub fn rest_militia(&mut self) {
         for militia in &mut self.militias {
@@ -405,6 +464,129 @@ mod tests {
         assert!(day.set_militia_country(MilitiaId::new(), aldoria).is_err());
         // The city it came from stays Aldoria's.
         assert_eq!(day.cities[0].country, aldoria);
+    }
+
+    /// A day with two militia of Aldoria, of 300 and 200 members, and one of Brevon's, of 100.
+    fn day_with_three_militia() -> (DaySave, MilitiaId, MilitiaId, MilitiaId) {
+        let mut day = day_with_a_city();
+        let (aldoria, brevon, port) = (day.countries[0].id, day.countries[1].id, day.cities[0].id);
+        day.add_money(aldoria, 10_000).unwrap();
+        day.cities[0].population = 100_000;
+        day.raise_militia(port, 300, CAMP).unwrap();
+        let first = day.militias[0].id;
+        let mut tomorrow = day.following(Date { year: 1, month: 1, day: 2 });
+        tomorrow.raise_militia(port, 200, vec2(60.0, 0.0)).unwrap();
+        let second = tomorrow.militias[1].id;
+        tomorrow.raise_militia(port, 100, CAMP).unwrap_err();
+        let mut third_day = tomorrow.following(Date { year: 1, month: 1, day: 3 });
+        third_day.raise_militia(port, 100, vec2(80.0, 0.0)).unwrap();
+        let third = third_day.militias[2].id;
+        third_day.set_militia_country(third, brevon).unwrap();
+        (third_day, first, second, third)
+    }
+
+    #[test]
+    fn two_militia_in_a_region_combine_taking_the_fewer_movement_points() {
+        let (mut day, first, second, _) = day_with_three_militia();
+        day.move_militia(first, vec2(1.0, 1.0), 50, Some(7)).unwrap();
+        day.move_militia(second, vec2(2.0, 2.0), 120, Some(7)).unwrap();
+        let name = day.militia(first).unwrap().name.clone();
+        let other_name = day.militia(second).unwrap().name.clone();
+        day.merge_militia(first, second, (Some(7), Some(7))).unwrap();
+
+        assert!(day.militia(second).is_none(), "the one absorbed is gone");
+        let kept = day.militia(first).unwrap();
+        assert_eq!((kept.members, kept.points, kept.x, kept.z, kept.name.as_str()), (500, 80, 1.0, 1.0, name.as_str()), "the fewer points of the two: 200 - 120");
+        assert_eq!(day.newsreel.last(), Some(&News::about(first, Event::MilitiaMerged { name, absorbed: other_name, members: 500 })));
+    }
+
+    #[test]
+    fn militia_only_combine_in_the_same_region_of_the_same_country_and_up_to_a_thousand() {
+        let (mut day, first, second, third) = day_with_three_militia();
+        let before = day.clone();
+        assert!(day.merge_militia(first, third, (Some(7), Some(7))).unwrap_err().contains("different countries"));
+        assert!(day.merge_militia(first, second, (Some(7), Some(8))).unwrap_err().contains("not in the same region"));
+        assert!(day.merge_militia(first, second, (None, None)).unwrap_err().contains("not in the same region"), "no region is no place to meet");
+        assert!(day.merge_militia(first, first, (Some(7), Some(7))).is_err());
+        assert!(day.merge_militia(first, MilitiaId::new(), (Some(7), Some(7))).is_err());
+        assert_eq!(day, before, "a refused combining changes nothing");
+
+        // 1,000 is allowed, 1,001 is not.
+        let id = day.militia(second).unwrap().id;
+        day.militias.iter_mut().find(|m| m.id == first).unwrap().members = 800;
+        day.merge_militia(first, id, (Some(7), Some(7))).unwrap();
+        assert_eq!(day.militia(first).unwrap().members, 1_000);
+        let (mut day, first, second, _) = day_with_three_militia();
+        day.militias.iter_mut().find(|m| m.id == first).unwrap().members = 801;
+        let err = day.merge_militia(first, second, (Some(7), Some(7))).unwrap_err();
+        assert!(err.contains("1,001") && err.contains("1,000"), "{err}");
+    }
+
+    #[test]
+    fn the_militia_that_could_be_combined_with_are_those_of_the_country_in_the_same_region() {
+        let (day, first, second, third) = day_with_three_militia();
+        let everywhere = |_: &Militia| Some(1u16);
+        let ids = |list: Vec<&Militia>| list.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(ids(day.merge_partners(first, &everywhere)), [second], "not Brevon's");
+        assert_eq!(ids(day.merge_partners(third, &everywhere)), Vec::<MilitiaId>::new());
+        let apart = |m: &Militia| Some(if m.id == second { 2u16 } else { 1 });
+        assert!(day.merge_partners(first, &apart).is_empty());
+        assert!(day.merge_partners(first, &|_| None).is_empty());
+        assert!(day.merge_partners(MilitiaId::new(), &everywhere).is_empty());
+    }
+
+    #[test]
+    fn a_militia_splits_into_two_with_the_same_points_and_country() {
+        let (mut day, first, _, _) = day_with_three_militia();
+        day.move_militia(first, vec2(1.0, 1.0), 50, None).unwrap();
+        let count = day.militias.len();
+        let original = day.militia(first).unwrap().clone();
+        day.split_militia(first, 120, vec2(30.0, 40.0)).unwrap();
+
+        assert_eq!(day.militias.len(), count + 1);
+        assert_eq!(day.militia(first).unwrap().members, 180);
+        let new = day.militias.last().unwrap();
+        assert_ne!(new.id, first);
+        assert_eq!((new.members, new.points, new.country, new.city, new.raised), (120, 150, original.country, original.city, original.raised));
+        assert_eq!((new.x, new.z), (30.0, 40.0));
+        assert_eq!(new.name, format!("{} Detachment", original.name));
+        let total: u32 = day.militias.iter().filter(|m| m.city == original.city).map(|m| m.members).sum();
+        assert_eq!(total, 300 + 200 + 100, "nobody is made or lost");
+        assert!(matches!(&day.newsreel.last().unwrap().event, Event::MilitiaSplit { members: 120, remaining: 180, .. }));
+    }
+
+    #[test]
+    fn a_split_needs_a_member_on_each_side() {
+        let (mut day, first, _, _) = day_with_three_militia();
+        let before = day.clone();
+        assert!(day.split_militia(first, 0, Vec2::ZERO).is_err());
+        let err = day.split_militia(first, 300, Vec2::ZERO).unwrap_err();
+        assert!(err.contains("from 1 to 299"), "{err}");
+        assert!(day.split_militia(first, 301, Vec2::ZERO).is_err());
+        assert!(day.split_militia(first, 1, vec2(f32::NAN, 0.0)).is_err());
+        assert!(day.split_militia(MilitiaId::new(), 1, Vec2::ZERO).is_err());
+        assert_eq!(day, before);
+        day.split_militia(first, 299, Vec2::ZERO).unwrap();
+        assert_eq!(day.militia(first).unwrap().members, 1);
+    }
+
+    #[test]
+    fn a_split_group_was_raised_when_the_original_was_and_can_be_combined_back() {
+        let (mut day, first, _, _) = day_with_three_militia();
+        day.split_militia(first, 100, vec2(30.0, 40.0)).unwrap();
+        let new = day.militias.last().unwrap().id;
+        assert_eq!(day.militia(new).unwrap().raised, day.militia(first).unwrap().raised, "it was raised when the original was");
+        day.merge_militia(first, new, (Some(1), Some(1))).unwrap();
+        assert_eq!(day.militia(first).unwrap().members, 300);
+        assert!(day.militia(new).is_none());
+    }
+
+    #[test]
+    fn a_split_name_fits_in_a_name() {
+        assert_eq!(militia::split_name("Harbour Guard"), "Harbour Guard Detachment");
+        let long = militia::split_name(&"a".repeat(militia::MAX_NAME_CHARS));
+        assert!(long.chars().count() <= militia::MAX_NAME_CHARS && long.ends_with(" Detachment"));
+        assert!(militia::clean_name(&long).is_ok());
     }
 
     #[test]
