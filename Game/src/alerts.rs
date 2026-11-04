@@ -67,7 +67,9 @@ impl Alert {
     /// it is still ruined.
     pub fn current(day: &DaySave, failures: &[Thing]) -> Vec<Alert> {
         let mut alerts: Vec<Alert> = day.countries.iter().filter(|c| !day.cities.iter().any(|city| city.country == c.id)).map(|c| Alert::CountryWithoutCities(c.id)).collect();
-        alerts.extend(day.cut_off_gatherers().into_iter().map(Alert::GathererCutOff));
+        // Whether a gatherer has a route is kept up to date on it (see `RouteWatch`), which is far cheaper than working the
+        // routes out again, which this is asked for every frame.
+        alerts.extend(day.gatherers.iter().filter(|g| !g.operating).map(|g| Alert::GathererCutOff(g.id)));
         alerts.extend(failures.iter().filter(|thing| day.is_failed(**thing)).map(|thing| Alert::Failed(*thing)));
         alerts
     }
@@ -390,10 +392,13 @@ mod tests {
         day.build_segment(Kind::Path, PathSegment::to_edge(CUTTER, BETWEEN)).unwrap();
         day.build_segment(Kind::Path, PathSegment::to_edge(BETWEEN, CUTTER)).unwrap();
         day.build_segment(Kind::Road, PathSegment::to_edge(BETWEEN, CITY)).unwrap();
+        // (The game brings the gatherers up to date with their routes every frame.)
+        day.update_gatherer_operation();
         assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(brevon)]);
         // And it is back when part of that fails.
         let failed = Thing::Path(PathSegment::to_edge(BETWEEN, CUTTER));
         day.fail(failed);
+        day.update_gatherer_operation();
         assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(brevon), Alert::GathererCutOff(id)]);
     }
 

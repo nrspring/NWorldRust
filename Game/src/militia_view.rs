@@ -81,9 +81,13 @@ fn far_marker(world: &World, at: Vec2, r: f32, marching: Option<f32>, country: C
 /// is at `eye`.
 pub fn draw(world: &World, day: &DaySave, walks: &Walks, time: f32, eye: Vec3) {
     for militia in &day.militias {
+        let at = walks.position(militia);
+        if !pieces::within_view(eye, at.x, at.y) {
+            continue;
+        }
         let country = day.country(militia.country).map_or(NO_COUNTRY, |c| c.color.color());
         let marching = walks.is_walking(militia.id).then_some(time);
-        for piece in parts(world, militia, walks.position(militia), marching, country, eye) {
+        for piece in parts(world, militia, at, marching, country, eye) {
             piece.draw();
         }
     }

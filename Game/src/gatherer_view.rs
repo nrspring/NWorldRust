@@ -144,7 +144,7 @@ fn parts(world: &World, gatherer: &Gatherer, eye: Vec3, country: Color) -> Vec<P
 /// Draws the gatherers of `day`, as seen by the camera that is set, which must still be the one the map was drawn with, and
 /// is at `eye`.
 pub fn draw(world: &World, day: &DaySave, eye: Vec3) {
-    for gatherer in &day.gatherers {
+    for gatherer in day.gatherers.iter().filter(|g| pieces::within_view(eye, g.x, g.z)) {
         let country = day.country(gatherer.country).map_or(NO_COUNTRY, |c| c.color.color());
         for piece in parts(world, gatherer, eye, country) {
             piece.draw();

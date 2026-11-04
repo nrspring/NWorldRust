@@ -141,7 +141,7 @@ impl GathererPopup {
         let region_x = region_row.right() - style.measure(&region, 14, Weight::Semibold).width;
         style.text_mid(&region, region_x, region_row.center().y, 14, Weight::Semibold, style::TEXT);
 
-        let (status, status_color) = if day.gatherer_operating(gatherer.id) { ("Operating", style::TEXT) } else { ("No route to a city", style::ERROR) };
+        let (status, status_color) = if gatherer.operating { ("Operating", style::TEXT) } else { ("No route to a city", style::ERROR) };
         style.text_mid("Status", inner_x, status_row.center().y, 13, Weight::Regular, style::TEXT_MUTED);
         let status_x = status_row.right() - style.measure(status, 14, Weight::Semibold).width;
         style.text_mid(status, status_x, status_row.center().y, 14, Weight::Semibold, status_color);

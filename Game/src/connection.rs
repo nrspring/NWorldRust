@@ -9,12 +9,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::bridge::End;
+use crate::bridge::{BridgeLink, End};
 use crate::day::DaySave;
 use crate::failure::Thing;
-use crate::ids::{BridgeId, GathererId};
+use crate::ids::{BridgeId, CountryId, GathererId};
 use crate::newsreel::{Event, News};
-use crate::path::{Kind, PathPiece};
+use crate::path::{Kind, PathPiece, PathSegment};
 use crate::gatherer::Gatherer;
 
 /// A point a route can pass through.
@@ -125,7 +125,9 @@ impl DaySave {
         self.gatherers.iter().filter(|w| !self.reaches_a_city(&mut network, w)).map(|w| w.id).collect()
     }
 
-    /// Whether the gatherer with this id is operating: it has a route to a city of its country.
+    /// Whether the gatherer with this id is operating: it has a route to a city of its country, worked out afresh. (The game
+    /// reads what each gatherer keeps of it instead, which `RouteWatch` keeps up to date.)
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn gatherer_operating(&self, id: GathererId) -> bool {
         self.gatherer(id).is_some() && !self.cut_off_gatherers().contains(&id)
     }
@@ -153,6 +155,71 @@ impl DaySave {
 
     fn reaches_a_city(&self, network: &mut Network, gatherer: &Gatherer) -> bool {
         self.cities.iter().filter(|c| c.country == gatherer.country).filter_map(|c| c.region).any(|region| network.connects(gatherer.region, region))
+    }
+}
+
+/// What the routes of the gatherers to the cities depend on: the paths, roads and bridges and what of them has failed, where the
+/// cities are and whose they are, and where the gatherers are and whose they are.
+#[derive(Debug, PartialEq)]
+struct RouteInputs {
+    paths: Vec<PathSegment>,
+    roads: Vec<PathSegment>,
+    bridge_links: Vec<BridgeLink>,
+    road_links: Vec<BridgeLink>,
+    bridges: Vec<BridgeId>,
+    failed: Vec<Thing>,
+    cities: Vec<(CountryId, Option<u16>)>,
+    gatherers: Vec<(GathererId, CountryId, u16)>,
+}
+
+impl RouteInputs {
+    fn of(day: &DaySave) -> Self {
+        Self {
+            paths: day.paths.clone(),
+            roads: day.roads.clone(),
+            bridge_links: day.bridge_links.clone(),
+            road_links: day.road_links.clone(),
+            bridges: day.bridges.iter().map(|b| b.id).collect(),
+            failed: day.failed.clone(),
+            cities: day.cities.iter().map(|c| (c.country, c.region)).collect(),
+            gatherers: day.gatherers.iter().map(|g| (g.id, g.country, g.region)).collect(),
+        }
+    }
+
+    /// Whether `day` is as these say, worked out without making anything new, since it is asked every frame.
+    fn matches(&self, day: &DaySave) -> bool {
+        self.paths == day.paths
+            && self.roads == day.roads
+            && self.bridge_links == day.bridge_links
+            && self.road_links == day.road_links
+            && self.failed == day.failed
+            && self.bridges.len() == day.bridges.len()
+            && self.bridges.iter().zip(&day.bridges).all(|(id, b)| *id == b.id)
+            && self.cities.len() == day.cities.len()
+            && self.cities.iter().zip(&day.cities).all(|(seen, c)| *seen == (c.country, c.region))
+            && self.gatherers.len() == day.gatherers.len()
+            && self.gatherers.iter().zip(&day.gatherers).all(|(seen, g)| *seen == (g.id, g.country, g.region))
+    }
+}
+
+/// Keeps the gatherers of the day being played up to date with whether they have a route to a city, which the game asks every
+/// frame. Working the routes out means building the whole network of paths, roads and bridges, so it is only done when
+/// something that they depend on has changed since it was last done.
+#[derive(Default)]
+pub struct RouteWatch {
+    seen: Option<RouteInputs>,
+}
+
+impl RouteWatch {
+    /// Brings the gatherers of `day` up to date (see [`DaySave::update_gatherer_operation`]) if anything their routes depend on
+    /// has changed since the last time. Returns whether any of them started or stopped operating.
+    pub fn update(&mut self, day: &mut DaySave) -> bool {
+        if self.seen.as_ref().is_some_and(|seen| seen.matches(day)) {
+            return false;
+        }
+        let changed = day.update_gatherer_operation();
+        self.seen = Some(RouteInputs::of(day));
+        changed
     }
 }
 
@@ -422,5 +489,43 @@ mod tests {
         let day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         assert!(day.cut_off_gatherers().is_empty());
         assert!(!day.gatherer_operating(GathererId::new()));
+    }
+
+    #[test]
+    fn the_watch_works_the_routes_out_again_only_when_something_they_depend_on_changes() {
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        day.add_money(day.countries[0].id, 5_000).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
+        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
+        let mut watch = RouteWatch::default();
+        assert!(!watch.update(&mut day), "the first look finds it cut off, as it was built");
+        assert!(!day.gatherers[0].operating);
+
+        // Nothing has changed, so it isn't worked out again: a wrong answer put in by hand stays.
+        day.gatherers[0].operating = true;
+        watch.update(&mut day);
+        assert!(day.gatherers[0].operating, "not looked at again");
+        day.gatherers[0].operating = false;
+
+        // A path to the city is a change, and the gatherer starts operating.
+        day.build_segment(Kind::Path, PathSegment::to_edge(0xC002, 0xC001)).unwrap();
+        assert!(watch.update(&mut day));
+        assert!(day.gatherers[0].operating);
+        assert!(!watch.update(&mut day), "and nothing more until the next change");
+
+        // The path failing is a change too, and so are the city or the gatherer changing hands.
+        day.fail(Thing::Path(PathSegment::to_edge(0xC002, 0xC001)));
+        assert!(watch.update(&mut day));
+        assert!(!day.gatherers[0].operating);
+        day.repair(Thing::Path(PathSegment::to_edge(0xC002, 0xC001)));
+        assert!(watch.update(&mut day));
+        day.found_country("Brevon").unwrap();
+        let brevon = day.countries[1].id;
+        day.set_gatherer_country(day.gatherers[0].id, brevon).unwrap_or(());
+        let city = day.cities[0].id;
+        day.set_city_country(city, brevon).unwrap();
+        watch.update(&mut day);
+        assert_eq!(day.gatherers[0].operating, day.gatherer_operating(day.gatherers[0].id), "always as it would be worked out afresh");
     }
 }

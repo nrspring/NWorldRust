@@ -138,6 +138,16 @@ pub fn radius_at(eye: Vec3, at: Vec3) -> f32 {
     (eye.distance(at) * SCREEN_SHARE).clamp(MIN_RADIUS, MAX_RADIUS)
 }
 
+/// How far past the distance that can be seen (beyond which everything is lost in the haze) a thing may stand and still be
+/// drawn, for the part of it that reaches back towards the camera, in meters.
+const VIEW_MARGIN: f32 = 200.0;
+
+/// Whether a thing standing at (`x`, `z`) can be seen from a camera at `eye` at all, or is too far off, in the haze, to be worth
+/// drawing.
+pub fn within_view(eye: Vec3, x: f32, z: f32) -> bool {
+    vec2(x - eye.x, z - eye.z).length() <= nworld_view::view_distance(eye.y) + VIEW_MARGIN
+}
+
 /// Whether a token at `at` is far enough from a camera at `eye` to be drawn as a plain marker.
 pub fn is_far(eye: Vec3, at: Vec3) -> bool {
     eye.distance(at) > FAR
@@ -307,6 +317,16 @@ mod tests {
         assert!(TILE_EDGE.r + TILE_EDGE.g + TILE_EDGE.b < 0.8, "the tile is dark");
         assert!(GOLD.r + GOLD.g + GOLD.b > 1.8, "the unit's base is bright");
         assert!((GOLD.r - TILE_EDGE.r) > 0.5, "and they are far apart in color");
+    }
+
+    #[test]
+    fn only_what_is_within_the_distance_that_can_be_seen_is_drawn() {
+        let eye = vec3(0.0, 300.0, 0.0);
+        let seen = nworld_view::view_distance(300.0);
+        assert!(within_view(eye, 0.0, 0.0) && within_view(eye, seen, 0.0));
+        assert!(within_view(eye, 0.0, -(seen + VIEW_MARGIN * 0.5)), "a little past, for what reaches back");
+        assert!(!within_view(eye, seen + VIEW_MARGIN + 1.0, 0.0));
+        assert!(within_view(vec3(0.0, 5_000.0, 0.0), seen + VIEW_MARGIN + 1.0, 0.0), "from higher up, more can be seen");
     }
 
     #[test]

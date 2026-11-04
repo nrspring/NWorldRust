@@ -3,6 +3,7 @@
 //! and faded by the same fog as the terrain, so they sit in the scene.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use macroquad::models::{draw_mesh, Mesh};
 use macroquad::prelude::*;
@@ -225,6 +226,9 @@ fn shape(city: &City, world: &World) -> Shape {
     }
 }
 
+/// How long may be spent in a frame building the shapes of cities whose shapes are out of date.
+const REBUILD_BUDGET: Duration = Duration::from_millis(4);
+
 pub struct CityRenderer {
     material: Material,
     /// The shapes of each city, by its id.
@@ -265,14 +269,21 @@ impl CityRenderer {
         gl_use_material(m);
     }
 
-    /// Draws `cities` as seen by `camera`, which must still be the camera set for the map.
+    /// Draws `cities` as seen by `camera`, which must still be the camera set for the map. A city too far off to be seen, in
+    /// the haze, is not drawn.
     pub fn draw(&mut self, world: &World, cities: &[City], camera: &Camera3D) {
         self.use_material(camera, Vec4::ZERO);
-        for city in cities {
-            // The shapes only change when the city's size does: a city with more people than
-            // it needs to be full size looks the same.
-            let current = self.shapes.get(&city.id).is_some_and(|shape| shape.size == city.size().to_bits());
-            if !current {
+        let started = Instant::now();
+        for city in cities.iter().filter(|c| crate::pieces::within_view(camera.position, c.x, c.z)) {
+            // The shapes only change when the city's size does: a city with more people than it needs to be full size looks
+            // the same. A city with none yet gets them at once. One whose shapes are out of date, as every city's are when a
+            // new day changes the populations, gets new ones only while there is time for it this frame, and is drawn as it
+            // was until then, so that the new day doesn't stall the game while every city is built again.
+            let (built, current) = match self.shapes.get(&city.id) {
+                Some(shape) => (true, shape.size == city.size().to_bits()),
+                None => (false, false),
+            };
+            if !built || (!current && started.elapsed() < REBUILD_BUDGET) {
                 self.shapes.insert(city.id, shape(city, world));
             }
             for mesh in &self.shapes[&city.id].meshes {

@@ -316,6 +316,9 @@ pub struct NewsreelPanel {
     rect: Rect,
     /// Whether the player clicked the button to add a note since it was last asked.
     add_clicked: bool,
+    /// The headlines as they were last shown, and each broken into lines, which is only done again when they change: it
+    /// measures the text a word at a time, which is too slow to do for every item every frame.
+    wrapped: (Vec<String>, Vec<Vec<String>>),
 }
 
 impl NewsreelPanel {
@@ -337,7 +340,12 @@ impl NewsreelPanel {
         const NOTE_HEIGHT: f32 = 26.0;
         let text_width = NEWSREEL_WIDTH - 24.0 - 16.0;
 
-        let items: Vec<Vec<String>> = day.newsreel.iter().map(|n| wrap(style, &n.headline(day), TEXT_SIZE, text_width)).collect();
+        let headlines: Vec<String> = day.newsreel.iter().map(|n| n.headline(day)).collect();
+        if headlines != self.wrapped.0 {
+            let lines = headlines.iter().map(|headline| wrap(style, headline, TEXT_SIZE, text_width)).collect();
+            self.wrapped = (headlines, lines);
+        }
+        let items = &self.wrapped.1;
         let heights: Vec<f32> = items.iter().map(|lines| lines.len() as f32 * LINE).collect();
         // The most the body of the panel may take: a good part of the window, and room left for what is under it.
         let room = screen_height() - HEADER_HEIGHT - FOOTER_HEIGHT - MARGIN * 2.0 - 110.0;

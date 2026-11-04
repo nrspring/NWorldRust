@@ -301,6 +301,8 @@ async fn main() {
     // The owned regions the map is showing, as (region, color), to know when they change.
     let mut shown_owners: Vec<(u16, Rgb)> = Vec::new();
     let mut autosave = Autosave::new(&day, get_time());
+    // What the routes of the gatherers were last worked out from.
+    let mut route_watch = connection::RouteWatch::default();
     // Closing the window is a request, so the game can save before it goes.
     prevent_quit();
 
@@ -362,8 +364,9 @@ async fn main() {
         let dt = get_frame_time();
         time += dt;
         // A gatherer that has been cut off from a city, or has got a route to one, since last looked at is news. This is
-        // not saved at once: the autosave finds the change.
-        day.update_gatherer_operation();
+        // not saved at once: the autosave finds the change. The routes are only worked out when something they depend on
+        // has changed.
+        route_watch.update(&mut day);
 
         if asking.is_none() {
             asking = Asking::of(&day).map(|kind| {
@@ -387,6 +390,10 @@ async fn main() {
             camera.update(&world, dt, !over_interface);
         }
         let eye = camera.camera(&world);
+        // Where the mouse is on the ground, found the first time something asks this frame and kept for the rest of it:
+        // following the ray down to the ground takes many steps, and several things want to know.
+        let ground_under_mouse = std::cell::OnceCell::new();
+        let ground_at = || *ground_under_mouse.get_or_init(|| pick_terrain(&eye, &world, mouse));
         view.set_show_regions(options.show_regions);
         view.set_show_region_colors(options.show_country_areas);
         // Owned regions are tinted in their owners' colors, which is only uploaded when it changes.
@@ -421,7 +428,7 @@ async fn main() {
         // Whether one of the tools is on, and so the map is not for anything else.
         let tool_on = path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() || gatherer_tools.iter().any(|tool| tool.is_active());
         let placing = !modal && day.cities.is_empty() && !tool_on;
-        let site = if placing && !over_interface { pick_terrain(&eye, &world, mouse) } else { None };
+        let site = if placing && !over_interface { ground_at() } else { None };
         // Why the city can't go there: the ground, or the region belonging to another country.
         let problem = site.and_then(|at| {
             city::site_problem(&world, at.x, at.y).map(str::to_owned).or_else(|| {
@@ -465,7 +472,7 @@ async fn main() {
         // hit when the camera is far away.
         let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 1.5, 40.0);
-            pick_terrain(&eye, &world, mouse).and_then(|at| water_bodies.near(at.x, at.y, reach))
+            ground_at().and_then(|at| water_bodies.near(at.x, at.y, reach))
         } else {
             None
         };
@@ -579,7 +586,7 @@ async fn main() {
                 // it is walking there is nothing tinted, and a click is left alone.
                 options_ui.close();
                 overlays_ui.close();
-                let target = pick_terrain(&eye, &world, mouse).and_then(|at| {
+                let target = ground_at().and_then(|at| {
                     let reach = movement_view.reach()?;
                     Some((reach.snap(at), reach.cost_to(at)?.ceil() as u32, reach.route_to(at)?))
                 });
@@ -618,7 +625,7 @@ async fn main() {
                 naming_water = Some((id.0, lake, Popup::river(current.unwrap_or(""), lake)));
             } else if options.show_region_names {
                 // With the region names showing, a click on a region is for naming it.
-                if let Some(region) = pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y)) {
+                if let Some(region) = ground_at().and_then(|at| world.region_at(at.x, at.y)) {
                     options_ui.close();
                     overlays_ui.close();
                     let owner = day.region_owner(region.raw()).map_or("", |id| day.country_name(id));
@@ -627,7 +634,7 @@ async fn main() {
                 }
             } else if options.show_named_places {
                 // Anywhere else on the map, with the named places showing, a click is for adding a place there.
-                if let Some(at) = pick_terrain(&eye, &world, mouse) {
+                if let Some(at) = ground_at() {
                     options_ui.close();
                     overlays_ui.close();
                     naming_place = Some((None, at, Popup::place(None)));
@@ -638,14 +645,14 @@ async fn main() {
         // The region under the mouse, for a note about it while the region names are showing, unless it is a river or
         // lake that is under the mouse and the named places are showing.
         let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
-            pick_terrain(&eye, &world, mouse).and_then(|at| world.region_at(at.x, at.y))
+            ground_at().and_then(|at| world.region_at(at.x, at.y))
         } else {
             None
         };
         // The resource under the mouse, for a note about what it is, when nothing else has the mouse.
         let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 2.5, 40.0);
-            pick_terrain(&eye, &world, mouse).and_then(|at| resource_hover::deposit_near(&world, at.x, at.y, reach))
+            ground_at().and_then(|at| resource_hover::deposit_near(&world, at.x, at.y, reach))
         } else {
             None
         };
@@ -740,7 +747,7 @@ async fn main() {
             if let Some(city) = hovered.and_then(|id| day.city(id)) {
                 hud::city_tooltip(&style, &day, city);
             } else if let Some(gatherer) = gatherer_hover.and_then(|id| day.gatherer(id)) {
-                gatherer_tool::tooltip(&style, &day, gatherer, day.gatherer_operating(gatherer.id));
+                gatherer_tool::tooltip(&style, &day, gatherer, gatherer.operating);
             } else if let Some(militia) = militia_hover.and_then(|id| day.militia(id)) {
                 militia_view::tooltip(&style, &day, militia);
             } else if let Some(id) = water_hover {
