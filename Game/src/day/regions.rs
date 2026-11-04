@@ -19,15 +19,16 @@ impl DaySave {
     }
 
     /// What is in the region numbered `region` that belongs to a country, as a phrase that says where it is and whose it
-    /// is: a city, "Port Aldor stands" (and which country), or a gatherer, "A woodcutter of Aldoria is".
+    /// is: a city, "Port Aldor stands" (and which country), or a gatherer or a shipyard, "A woodcutter of Aldoria is".
     fn region_holders(&self, region: u16) -> Vec<(String, CountryId)> {
         let cities = self.cities.iter().filter(|c| c.region == Some(region)).map(|c| (format!("{} stands", c.name), c.country));
         let gatherers = self.gatherers.iter().filter(|g| g.region == region).map(|g| (format!("{} of {} is", g.kind.a_noun_capital(), self.country_name(g.country)), g.country));
-        cities.chain(gatherers).collect()
+        let shipyards = self.shipyards.iter().filter(|s| s.region == Some(region)).map(|s| (format!("{} of {} is", s.kind.a_noun_capital(), self.country_name(s.country)), s.country));
+        cities.chain(gatherers).chain(shipyards).collect()
     }
 
     /// Why the owner of the region numbered `region` can't be changed, or `None` if it can: a region that belongs to a
-    /// country with a city or any infrastructure (a gatherer) in it stays with that country.
+    /// country with a city or any infrastructure (a gatherer or a shipyard) in it stays with that country.
     pub fn region_lock(&self, region: u16) -> Option<String> {
         let owner = self.region_owner(region)?;
         let (what, _) = self.region_holders(region).into_iter().next()?;
@@ -54,8 +55,8 @@ impl DaySave {
     }
 
     /// Makes `owner` the owner of the region numbered `region`, or leaves it unowned if `owner` is `None`.
-    /// A region that has an owner can't be given to another country, or to none, while a city or a gatherer is in it, and
-    /// one that has none can only go to the country that has things in it. An error says why it can't be done.
+    /// A region that has an owner can't be given to another country, or to none, while a city, a gatherer or a shipyard is in
+    /// it, and one that has none can only go to the country that has things in it. An error says why it can't be done.
     pub fn set_region_owner(&mut self, region: u16, owner: Option<CountryId>) -> Result<(), String> {
         if let Some(owner) = owner {
             self.country(owner).ok_or("There is no such country.")?;
@@ -84,6 +85,13 @@ impl DaySave {
         self.region_owners.retain(|o| o.region != region);
         if let Some(country) = owner {
             self.region_owners.push(RegionOwner { region, country });
+            // What stands in a region belongs to whoever owns it, so a gatherer or a shipyard goes with the region.
+            for gatherer in self.gatherers.iter_mut().filter(|g| g.region == region) {
+                gatherer.country = country;
+            }
+            for shipyard in self.shipyards.iter_mut().filter(|s| s.region == Some(region)) {
+                shipyard.country = country;
+            }
         }
         if let Some(subject) = owner.or(from) {
             self.newsreel.push(News::about(subject, Event::RegionOwnerChanged { region, from, to: owner }));
@@ -183,8 +191,11 @@ mod tests {
         day.add_money(day.countries[0].id, 5_000).unwrap();
         let aldoria = day.countries[0].id;
         day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0x4006).unwrap();
-        // A region nobody has claimed can only go to the country whose gatherer is in it.
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 50.0, 0.0, 0x4006).unwrap();
+        // A gatherer is in a region its country owns, and so it keeps it. (A game saved before a gatherer had to be in a region
+        // its country owned can have one in a region nobody owns, which can only go to the country whose gatherer is in it.)
+        assert!(day.region_lock(0x4006).unwrap().contains("has to stay with Aldoria"));
+        day.region_owners.retain(|o| o.region != 0x4006);
         assert_eq!(day.region_lock(0x4006), None);
         assert!(day.assign_region(0x4006, "Brevon").unwrap_err().contains("so only Aldoria can have it"));
         day.assign_region(0x4006, "Aldoria").unwrap();

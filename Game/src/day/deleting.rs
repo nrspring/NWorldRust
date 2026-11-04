@@ -122,9 +122,9 @@ mod tests {
         day.add_money(aldoria, 5_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(0x4001)).unwrap();
         day.found_city("Farhold", 10.0, 0.0, Some(0x4002)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 5.0, 5.0, 0x4003).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 5.0, 5.0, 0x4003).unwrap();
         day.set_region_owner(0x4004, Some(aldoria)).unwrap();
-        assert_eq!(day.delete_problem(aldoria).unwrap(), "Aldoria owns 2 cities, 1 woodcutter and 1 region, so it can't be deleted.");
+        assert_eq!(day.delete_problem(aldoria).unwrap(), "Aldoria owns 2 cities, 1 woodcutter and 2 regions, so it can't be deleted.");
         // Letting go of the region it owns by itself is what lets it go.
         day.set_region_owner(0x4005, None).unwrap();
         assert_eq!(day.delete_problem(brevon), None);

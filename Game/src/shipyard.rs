@@ -1,6 +1,7 @@
-//! Shipyards: where a country will build ships. A shipyard is a small one or a large one, belongs to the country that built
-//! it, which pays for it in coins, stone, wood and iron, and has to stand on a coast: dry land with the sea within a short
-//! way of it. Only a small one can be built; a small one can then be upgraded to a large one, for a price. (There are no ships
+//! Shipyards: where a country will build ships. A shipyard is a small one or a large one, belongs to whichever country owns the
+//! region it stands in, which is the country that built it, and which has to own the region to build there; it pays for it in
+//! coins, stone, wood and iron. It can't be given to another country: only the region changes hands, and the shipyard goes with
+//! it. It has to stand on a coast: dry land with the sea within a short way of it. Only a small one can be built; a small one can then be upgraded to a large one, for a price. (There are no ships
 //! to build yet.)
 
 use macroquad::prelude::*;
@@ -157,7 +158,10 @@ pub fn site_region(world: &World, kind: ShipyardKind, at: Vec2) -> Result<Option
     if !on_a_coast(world, at.x, at.y) {
         return Err(format!("{} has to stand on the coast, with the sea close by.", kind.a_noun_capital()));
     }
-    Ok(world.region_at(at.x, at.y).map(|r| r.raw()))
+    match world.region_at(at.x, at.y) {
+        Some(region) => Ok(Some(region.raw())),
+        None => Err(format!("This map has no regions to put {} in.", kind.a_noun())),
+    }
 }
 
 impl DaySave {
@@ -204,18 +208,18 @@ impl DaySave {
     }
 
     /// Why the country being played can't have a shipyard at (`x`, `z`) in the region numbered `region`, or `None` if it
-    /// can: the region can't belong to another country, and it can't be on top of another shipyard.
+    /// can: the region has to be the country's, and the shipyard can't be on top of another.
     pub fn shipyard_place_problem(&self, x: f32, z: f32, region: Option<u16>) -> Option<String> {
         let country = self.player_country()?.id;
-        self.city_region_problem(country, region).or_else(|| {
+        self.placement_region_problem(country, region).or_else(|| {
             self.shipyards.iter().find(|s| ((s.x - x).powi(2) + (s.z - z).powi(2)).sqrt() < SPACING).map(|s| format!("That is too close to another {}.", s.kind.noun()))
         })
     }
 
     /// Builds a shipyard of `kind` at (`x`, `z`) in the region numbered `region` (`None` if the map has none) for the
-    /// country being played, which pays for it, and reports it in the newsreel. The region becomes the country's if nobody
-    /// owns it. Whether the place is a coast (see [`site_region`]) is for the caller to say. An error says why it can't
-    /// be done, and nothing changes.
+    /// country being played, which pays for it, and reports it in the newsreel. The region has to be the country's already.
+    /// Whether the place is a coast (see [`site_region`]) is for the caller to say. An error says why it can't be done, and
+    /// nothing changes.
     pub fn build_shipyard(&mut self, kind: ShipyardKind, x: f32, z: f32, region: Option<u16>) -> Result<(), String> {
         if let Some(problem) = self.shipyard_problem(kind) {
             return Err(problem);
@@ -256,23 +260,14 @@ impl DaySave {
         Ok(())
     }
 
-    /// Transfers the shipyard with this id to `country`, which is reported in the newsreel unless it belonged to it already.
-    /// The region it stands in can't belong to a different country from that. An error says why it can't be done, and nothing
-    /// changes.
-    pub fn set_shipyard_country(&mut self, id: ShipyardId, country: CountryId) -> Result<(), String> {
-        self.country(country).ok_or("There is no such country.")?;
-        let Shipyard { kind, region, country: from, .. } = *self.shipyard(id).ok_or("There is no such shipyard.")?;
-        if from == country {
-            return Ok(());
+    /// For tests: claims the region numbered `region` for the country being played if there is one and nobody owns it, and then
+    /// builds a shipyard there.
+    #[cfg(test)]
+    pub fn build_shipyard_claiming(&mut self, kind: ShipyardKind, x: f32, z: f32, region: Option<u16>) -> Result<(), String> {
+        if let Some(region) = region.filter(|r| self.region_owner(*r).is_none()) {
+            self.claim_region(region)?;
         }
-        if let Some(problem) = self.city_region_problem(country, region) {
-            return Err(problem);
-        }
-        if let Some(yard) = self.shipyards.iter_mut().find(|s| s.id == id) {
-            yard.country = country;
-        }
-        self.newsreel.push(News::about(id, Event::ShipyardTransferred { from, to: country, kind, region }));
-        Ok(())
+        self.build_shipyard(kind, x, z, region)
     }
 
     /// Destroys the shipyard with this id, which costs nothing and pays nothing back, and reports it in the newsreel. An
@@ -312,7 +307,7 @@ mod tests {
         }
         let mut day = day();
         let aldoria = day.countries[0].id;
-        day.build_shipyard(ShipyardKind::Small, 10.0, 20.0, Some(0x4005)).unwrap();
+        day.build_shipyard_claiming(ShipyardKind::Small, 10.0, 20.0, Some(0x4005)).unwrap();
 
         let yard = day.shipyards[0];
         assert_eq!((yard.kind, yard.country, yard.x, yard.z, yard.region), (ShipyardKind::Small, aldoria, 10.0, 20.0, Some(0x4005)));
@@ -328,9 +323,10 @@ mod tests {
     #[test]
     fn only_a_small_shipyard_can_be_built() {
         let mut day = day();
+        day.claim_region(0x4005).unwrap();
         let before = day.clone();
         assert_eq!(ShipyardKind::BUILDABLE, [ShipyardKind::Small]);
-        let err = day.build_shipyard(ShipyardKind::Large, 0.0, 0.0, None).unwrap_err();
+        let err = day.build_shipyard(ShipyardKind::Large, 0.0, 0.0, Some(0x4005)).unwrap_err();
         assert!(err.contains("A large shipyard can't be built") && err.contains("upgrade"), "{err}");
         assert_eq!(day, before);
         assert_eq!(day.shipyard_problem(ShipyardKind::Small), None);
@@ -340,7 +336,7 @@ mod tests {
     fn a_small_shipyard_is_upgraded_to_a_large_one_for_a_price_and_stays_where_it_is() {
         let mut day = day();
         let aldoria = day.countries[0].id;
-        day.build_shipyard(ShipyardKind::Small, 10.0, 20.0, Some(0x4005)).unwrap();
+        day.build_shipyard_claiming(ShipyardKind::Small, 10.0, 20.0, Some(0x4005)).unwrap();
         let (id, built) = (day.shipyards[0].id, day.shipyards[0]);
         assert_eq!(day.upgrade_problem(id), None);
         day.upgrade_shipyard(id).unwrap();
@@ -364,7 +360,7 @@ mod tests {
             let mut day = day();
             let id = day.countries[0].id;
             day.add_money(id, extra).unwrap();
-            day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap();
+            day.build_shipyard_claiming(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
             // What is left after building: 10,000 coins, 1,000 stone, 1,000 wood and 1,500 iron.
             day
         };
@@ -397,19 +393,20 @@ mod tests {
         let mut broke = day();
         let id = broke.countries[0].id;
         broke.add_money(id, -10_001).unwrap();
-        let err = broke.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap_err();
+        let err = broke.build_shipyard(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap_err();
         assert!(err.contains("Not enough coin") && err.contains("a small shipyard costs 10,000") && err.contains("9,999"), "{err}");
 
         for (resource, name, needed) in [(Resource::Stone, "stone", 1_000), (Resource::Forest, "wood", 1_000), (Resource::Iron, "iron", 500)] {
             let mut day = day();
             let id = day.countries[0].id;
             day.add_resource(id, resource, -(2_000 - needed as i64 + 1)).unwrap(); // One short.
+            day.claim_region(0x4005).unwrap();
             let before = day.clone();
-            let err = day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap_err();
+            let err = day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap_err();
             assert!(err.contains(&format!("Not enough {name}")) && err.contains(&format!("has {}", format::thousands_u64(needed - 1))), "{err}");
             assert_eq!(day, before, "a refused shipyard changes nothing");
             day.add_resource(id, resource, 1).unwrap();
-            day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap();
+            day.build_shipyard_claiming(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
         }
         assert!(DaySave::new(Date::FIRST, "x").shipyard_problem(ShipyardKind::Small).unwrap().contains("no country"));
     }
@@ -419,60 +416,72 @@ mod tests {
         let mut day = day();
         let brevon = day.countries[1].id;
         day.set_region_owner(0x4009, Some(brevon)).unwrap();
-        day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
+        day.build_shipyard_claiming(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
         let before = day.clone();
-        assert!(day.build_shipyard(ShipyardKind::Small, 100.0, 0.0, Some(0x4009)).unwrap_err().contains("belongs to Brevon"));
-        assert!(day.build_shipyard(ShipyardKind::Small, 10.0, 0.0, Some(0x4005)).unwrap_err().contains("too close to another small shipyard"));
-        assert!(day.build_shipyard(ShipyardKind::Small, f32::NAN, 0.0, None).is_err());
+        assert!(day.build_shipyard_claiming(ShipyardKind::Small, 100.0, 0.0, Some(0x4009)).unwrap_err().contains("belongs to Brevon"));
+        assert!(day.build_shipyard_claiming(ShipyardKind::Small, 10.0, 0.0, Some(0x4005)).unwrap_err().contains("too close to another small shipyard"));
+        assert!(day.build_shipyard_claiming(ShipyardKind::Small, f32::NAN, 0.0, Some(0x4005)).is_err());
         assert_eq!(day, before, "nothing was taken for any of them");
-        day.build_shipyard(ShipyardKind::Small, SPACING, 0.0, Some(0x4005)).unwrap();
+        day.build_shipyard_claiming(ShipyardKind::Small, SPACING, 0.0, Some(0x4005)).unwrap();
     }
 
     #[test]
-    fn a_shipyard_changes_country_and_the_change_is_reported_once() {
+    fn a_shipyard_belongs_to_whoever_owns_its_region_and_goes_with_it() {
         let mut day = day();
         let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
-        day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
-        let id = day.shipyards[0].id;
-        let news = day.newsreel.len();
-
-        day.set_shipyard_country(id, brevon).unwrap();
-        assert_eq!(day.shipyard(id).unwrap().country, brevon);
-        assert_eq!(day.newsreel.last(), Some(&News::about(id, Event::ShipyardTransferred { from: aldoria, to: brevon, kind: ShipyardKind::Small, region: Some(0x4005) })));
-        assert_eq!(day.newsreel.last().unwrap().headline(&day), "The small shipyard in region 5 is transferred from Aldoria to Brevon");
-        let before = day.clone();
-        day.set_shipyard_country(id, brevon).unwrap();
-        assert_eq!(day, before, "the same country again is no change");
-        assert_eq!(day.newsreel.len(), news + 1);
-
-        assert!(day.set_shipyard_country(id, CountryId::new()).is_err());
-        assert!(day.set_shipyard_country(ShipyardId::new(), aldoria).is_err());
-        // Brevon can't be given a shipyard in a region that Aldoria has a city in, and a city of Aldoria's keeps the region.
-        let mut day = self::tests::day();
-        let brevon = day.countries[1].id;
         day.found_city("Port Aldor", 0.0, 0.0, Some(0x4007)).unwrap();
-        day.build_shipyard(ShipyardKind::Small, 100.0, 0.0, Some(0x4007)).unwrap();
+        day.build_shipyard_claiming(ShipyardKind::Small, 100.0, 0.0, Some(0x4007)).unwrap();
+        let id = day.shipyards[0].id;
+        assert_eq!(day.shipyard(id).unwrap().country, aldoria);
+
+        // A shipyard in a region keeps it from being given away, or made nobody's, even with no city in it.
+        day.claim_region(0x4008).unwrap();
+        day.build_shipyard(ShipyardKind::Small, 300.0, 0.0, Some(0x4008)).unwrap();
         let before = day.clone();
-        let err = day.set_shipyard_country(day.shipyards[0].id, brevon).unwrap_err();
-        assert!(err.contains("belongs to Aldoria"), "{err}");
+        let err = day.set_region_owner(0x4008, Some(brevon)).unwrap_err();
+        assert!(err.contains("small shipyard of Aldoria is") && err.contains("has to stay with Aldoria"), "{err}");
+        assert!(day.set_region_owner(0x4008, None).is_err());
         assert_eq!(day, before);
+
+        // But when the region changes hands with its city, the shipyard goes with it.
+        let city = day.cities[0].id;
+        day.set_city_country(city, brevon).unwrap();
+        assert_eq!(day.region_owner(0x4007), Some(brevon));
+        assert_eq!(day.shipyard(id).unwrap().country, brevon);
     }
 
+    #[test]
+    fn a_country_can_only_build_a_shipyard_in_a_region_it_owns() {
+        let mut day = day();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        // Nobody's region: it has to be claimed first, and nothing is taken for asking.
+        let before = day.clone();
+        let err = day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap_err();
+        assert!(err.contains("Aldoria doesn't own this region") && err.contains("claim it first"), "{err}");
+        assert!(day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap_err().contains("no regions"));
+        assert_eq!(day, before);
+        day.claim_region(0x4005).unwrap();
+        day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
+        assert_eq!(day.shipyards[0].country, aldoria);
+        // Someone else's region is not for building in either.
+        day.set_region_owner(0x4006, Some(brevon)).unwrap();
+        assert!(day.build_shipyard(ShipyardKind::Small, 100.0, 0.0, Some(0x4006)).unwrap_err().contains("belongs to Brevon"));
+    }
     #[test]
     fn a_shipyard_can_be_destroyed_for_nothing() {
         let mut day = day();
-        day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap();
+        day.build_shipyard_claiming(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
         let (id, money) = (day.shipyards[0].id, day.countries[0].money);
         day.destroy_shipyard(id).unwrap();
         assert!(day.shipyards.is_empty() && day.countries[0].money == money, "nothing is paid back");
-        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria's small shipyard is destroyed");
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria's small shipyard in region 5 is destroyed");
         assert!(day.destroy_shipyard(id).is_err());
     }
 
     #[test]
     fn shipyards_are_saved_and_carry_forward_and_a_day_saved_before_them_has_none() {
         let mut day = day();
-        day.build_shipyard(ShipyardKind::Small, 5.0, 6.0, Some(0x4005)).unwrap();
+        day.build_shipyard_claiming(ShipyardKind::Small, 5.0, 6.0, Some(0x4005)).unwrap();
         day.upgrade_shipyard(day.shipyards[0].id).unwrap();
         let json = serde_json::to_value(&day).unwrap();
         assert_eq!(json["shipyards"][0]["kind"], "large");
@@ -487,14 +496,14 @@ mod tests {
     fn a_country_with_a_shipyard_cannot_be_deleted() {
         let mut day = day();
         let aldoria = day.countries[0].id;
-        day.build_shipyard(ShipyardKind::Small, 0.0, 0.0, None).unwrap();
+        day.build_shipyard_claiming(ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
         let problem = day.delete_problem(aldoria).unwrap();
         assert!(problem.contains("1 small shipyard"), "{problem}");
     }
 
     #[test]
     fn only_dry_land_near_the_sea_is_a_coast() {
-        let world = test_support::small_continent();
+        let world = test_support::regioned_continent();
         let (land, sea) = test_support::land_and_sea(&world);
         // Walking from the sea towards the land, the first dry ground is a coast, and a spot far inland, if there is one, is not.
         let steps = 2_000;

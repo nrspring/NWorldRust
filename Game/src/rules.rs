@@ -466,11 +466,11 @@ mod tests {
         }
         // Aldoria has a city and a gatherer in the same region, and another gatherer in a region with no route.
         day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
         // Brevon has a gatherer but no city at all.
         day.select_country(brevon).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 90.0, 0.0, 0xC003).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 90.0, 0.0, 0xC003).unwrap();
         day.select_country(aldoria).unwrap();
 
         gather(&mut day);
@@ -499,9 +499,9 @@ mod tests {
         day.add_money(aldoria, 9_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
         // A woodcutter and a stonecutter in the region of the city, and a stonecutter in another with no route.
-        day.build_gatherer(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
-        day.build_gatherer(GathererKind::Stonecutter, 20.0, 0.0, 0xC001).unwrap();
-        day.build_gatherer(GathererKind::Stonecutter, 60.0, 0.0, 0xC002).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Stonecutter, 20.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Stonecutter, 60.0, 0.0, 0xC002).unwrap();
 
         gather(&mut day);
         let stock = day.country(aldoria).unwrap().stock;
@@ -530,7 +530,7 @@ mod tests {
         for (n, kind) in [GathererKind::Woodcutter, GathererKind::Sawmill, GathererKind::Stonecutter, GathererKind::Quarry].into_iter().enumerate() {
             let region = 0xC001 + n as u16 * 2;
             day.found_city(&format!("City {n}"), n as f32 * 50.0, 0.0, Some(region)).unwrap();
-            day.build_gatherer(kind, n as f32 * 50.0 + 5.0, 0.0, region).unwrap();
+            day.build_gatherer_claiming(kind, n as f32 * 50.0 + 5.0, 0.0, region).unwrap();
         }
         let before = day.country(aldoria).unwrap().stock;
         gather(&mut day);

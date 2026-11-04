@@ -319,7 +319,7 @@ mod tests {
         let mut day = day();
         day.stock_for_bridges();
         day.build_bridge(Spot { x: 0.0, z: 0.0 }, Spot { x: 40.0, z: 0.0 }).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 5.0, 5.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 5.0, 5.0, 0xC001).unwrap();
         let (bridge, gatherer) = (day.bridges[0].id, day.gatherers[0].id);
         Target::Gatherer(gatherer).apply(&mut day).unwrap();
         assert!(day.gatherers.is_empty() && day.bridges.len() == 1);

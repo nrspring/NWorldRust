@@ -1,5 +1,5 @@
-//! The question asked after something is placed in a region that no country has: a path, a road, a bridge or a
-//! gatherer. Should the region be claimed for the country being played? A region that was turned down is not asked about
+//! The question asked after something is placed in a region that no country has: a path, a road or a bridge. Should the region be
+//! claimed for the country being played? A region that was turned down is not asked about
 //! again until the game is next run.
 
 use std::collections::HashSet;

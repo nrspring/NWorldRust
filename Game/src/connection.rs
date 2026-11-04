@@ -241,7 +241,7 @@ mod tests {
         day.found_country("Aldoria").unwrap();
         day.add_money(day.countries[0].id, 10_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(A)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 100.0, 0.0, B).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 100.0, 0.0, B).unwrap();
         let id = day.gatherers[0].id;
         (day, id)
     }
@@ -265,7 +265,7 @@ mod tests {
         day.found_country("Aldoria").unwrap();
         day.add_money(day.countries[0].id, 10_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(A)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 10.0, 10.0, A).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 10.0, 10.0, A).unwrap();
         assert!(day.cut_off_gatherers().is_empty());
         assert!(day.gatherer_operating(day.gatherers[0].id));
     }
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn a_stonecutter_operates_by_the_same_route_and_its_news_says_it_is_one() {
         let (mut day, wood) = day();
-        day.build_gatherer(GathererKind::Stonecutter, 120.0, 0.0, B).unwrap();
+        day.build_gatherer_claiming(GathererKind::Stonecutter, 120.0, 0.0, B).unwrap();
         let stone = day.gatherers[1].id;
         assert_eq!(day.cut_off_gatherers(), [wood, stone]);
         route(&mut day);
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn each_gatherer_is_reported_on_its_own() {
         let (mut day, first) = day();
-        day.build_gatherer(GathererKind::Woodcutter, 150.0, 0.0, C).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 150.0, 0.0, C).unwrap();
         let second = day.gatherers[1].id;
         // The route from B reaches C, where the second one is, but the city is in A: neither has a route to it until the
         // route goes on to A, and then they start together.
@@ -497,7 +497,7 @@ mod tests {
         day.found_country("Aldoria").unwrap();
         day.add_money(day.countries[0].id, 5_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
         let mut watch = RouteWatch::default();
         assert!(!watch.update(&mut day), "the first look finds it cut off, as it was built");
         assert!(!day.gatherers[0].operating);
@@ -514,7 +514,7 @@ mod tests {
         assert!(day.gatherers[0].operating);
         assert!(!watch.update(&mut day), "and nothing more until the next change");
 
-        // The path failing is a change too, and so are the city or the gatherer changing hands.
+        // The path failing is a change too, and so is the city changing hands.
         day.fail(Thing::Path(PathSegment::to_edge(0xC002, 0xC001)));
         assert!(watch.update(&mut day));
         assert!(!day.gatherers[0].operating);
@@ -522,7 +522,6 @@ mod tests {
         assert!(watch.update(&mut day));
         day.found_country("Brevon").unwrap();
         let brevon = day.countries[1].id;
-        day.set_gatherer_country(day.gatherers[0].id, brevon).unwrap_or(());
         let city = day.cities[0].id;
         day.set_city_country(city, brevon).unwrap();
         watch.update(&mut day);

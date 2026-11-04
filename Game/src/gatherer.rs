@@ -2,8 +2,9 @@
 //! stonecutter in stone, and the greater ones, a sawmill for wood and a quarry for stone, which cost much more, in
 //! materials too, and provide much more. One can only be put in a region that has some of the resource, only one of the
 //! lesser and the greater kind of a resource between them to a region (a woodcutter or a sawmill, a stonecutter or a
-//! quarry), and it belongs to the country that built it, which pays for it. A region with a gatherer in it can't be one
-//! that another country owns.
+//! quarry). It belongs to whichever country owns the region it stands in, which is the country that built it, and which
+//! has to own the region to build there; the country that pays for it. It can't be given to another country: only the
+//! region changes hands, and the gatherer goes with it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -348,11 +349,11 @@ impl DaySave {
     }
 
     /// Why the country being played can't have a gatherer of `kind` in the region numbered `region`, or `None` if it
-    /// can: the region can't belong to another country, and can't have one in it already that gathers the same resource,
-    /// of either kind: a sawmill can't go where there is a woodcutter, nor a woodcutter where there is a sawmill.
+    /// can: the region has to be the country's, and can't have one in it already that gathers the same resource, of
+    /// either kind: a sawmill can't go where there is a woodcutter, nor a woodcutter where there is a sawmill.
     pub fn gatherer_region_problem(&self, region: u16, kind: GathererKind) -> Option<String> {
         let country = self.player_country()?.id;
-        self.city_region_problem(country, Some(region)).or_else(|| self.gatherer_in(region, kind.resource()).map(|there| format!("There is already {} in this region.", there.kind.a_noun())))
+        self.placement_region_problem(country, Some(region)).or_else(|| self.gatherer_in(region, kind.resource()).map(|there| format!("There is already {} in this region.", there.kind.a_noun())))
     }
 
     /// Builds a gatherer of `kind` at (`x`, `z`) in the region numbered `region` for the country being played, which
@@ -382,23 +383,14 @@ impl DaySave {
         Ok(())
     }
 
-    /// Transfers the gatherer with this id to `country`, which is reported in the newsreel unless it belonged to it
-    /// already. The region it stands in can't belong to a different country from that, and the country can't have one of
-    /// its kind there already. An error says why it can't be done.
-    pub fn set_gatherer_country(&mut self, id: GathererId, country: CountryId) -> Result<(), String> {
-        self.country(country).ok_or("There is no such country.")?;
-        let Gatherer { kind, region, country: from, .. } = *self.gatherer(id).ok_or("There is no such gatherer.")?;
-        if from == country {
-            return Ok(());
+    /// For tests: claims the region numbered `region` for the country being played if nobody owns it, and then builds a gatherer
+    /// there.
+    #[cfg(test)]
+    pub fn build_gatherer_claiming(&mut self, kind: GathererKind, x: f32, z: f32, region: u16) -> Result<(), String> {
+        if self.region_owner(region).is_none() {
+            self.claim_region(region)?;
         }
-        if let Some(problem) = self.city_region_problem(country, Some(region)) {
-            return Err(problem);
-        }
-        if let Some(gatherer) = self.gatherers.iter_mut().find(|g| g.id == id) {
-            gatherer.country = country;
-        }
-        self.newsreel.push(News::about(id, Event::GathererTransferred { from, to: country, kind, region: Some(region) }));
-        Ok(())
+        self.build_gatherer(kind, x, z, region)
     }
 
     /// Destroys the gatherer with this id, which costs nothing and pays nothing back, and reports it in the
@@ -421,7 +413,7 @@ impl DaySave {
 mod tests {
     use super::*;
     use crate::calendar::Date;
-    use crate::country::RegionOwner;
+    
     use nworld_map::world::SEA_LEVEL;
 
     fn day_with_money(money: i64) -> DaySave {
@@ -487,7 +479,7 @@ mod tests {
     fn a_gatherer_costs_1000_coins_from_the_country_being_played_and_belongs_to_it() {
         let mut day = day_with_money(2_500);
         day.found_country("Brevon").unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, -100.0, 20.0, 7).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, -100.0, 20.0, 7).unwrap();
         assert_eq!(day.gatherers.len(), 1);
         let aldoria = day.countries[0].id;
         let cutter = day.gatherers[0];
@@ -503,6 +495,7 @@ mod tests {
     #[test]
     fn building_a_gatherer_is_in_the_newsreel_with_the_gatherer_as_its_subject() {
         let mut day = day_with_money(2_000);
+        day.claim_region(0xC007).unwrap();
         let before = day.newsreel.len();
         day.build_gatherer(GathererKind::Woodcutter, -100.0, 20.0, 0xC007).unwrap();
         let id = day.gatherers[0].id;
@@ -524,82 +517,59 @@ mod tests {
         assert_eq!(old.headline(&day), "Aldoria builds a woodcutter in The Greenwood", "from the gatherer, which is there");
         assert_eq!(News::about(GathererId::new(), Event::GathererBuilt { kind: GathererKind::Woodcutter, country: None, region: None, cost: Vec::new() }).headline(&day), "A woodcutter is built");
         let count = day.newsreel.len();
-        assert!(day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC007).is_err());
+        assert!(day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 0xC007).is_err());
         assert_eq!(day.newsreel.len(), count);
     }
 
     #[test]
-    fn a_gatherer_can_be_transferred_to_another_country_unless_the_region_is_a_third_countrys() {
-        let mut day = day_with_money(5_000);
-        day.found_country("Brevon").unwrap();
-        day.found_country("Cardell").unwrap();
-        let (aldoria, brevon, cardell) = (day.countries[0].id, day.countries[1].id, day.countries[2].id);
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
-        let id = day.gatherers[0].id;
-        let paid = day.countries[0].money;
-        day.set_gatherer_country(id, brevon).unwrap();
-        assert_eq!(day.gatherer(id).unwrap().country, brevon);
-        assert_eq!(day.countries[0].money, paid, "it costs nothing");
-        assert_eq!((day.gatherer(id).unwrap().x, day.gatherer(id).unwrap().region), (0.0, 0xC001), "and it stays where it is");
-        // Its region being Cardell's, only Cardell can have it.
-        day.region_owners = vec![RegionOwner { region: 0xC001, country: cardell }];
-        let before = day.clone();
-        assert!(day.set_gatherer_country(id, aldoria).unwrap_err().contains("belongs to Cardell"));
-        assert_eq!(day, before);
-        day.set_gatherer_country(id, cardell).unwrap();
-        // A country or a gatherer that isn't there is an error.
-        assert!(day.set_gatherer_country(id, CountryId::new()).is_err());
-        assert!(day.set_gatherer_country(GathererId::new(), cardell).is_err());
-        // Which country it is changes which cities it has to reach.
-        day.found_city("Port Aldor", 0.0, 0.0, Some(0xC002)).unwrap();
-        day.select_country(brevon).unwrap();
-        day.found_city("Brevonport", 9.0, 0.0, Some(0xC003)).unwrap();
-        assert_eq!(day.cut_off_gatherers(), [id], "Cardell has no city to reach");
-    }
-
-    #[test]
-    fn transferring_a_gatherer_to_another_country_and_destroying_one_are_in_the_newsreel() {
+    fn a_gatherer_belongs_to_whoever_owns_its_region_and_goes_with_it() {
         let mut day = day_with_money(5_000);
         day.found_country("Brevon").unwrap();
         let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0xC001)).unwrap();
+        day.build_gatherer(GathererKind::Woodcutter, 10.0, 0.0, 0xC001).unwrap();
         let id = day.gatherers[0].id;
-        let before = day.newsreel.len();
+        assert_eq!((day.gatherer(id).unwrap().country, day.region_owner(0xC001)), (aldoria, Some(aldoria)));
 
-        // Transferred to the country it already has, nothing happens and there is no news.
-        day.set_gatherer_country(id, aldoria).unwrap();
-        assert_eq!(day.newsreel.len(), before);
-        day.set_gatherer_country(id, brevon).unwrap();
-        let news = day.newsreel.last().unwrap();
-        assert_eq!(*news, News::about(id, Event::GathererTransferred { from: aldoria, to: brevon, kind: GathererKind::Woodcutter, region: Some(0xC001) }));
-        assert_eq!(news.headline(&day), "The woodcutter in region 1 is transferred from Aldoria to Brevon");
-        assert!(serde_json::to_string(news).unwrap().contains(r#""type":"gatherer_transferred""#));
-        let news_transferred = news.clone();
-        // A change that can't be made is not news.
-        let count = day.newsreel.len();
-        assert!(day.set_gatherer_country(id, CountryId::new()).is_err());
-        assert_eq!(day.newsreel.len(), count);
+        // The city, and its region with it, is given to Brevon, and what stands in the region goes along.
+        let city = day.cities[0].id;
+        day.set_city_country(city, brevon).unwrap();
+        assert_eq!(day.region_owner(0xC001), Some(brevon));
+        assert_eq!(day.gatherer(id).unwrap().country, brevon, "the gatherer follows the region");
+        assert_eq!((day.gatherer(id).unwrap().x, day.gatherer(id).unwrap().region), (10.0, 0xC001), "and stays where it is");
+        // Which country it is changes which cities it has to reach, and Brevon's city is in its region.
+        assert!(day.cut_off_gatherers().is_empty());
+    }
+    #[test]
+    fn destroying_a_gatherer_is_in_the_newsreel_and_old_news_of_a_transfer_still_reads() {
+        let mut day = day_with_money(5_000);
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        let id = day.gatherers[0].id;
 
         // Destroyed, it is gone, and the news still says whose it was and where.
         day.destroy_gatherer(id).unwrap();
         let news = day.newsreel.last().unwrap();
-        assert_eq!(*news, News::about(id, Event::GathererDestroyed { country: brevon, region: 0xC001, kind: GathererKind::Woodcutter }));
-        assert_eq!(news.headline(&day), "Brevon's woodcutter in region 1 is destroyed");
+        assert_eq!(*news, News::about(id, Event::GathererDestroyed { country: aldoria, region: 0xC001, kind: GathererKind::Woodcutter }));
+        assert_eq!(news.headline(&day), "Aldoria's woodcutter in region 1 is destroyed");
         let json = serde_json::to_string(news).unwrap();
         assert!(json.contains(r#""type":"gatherer_destroyed""#) && json.contains(r#""region":49153"#), "{json}");
         assert_eq!(serde_json::from_str::<News>(&json).unwrap(), *news);
         let count = day.newsreel.len();
         assert!(day.destroy_gatherer(id).is_err());
         assert_eq!(day.newsreel.len(), count, "one that isn't there is not news");
-        assert_eq!(News::about(id, Event::GathererTransferred { from: aldoria, to: brevon, kind: GathererKind::Woodcutter, region: None }).headline(&day), "A woodcutter is transferred from Aldoria to Brevon");
-        // With the region kept, it is still said where, though the gatherer is gone.
-        assert_eq!(news_transferred.headline(&day), "The woodcutter in region 1 is transferred from Aldoria to Brevon");
-    }
 
+        // A gatherer could once be given to another country, and a game saved then still reads its news.
+        let old = News::about(id, Event::GathererTransferred { from: aldoria, to: brevon, kind: GathererKind::Woodcutter, region: Some(0xC001) });
+        assert_eq!(old.headline(&day), "The woodcutter in region 1 is transferred from Aldoria to Brevon");
+        assert!(serde_json::to_string(&old).unwrap().contains(r#""type":"gatherer_transferred""#));
+        assert_eq!(News::about(id, Event::GathererTransferred { from: aldoria, to: brevon, kind: GathererKind::Woodcutter, region: None }).headline(&day), "A woodcutter is transferred from Aldoria to Brevon");
+    }
     #[test]
     fn a_gatherer_destroyed_is_gone_for_nothing_and_its_region_has_room_for_another() {
         let mut day = day_with_money(5_000);
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
         let id = day.gatherers[0].id;
         let paid = day.countries[0].money;
         day.destroy_gatherer(id).unwrap();
@@ -607,7 +577,7 @@ mod tests {
         assert_eq!(day.countries[0].money, paid, "nothing is paid back");
         assert!(day.destroy_gatherer(id).unwrap_err().contains("no such gatherer"));
         assert!(day.cut_off_gatherers().is_empty());
-        day.build_gatherer(GathererKind::Woodcutter, 3.0, 3.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 3.0, 3.0, 0xC001).unwrap();
         assert_eq!(day.gatherers.len(), 1);
     }
 
@@ -634,17 +604,17 @@ mod tests {
     #[test]
     fn a_region_has_room_for_one_of_each_kind_and_a_stonecutter_costs_the_same_and_is_named_for_what_it_is() {
         let mut day = day_with_money(5_000);
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
         // A stonecutter can share the region with the woodcutter, but a second of either kind can't.
         assert_eq!(day.gatherer_region_problem(0xC001, GathererKind::Stonecutter), None);
-        day.build_gatherer(GathererKind::Stonecutter, 20.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Stonecutter, 20.0, 0.0, 0xC001).unwrap();
         assert_eq!(day.countries[0].money, 3_000, "each costs 1,000");
         assert_eq!(day.gatherers.iter().map(|g| g.kind).collect::<Vec<_>>(), [GathererKind::Woodcutter, GathererKind::Stonecutter]);
         assert_eq!(day.gatherer_in(0xC001, Resource::Stone).unwrap().kind, GathererKind::Stonecutter);
         assert_eq!(day.gatherer_region_problem(0xC001, GathererKind::Stonecutter).unwrap(), "There is already a stonecutter in this region.");
         let before = day.clone();
-        assert!(day.build_gatherer(GathererKind::Stonecutter, 30.0, 0.0, 0xC001).unwrap_err().contains("already a stonecutter"));
-        assert!(day.build_gatherer(GathererKind::Woodcutter, 30.0, 0.0, 0xC001).unwrap_err().contains("already a woodcutter"));
+        assert!(day.build_gatherer_claiming(GathererKind::Stonecutter, 30.0, 0.0, 0xC001).unwrap_err().contains("already a stonecutter"));
+        assert!(day.build_gatherer_claiming(GathererKind::Woodcutter, 30.0, 0.0, 0xC001).unwrap_err().contains("already a woodcutter"));
         assert_eq!(day, before);
         // Short of coin, it says it is a stonecutter that costs it.
         let mut poor = day_with_money(999);
@@ -652,7 +622,7 @@ mod tests {
         assert!(DaySave::new(Date::FIRST, "x").gatherer_problem(GathererKind::Stonecutter).unwrap().contains("own a stonecutter"));
         // Its news and the countries' lists name it too.
         assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a stonecutter in region 1 for 1,000 coins");
-        assert_eq!(day.delete_problem(day.countries[0].id).unwrap(), "Aldoria owns 1 woodcutter and 1 stonecutter, so it can't be deleted.");
+        assert_eq!(day.delete_problem(day.countries[0].id).unwrap(), "Aldoria owns 1 woodcutter, 1 stonecutter and 1 region, so it can't be deleted.");
         assert!(serde_json::to_string(day.newsreel.last().unwrap()).unwrap().contains(r#""type":"gatherer_built","kind":"stonecutter""#));
     }
 
@@ -661,10 +631,11 @@ mod tests {
         let mut day = day_with_money(20_000);
         let id = day.countries[0].id;
         // Rich in coin and not in materials: it is the wood that is asked for, and then the stone.
+        day.claim_region(0xC001).unwrap();
         let before = day.clone();
         for kind in [GathererKind::Sawmill, GathererKind::Quarry] {
             assert_eq!(day.gatherer_problem(kind).unwrap(), format!("Not enough wood: a {} needs 1,000 wood as well as its coins, and Aldoria has 0.", kind.noun()));
-            assert!(day.build_gatherer(kind, 0.0, 0.0, 0xC001).unwrap_err().contains("Not enough wood"));
+            assert!(day.build_gatherer_claiming(kind, 0.0, 0.0, 0xC001).unwrap_err().contains("Not enough wood"));
         }
         assert_eq!(day, before, "nothing is taken when it can't be done");
         day.add_resource(id, Resource::Forest, 1_000).unwrap();
@@ -674,15 +645,15 @@ mod tests {
         // A lesser one asks for none of it, and still only the coin.
         assert_eq!(day.gatherer_problem(GathererKind::Woodcutter), None);
 
-        day.build_gatherer(GathererKind::Sawmill, 0.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Sawmill, 0.0, 0.0, 0xC001).unwrap();
         let country = &day.countries[0];
         assert_eq!((country.money, country.stock.wood, country.stock.stone), (10_000, 0, 500));
         assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds a sawmill in region 1 for 10,000 coins, 1,000 wood and 1,000 stone");
         // The materials are used up, so a quarry can't follow it until there is more.
-        assert!(day.build_gatherer(GathererKind::Quarry, 20.0, 0.0, 0xC001).unwrap_err().contains("Not enough wood"));
+        assert!(day.build_gatherer_claiming(GathererKind::Quarry, 20.0, 0.0, 0xC001).unwrap_err().contains("Not enough wood"));
         // A woodcutter can't join the sawmill, which already gathers the wood of the region, and neither can a second sawmill.
         assert_eq!(day.gatherer_region_problem(0xC001, GathererKind::Woodcutter).unwrap(), "There is already a sawmill in this region.");
-        assert!(day.build_gatherer(GathererKind::Woodcutter, 30.0, 0.0, 0xC001).unwrap_err().contains("already a sawmill"));
+        assert!(day.build_gatherer_claiming(GathererKind::Woodcutter, 30.0, 0.0, 0xC001).unwrap_err().contains("already a sawmill"));
         assert_eq!(day.gatherer_region_problem(0xC001, GathererKind::Sawmill).unwrap(), "There is already a sawmill in this region.");
         // It takes its country's money: the coin is 10,000 and not 1,000.
         let mut poor = day_with_money(9_999);
@@ -707,25 +678,27 @@ mod tests {
                 _ => panic!("{kind:?} is neither on its own nor one of a pair"),
             }
         }
-        // Nothing is in region 1: all of them can go. A woodcutter goes in, and then neither it nor a sawmill can.
+        // Nothing is in region 1, which is Aldoria's: all of them can go. A woodcutter goes in, and then neither it nor a sawmill can.
+        day.claim_region(1).unwrap();
         assert!(GathererKind::ALL.iter().all(|kind| day.gatherer_region_problem(1, *kind).is_none()));
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 1).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 1).unwrap();
         assert_eq!(day.gatherer_region_problem(1, GathererKind::Woodcutter).unwrap(), "There is already a woodcutter in this region.");
         assert_eq!(day.gatherer_region_problem(1, GathererKind::Sawmill).unwrap(), "There is already a woodcutter in this region.");
         let before = day.clone();
-        assert!(day.build_gatherer(GathererKind::Sawmill, 10.0, 0.0, 1).unwrap_err().contains("already a woodcutter"));
+        assert!(day.build_gatherer_claiming(GathererKind::Sawmill, 10.0, 0.0, 1).unwrap_err().contains("already a woodcutter"));
         assert_eq!(day, before, "and nothing is paid for it");
         // The stone of the region is another matter: either stone kind can still go in, and then the other can't.
         assert_eq!((day.gatherer_region_problem(1, GathererKind::Stonecutter), day.gatherer_region_problem(1, GathererKind::Quarry)), (None, None));
-        day.build_gatherer(GathererKind::Quarry, 20.0, 0.0, 1).unwrap();
+        day.build_gatherer_claiming(GathererKind::Quarry, 20.0, 0.0, 1).unwrap();
         assert_eq!(day.gatherer_region_problem(1, GathererKind::Stonecutter).unwrap(), "There is already a quarry in this region.");
         assert_eq!(day.gatherer_region_problem(1, GathererKind::Quarry).unwrap(), "There is already a quarry in this region.");
-        // Other regions are free, and once one is destroyed its resource is free again in its region.
+        // Other regions are free once they are hers, and once one is destroyed its resource is free again in its region.
+        day.claim_region(2).unwrap();
         assert!(GathererKind::ALL.iter().all(|kind| day.gatherer_region_problem(2, *kind).is_none()));
         let woodcutter = day.gatherers[0].id;
         day.destroy_gatherer(woodcutter).unwrap();
         assert_eq!(day.gatherer_region_problem(1, GathererKind::Sawmill), None);
-        day.build_gatherer(GathererKind::Sawmill, 0.0, 0.0, 1).unwrap();
+        day.build_gatherer_claiming(GathererKind::Sawmill, 0.0, 0.0, 1).unwrap();
         assert_eq!(day.gatherers.iter().map(|g| g.kind).collect::<Vec<_>>(), [GathererKind::Quarry, GathererKind::Sawmill]);
     }
 
@@ -783,11 +756,11 @@ mod tests {
         let id = day.countries[0].id;
         day.add_resource(id, Resource::Forest, 2_000).unwrap();
         day.add_resource(id, Resource::Stone, 2_000).unwrap();
-        day.build_gatherer(GathererKind::IronMine, 0.0, 0.0, 1).unwrap();
+        day.build_gatherer_claiming(GathererKind::IronMine, 0.0, 0.0, 1).unwrap();
         assert_eq!(day.newsreel.last().unwrap().headline(&day), "Aldoria builds an iron mine in region 1 for 10,000 coins, 1,000 wood and 1,000 stone");
         assert_eq!(day.gatherer_region_problem(1, GathererKind::IronMine).unwrap(), "There is already an iron mine in this region.");
         assert_eq!(day.gatherer_region_problem(1, GathererKind::OilWell), None, "another resource is another matter");
-        assert_eq!(day.delete_problem(id).unwrap(), "Aldoria owns 1 iron mine, so it can't be deleted.");
+        assert_eq!(day.delete_problem(id).unwrap(), "Aldoria owns 1 iron mine and 1 region, so it can't be deleted.");
         assert!(serde_json::to_string(day.newsreel.last().unwrap()).unwrap().contains(r#""kind":"iron_mine""#));
         // Short of coin or of materials it says what an iron mine takes.
         let poor = day_with_money(500);
@@ -795,14 +768,20 @@ mod tests {
     }
 
     #[test]
-    fn a_gatherer_does_not_claim_its_region_but_the_country_can_claim_it_afterwards() {
+    fn a_country_can_only_build_a_gatherer_in_a_region_it_owns() {
         let mut day = day_with_money(5_000);
         day.found_country("Brevon").unwrap();
         let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
-        assert_eq!(day.region_owner(0xC001), None, "claiming is asked, not done");
+        // Nobody's region: it has to be claimed first, and nothing is taken for asking.
+        let before = day.clone();
+        let err = day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap_err();
+        assert!(err.contains("Aldoria doesn't own this region") && err.contains("claim it first"), "{err}");
+        assert_eq!(day, before);
+        assert!(day.gatherer_region_problem(0xC001, GathererKind::Woodcutter).is_some());
         day.claim_region(0xC001).unwrap();
-        assert_eq!(day.region_owner(0xC001), Some(aldoria));
+        assert_eq!(day.gatherer_region_problem(0xC001, GathererKind::Woodcutter), None);
+        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        assert_eq!(day.gatherers[0].country, aldoria);
         // Claimed, it is hers, so Brevon can't build in it or take it, and she can't give it away.
         day.select_country(brevon).unwrap();
         day.add_money(brevon, 5_000).unwrap();
@@ -813,27 +792,10 @@ mod tests {
         day.destroy_gatherer(cutter).unwrap();
         assert_eq!(day.region_owner(0xC001), Some(aldoria));
     }
-
-    #[test]
-    fn a_gatherer_in_a_region_nobody_claimed_can_go_to_another_country() {
-        let mut day = day_with_money(5_000);
-        day.found_country("Brevon").unwrap();
-        let brevon = day.countries[1].id;
-        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 0xC002).unwrap();
-        let lone = day.gatherers[0].id;
-        day.set_gatherer_country(lone, brevon).unwrap();
-        assert_eq!(day.region_owner(0xC002), None);
-        // Its own country can claim the region, and nobody else can while their gatherer is the only thing in it.
-        assert!(day.claim_region(0xC002).unwrap_err().contains("of Brevon is in that region"));
-        day.select_country(brevon).unwrap();
-        day.claim_region(0xC002).unwrap();
-        assert_eq!(day.region_owner(0xC002), Some(brevon));
-    }
-
     #[test]
     fn a_game_saved_when_gatherers_were_all_woodcutters_still_loads() {
         let mut day = day_with_money(5_000);
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 0xC001).unwrap();
         day.gatherers[0].operating = true;
         day.newsreel.push(News::about(day.countries[0].id, Event::Gathered { amount: 100, kind: GathererKind::Woodcutter }));
         let id = day.gatherers[0].id;
@@ -860,6 +822,7 @@ mod tests {
     #[test]
     fn a_gatherer_cannot_be_built_without_the_coin_and_says_why() {
         let mut day = day_with_money(999);
+        day.claim_region(1).unwrap();
         let before = day.clone();
         let error = day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 1).unwrap_err();
         assert!(error.contains("Not enough coin") && error.contains("1,000") && error.contains("Aldoria") && error.contains("999"), "{error}");
@@ -867,7 +830,7 @@ mod tests {
         assert!(day.gatherer_problem(GathererKind::Woodcutter).is_some());
         day.add_money(day.countries[0].id, 1).unwrap();
         assert_eq!(day.gatherer_problem(GathererKind::Woodcutter), None);
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 1).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 1).unwrap();
         assert_eq!(day.countries[0].money, 0);
         // With no country there is nobody to own it.
         let mut empty = DaySave::new(Date::FIRST, "Assets/map.nworld");
@@ -878,14 +841,16 @@ mod tests {
     #[test]
     fn there_can_be_only_one_in_a_region_and_nothing_is_paid_for_the_second() {
         let mut day = day_with_money(5_000);
-        day.build_gatherer(GathererKind::Woodcutter, -100.0, 0.0, 3).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, -100.0, 0.0, 3).unwrap();
         let before = day.clone();
         assert!(day.gatherer_region_problem(3, GathererKind::Woodcutter).unwrap().contains("already a woodcutter"));
-        assert!(day.build_gatherer(GathererKind::Woodcutter, -50.0, 40.0, 3).unwrap_err().contains("already a woodcutter"));
+        assert!(day.build_gatherer_claiming(GathererKind::Woodcutter, -50.0, 40.0, 3).unwrap_err().contains("already a woodcutter"));
         assert_eq!(day, before);
-        // Another region is fine.
+        // Another region is fine, once it is hers.
+        assert!(day.gatherer_region_problem(4, GathererKind::Woodcutter).unwrap().contains("doesn't own this region"));
+        day.claim_region(4).unwrap();
         assert_eq!(day.gatherer_region_problem(4, GathererKind::Woodcutter), None);
-        day.build_gatherer(GathererKind::Woodcutter, 50.0, 0.0, 4).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 50.0, 0.0, 4).unwrap();
         assert_eq!(day.gatherers.len(), 2);
     }
 
@@ -896,18 +861,18 @@ mod tests {
         let brevon = day.countries[1].id;
         day.set_region_owner(5, Some(brevon)).unwrap();
         let before = day.clone();
-        assert!(day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 5).unwrap_err().contains("belongs to Brevon"));
+        assert!(day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 5).unwrap_err().contains("belongs to Brevon"));
         assert_eq!(day, before);
         // One that is the player's own is fine.
         day.set_region_owner(6, Some(day.countries[0].id)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 0.0, 0.0, 6).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 0.0, 0.0, 6).unwrap();
     }
 
     #[test]
     fn gatherers_are_saved_with_the_day_carry_forward_and_go_with_a_deleted_country() {
         let mut day = day_with_money(5_000);
         day.found_country("Brevon").unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, -100.0, 20.0, 7).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, -100.0, 20.0, 7).unwrap();
         let json = serde_json::to_value(&day).unwrap();
         assert_eq!(json["gatherers"][0]["region"], 7);
         assert_eq!(serde_json::from_value::<DaySave>(json).unwrap(), day);
@@ -920,7 +885,7 @@ mod tests {
         day.delete_country(day.countries[1].id).unwrap();
         assert_eq!(day.gatherers.len(), 1);
         let before = day.clone();
-        assert_eq!(day.delete_country(day.countries[0].id).unwrap_err(), "Aldoria owns 1 woodcutter, so it can't be deleted.");
+        assert_eq!(day.delete_country(day.countries[0].id).unwrap_err(), "Aldoria owns 1 woodcutter and 1 region, so it can't be deleted.");
         assert_eq!(day, before);
     }
 }

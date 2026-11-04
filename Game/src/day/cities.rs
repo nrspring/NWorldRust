@@ -23,6 +23,17 @@ impl DaySave {
         Some(format!("That region belongs to {}.", self.country_name(owner)))
     }
 
+    /// Why `country` can't put a gatherer or a shipyard in `region` (`None` for a map with no regions), or `None` if it can:
+    /// such a thing belongs to whoever owns the region it stands in, so the region has to be the country's already.
+    pub fn placement_region_problem(&self, country: CountryId, region: Option<u16>) -> Option<String> {
+        let Some(region) = region else { return Some("This map has no regions to build in.".to_owned()) };
+        match self.region_owner(region) {
+            Some(owner) if owner == country => None,
+            Some(owner) => Some(format!("That region belongs to {}.", self.country_name(owner))),
+            None => Some(format!("{} doesn't own this region: claim it first (Overlays > Region names).", self.country_name(country))),
+        }
+    }
+
     /// Makes the city with this id belong to `country`, and its region too. An error says why it can't be
     /// done: a region can only belong to one country, so a city can't change if another city of its old
     /// country stands in the same region.

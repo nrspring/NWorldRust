@@ -358,7 +358,7 @@ mod tests {
         day.found_country("Aldoria").unwrap();
         day.add_money(day.countries[0].id, 5_000).unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, Some(CITY)).unwrap();
-        day.build_gatherer(GathererKind::Woodcutter, 100.0, 0.0, CUTTER).unwrap();
+        day.build_gatherer_claiming(GathererKind::Woodcutter, 100.0, 0.0, CUTTER).unwrap();
         let id = day.gatherers[0].id;
 
         let alerts = Alert::current(&day, &[]);
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(Alert::current(&day, &[])[0].text(&day), "The woodcutter in The Marches has no path, road or bridge to a city of Aldoria");
 
         // A stonecutter is an alert of its own, which says what it is.
-        day.build_gatherer(GathererKind::Stonecutter, 130.0, 0.0, CUTTER).unwrap();
+        day.build_gatherer_claiming(GathererKind::Stonecutter, 130.0, 0.0, CUTTER).unwrap();
         let stone = day.gatherers[1].id;
         assert_eq!(Alert::current(&day, &[]), [Alert::GathererCutOff(id), Alert::GathererCutOff(stone)]);
         assert_eq!(Alert::GathererCutOff(stone).text(&day), "The stonecutter in The Marches has no path, road or bridge to a city of Aldoria");

@@ -567,7 +567,6 @@ async fn main() {
                         Ok(()) => {
                             day = updated;
                             tool.built();
-                            claim_prompt.placed_in(&day, &[region]);
                         }
                         Err(message) => tool.fail(message),
                     }
@@ -585,7 +584,6 @@ async fn main() {
                         Ok(()) => {
                             day = updated;
                             tool.built();
-                            claim_prompt.placed_in(&day, &region.into_iter().collect::<Vec<_>>());
                         }
                         Err(message) => tool.fail(message),
                     }
@@ -991,14 +989,7 @@ async fn main() {
             }
         }
 
-        if let Some(change) = gatherer_popup.show(&style, &day) {
-            // Only keep the change if it is saved too.
-            let mut updated = day.clone();
-            match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
-                Ok(()) => day = updated,
-                Err(message) => gatherer_popup.fail(message),
-            }
-        }
+        gatherer_popup.show(&style, &day);
 
         if let Some(change) = militia_popup.show(&style, &day, &world) {
             // Only keep the change if it is saved too. A militia that is still marching to where it was moved can't be
