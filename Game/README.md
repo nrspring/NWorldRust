@@ -43,6 +43,10 @@ Under the newsreel, at the top right, is the alerts panel. It starts **collapsed
 Alerts are worked out from the game as it is, every frame, so they come and go as things change. They are not saved: there is nothing in the day's file for them, and they are never in the newsreel. The alerts so far:
 
 - **A country has no cities**, one for each such country (so the first country has one until its first city is founded).
+- **A city is under siege**, one for each besieged city: **"Port Aldor (Aldoria) is under siege and is losing people"**. It lasts until the siege is lifted. A red warning icon flashes over the city on the map, and clicking the alert flies the camera to it.
+- **A militia is under siege**, one for each besieged militia: **"Harbour Guard (Aldoria) is under siege and is losing members"**. It is marked over the militia (where it stands now, if it moves) and clicking the alert flies the camera to it. It goes when the siege is lifted or the militia is gone.
+
+They are listed in this order: countries with no cities, besieged cities, besieged militia, then the gatherers that are cut off and what failed. (Clicking an alert about a country opens the countries menu; the others go to the place.)
 
 New alerts go in `Game/src/alerts.rs`: a variant of `Alert`, found in `Alert::current`, with its text.
 

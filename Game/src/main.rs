@@ -834,6 +834,16 @@ async fn main() {
                             camera.fly_to(vec2(gatherer.x, gatherer.z), REGION_VIEW_DISTANCE);
                         }
                     }
+                    AlertTarget::City(id) => {
+                        if let Some(city) = day.city(id) {
+                            camera.fly_to(vec2(city.x, city.z), NEW_CITY_VIEW_DISTANCE);
+                        }
+                    }
+                    AlertTarget::Militia(id) => {
+                        if let Some(militia) = day.militia(id) {
+                            camera.fly_to(vec2(militia.x, militia.z), REGION_VIEW_DISTANCE);
+                        }
+                    }
                     AlertTarget::Region(number) => {
                         if let Some(center) = RegionId::from_raw(number).and_then(|r| region_map.center(r)) {
                             camera.fly_to(center, REGION_VIEW_DISTANCE);

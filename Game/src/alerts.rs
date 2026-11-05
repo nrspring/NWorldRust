@@ -15,7 +15,7 @@ use crate::bridge::End;
 use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::hud;
-use crate::ids::{BridgeId, CountryId, GathererId};
+use crate::ids::{BridgeId, CityId, CountryId, GathererId, MilitiaId};
 use crate::path::PathPiece;
 use crate::gatherer::GathererKind;
 use crate::{gatherer_view, path_view, region_labels};
@@ -35,6 +35,9 @@ const FLASH_PERIOD: f32 = 2.4;
 const MARK_HOLD: f32 = 3.0;
 /// How far over the top of a gatherer, which is tall, its warning icon is held.
 const GATHERER_MARK_CLEARANCE: f32 = 3.0;
+/// How high over the middle of a city under siege, which has buildings, and over a militia under siege, its warning icon is held.
+const CITY_MARK_HOLD: f32 = 40.0;
+const MILITIA_MARK_HOLD: f32 = 12.0;
 const MARK_WIDTH: f32 = 24.0;
 const MARK_HEIGHT: f32 = 21.0;
 
@@ -42,6 +45,10 @@ const MARK_HEIGHT: f32 = 21.0;
 pub enum Alert {
     /// A country that has no cities.
     CountryWithoutCities(CountryId),
+    /// A city that is under siege, and so is losing people.
+    CityUnderSiege(CityId),
+    /// A militia that is under siege, and so is losing members.
+    MilitiaUnderSiege(MilitiaId),
     /// A path, a road or a bridge that has failed.
     Failed(Thing),
     /// A gatherer that has no unbroken route to a city of its country, and so isn't operating.
@@ -55,6 +62,10 @@ pub enum AlertTarget {
     Country(CountryId),
     /// A gatherer, which the camera goes to.
     Gatherer(GathererId),
+    /// A city, which the camera goes to.
+    City(CityId),
+    /// A militia, which the camera goes to.
+    Militia(MilitiaId),
     /// The region, by its number, that something failed in, which the camera goes to.
     Region(u16),
     /// A bridge, which the camera goes to the region of.
@@ -62,11 +73,13 @@ pub enum AlertTarget {
 }
 
 impl Alert {
-    /// Every alert there is in `day`, in a steady order: the countries that have no cities, then the gatherers that
-    /// are cut off from a city, then what failed when the last day ended (`failures`, in the order it did), as long as
+    /// Every alert there is in `day`, in a steady order: the countries that have no cities, then the cities under siege,
+    /// then the militia under siege, then the gatherers that are cut off from a city, then what failed when the last day ended (`failures`, in the order it did), as long as
     /// it is still ruined.
     pub fn current(day: &DaySave, failures: &[Thing]) -> Vec<Alert> {
         let mut alerts: Vec<Alert> = day.countries.iter().filter(|c| !day.cities.iter().any(|city| city.country == c.id)).map(|c| Alert::CountryWithoutCities(c.id)).collect();
+        alerts.extend(day.cities.iter().filter(|c| c.under_siege).map(|c| Alert::CityUnderSiege(c.id)));
+        alerts.extend(day.militias.iter().filter(|m| m.under_siege).map(|m| Alert::MilitiaUnderSiege(m.id)));
         // Whether a gatherer has a route is kept up to date on it (see `RouteWatch`), which is far cheaper than working the
         // routes out again, which this is asked for every frame.
         alerts.extend(day.gatherers.iter().filter(|g| !g.operating).map(|g| Alert::GathererCutOff(g.id)));
@@ -84,6 +97,8 @@ impl Alert {
         match self {
             Alert::CountryWithoutCities(id) => AlertTarget::Country(*id),
             Alert::GathererCutOff(id) => AlertTarget::Gatherer(*id),
+            Alert::CityUnderSiege(id) => AlertTarget::City(*id),
+            Alert::MilitiaUnderSiege(id) => AlertTarget::Militia(*id),
             // A segment of path or road is in the region it is named for.
             Alert::Failed(Thing::Path(segment) | Thing::Road(segment)) => AlertTarget::Region(segment.region),
             Alert::Failed(Thing::PathLink(link) | Thing::RoadLink(link)) => AlertTarget::Region(link.region),
@@ -95,6 +110,14 @@ impl Alert {
     pub fn text(&self, day: &DaySave) -> String {
         match self {
             Alert::CountryWithoutCities(id) => format!("{} has no cities", day.country_name(*id)),
+            Alert::CityUnderSiege(id) => match day.city(*id) {
+                Some(city) => format!("{} ({}) is under siege and is losing people", city.name, day.country_name(city.country)),
+                None => "A city is under siege".to_owned(),
+            },
+            Alert::MilitiaUnderSiege(id) => match day.militia(*id) {
+                Some(militia) => format!("{} ({}) is under siege and is losing members", militia.title(), day.country_name(militia.country)),
+                None => "A militia is under siege".to_owned(),
+            },
             Alert::Failed(thing) => format!("A {} has failed", thing.name()),
             Alert::GathererCutOff(id) => match day.gatherer(*id) {
                 Some(w) => format!("The {} in {} has no path, road or bridge to a city of {}", w.kind.noun(), day.region_label(w.region), day.country_name(w.country)),
@@ -104,11 +127,13 @@ impl Alert {
     }
 
     /// Where the thing the alert is about is on the map, in world x and z, and how high above the ground to hold the
-    /// icon, in meters: the middle of a failed path, road or bridge, or a gatherer, which is held high to clear it.
+    /// icon, in meters: the middle of a failed path, road or bridge, a city or militia under siege, or a gatherer, which is held high to clear it.
     /// A country with no cities is nowhere on the map, so that has none.
     pub fn place(&self, day: &DaySave, map: &RegionMap) -> Option<(Vec2, f32)> {
         let piece = match self {
             Alert::CountryWithoutCities(_) => return None,
+            Alert::CityUnderSiege(id) => return day.city(*id).map(|c| (vec2(c.x, c.z), CITY_MARK_HOLD)),
+            Alert::MilitiaUnderSiege(id) => return day.militia(*id).map(|m| (vec2(m.x, m.z), MILITIA_MARK_HOLD)),
             Alert::GathererCutOff(id) => return day.gatherer(*id).map(|w| (vec2(w.x, w.z), gatherer_mark_hold(w.kind))),
             Alert::Failed(Thing::Path(segment) | Thing::Road(segment)) => PathPiece::Segment(*segment),
             Alert::Failed(Thing::PathLink(link) | Thing::RoadLink(link)) => PathPiece::Link(*link),
@@ -400,6 +425,47 @@ mod tests {
         day.fail(failed);
         day.update_gatherer_operation();
         assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(brevon), Alert::GathererCutOff(id)]);
+    }
+
+    #[test]
+    fn a_city_or_militia_under_siege_is_an_alert_marked_where_it_stands_until_the_siege_is_lifted() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.add_money(day.countries[0].id, 5_000).unwrap();
+        day.found_city("Port Aldor", 10.0, 20.0, None).unwrap();
+        day.found_city("Highmark", 300.0, 0.0, None).unwrap();
+        day.cities[0].population = 2_000;
+        day.raise_militia(day.cities[0].id, 100, vec2(50.0, 20.0)).unwrap();
+        assert!(Alert::current(&day, &[]).is_empty(), "nothing is under siege to begin with");
+
+        let (port, highmark, guard) = (day.cities[0].id, day.cities[1].id, day.militias[0].id);
+        day.set_city_under_siege(highmark, true).unwrap();
+        day.set_city_under_siege(port, true).unwrap();
+        day.set_militia_under_siege(guard, true).unwrap();
+        // The cities in the order they were founded, then the militia.
+        let alerts = Alert::current(&day, &[]);
+        assert_eq!(alerts, [Alert::CityUnderSiege(port), Alert::CityUnderSiege(highmark), Alert::MilitiaUnderSiege(guard)]);
+        assert_eq!(alerts[0].text(&day), "Port Aldor (Aldoria) is under siege and is losing people");
+        assert_eq!(alerts[2].text(&day), format!("{} (Aldoria) is under siege and is losing members", day.militias[0].name));
+        assert_eq!((alerts[0].target(), alerts[2].target()), (AlertTarget::City(port), AlertTarget::Militia(guard)));
+        let map = RegionMap::default();
+        assert_eq!(alerts[0].place(&day, &map), Some((vec2(10.0, 20.0), CITY_MARK_HOLD)));
+        assert_eq!(alerts[2].place(&day, &map), Some((vec2(50.0, 20.0), MILITIA_MARK_HOLD)));
+
+        // They come after the countries that have no cities, and before the gatherers and what failed.
+        day.found_country("Brevon").unwrap();
+        let brevon = day.countries[1].id;
+        assert_eq!(Alert::current(&day, &[])[0], Alert::CountryWithoutCities(brevon));
+        assert_eq!(Alert::current(&day, &[]).len(), 4);
+
+        // Lifting a siege takes its alert away; a militia moved is marked where it is now.
+        day.set_city_under_siege(port, false).unwrap();
+        day.set_militia_under_siege(guard, false).unwrap();
+        assert_eq!(Alert::current(&day, &[]), [Alert::CountryWithoutCities(brevon), Alert::CityUnderSiege(highmark)]);
+        // One that is gone is no alert.
+        day.set_militia_under_siege(guard, true).unwrap();
+        day.disband_militia(guard).unwrap();
+        assert_eq!(Alert::current(&day, &[]).len(), 2);
     }
 
     #[test]
