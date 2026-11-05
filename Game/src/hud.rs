@@ -310,8 +310,8 @@ fn help(style: &Style, footer: Rect, left: f32, right: f32) {
     }
 }
 
-/// The day's newsreel, at the top right. It is as tall as its news, up to a limit, and past that it shows
-/// as many items as fit and the mouse wheel scrolls through the rest, an item at a time.
+/// The day's newsreel, at the top right, with the newest news on top. It is as tall as its news, up to a limit (about a fifth of the
+/// window's height), and past that it shows as many items as fit and the mouse wheel scrolls through the rest, an item at a time.
 #[derive(Default)]
 pub struct NewsreelPanel {
     /// The first item showing.
@@ -344,7 +344,8 @@ impl NewsreelPanel {
         const NOTE_HEIGHT: f32 = 26.0;
         let text_width = NEWSREEL_WIDTH - 24.0 - 16.0;
 
-        let headlines: Vec<String> = day.newsreel.iter().map(|n| n.headline(day)).collect();
+        // The newest first.
+        let headlines: Vec<String> = day.newsreel.iter().rev().map(|n| n.headline(day)).collect();
         if headlines != self.wrapped.0 {
             let lines = headlines.iter().map(|headline| wrap(style, headline, TEXT_SIZE, text_width)).collect();
             self.wrapped = (headlines, lines);
@@ -353,7 +354,7 @@ impl NewsreelPanel {
         let heights: Vec<f32> = items.iter().map(|lines| lines.len() as f32 * LINE).collect();
         // The most the body of the panel may take: a good part of the window, and room left for what is under it.
         let room = screen_height() - HEADER_HEIGHT - FOOTER_HEIGHT - MARGIN * 2.0 - 110.0;
-        let max_body = room.min(screen_height() * 0.45).max(80.0);
+        let max_body = (room.min(screen_height() * 0.45) * 0.5).max(60.0);
 
         // The wheel scrolls it while the mouse is over it.
         if self.rect.contains(Vec2::from(mouse_position())) && mouse_wheel().1 != 0.0 {
@@ -428,9 +429,9 @@ impl NewsreelPanel {
         // What is out of sight, and that the wheel brings it in.
         if before + after > 0 {
             let more = match (before, after) {
-                (0, after) => format!("{after} more below. Scroll for them."),
-                (before, 0) => format!("{before} earlier above. Scroll up for them."),
-                (before, after) => format!("{before} above and {after} below. Scroll for them."),
+                (0, after) => format!("{after} earlier below. Scroll for them."),
+                (before, 0) => format!("{before} newer above. Scroll up for them."),
+                (before, after) => format!("{before} newer above and {after} earlier below. Scroll for them."),
             };
             style.text_mid(&more, panel.x + 14.0, panel.bottom() - 12.0 - NOTE_HEIGHT * 0.5, 10, Weight::Regular, style::TEXT_MUTED);
         }
