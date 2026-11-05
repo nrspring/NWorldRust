@@ -166,7 +166,7 @@ impl MilitiaPopup {
         let text_x = badge.right() + 14.0;
         style.text(unit.title(), text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
         let origin = day.city(unit.city).map_or("a city", |c| c.name.as_str());
-        style.text(&format!("Militia raised in {origin}"), text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text(&format!("{} raised in {origin}", unit.kind_label()), text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
 
         // What there is to know, a row each. The country's can be clicked, to change it.
         let inner_x = card.x + PADDING;
@@ -222,9 +222,9 @@ impl MilitiaPopup {
             let x = row.right() - style.measure(value, 14, Weight::Semibold).width;
             style.text_mid(value, x, row.center().y, 14, Weight::Semibold, style::TEXT);
         };
-        value_row("Members", &thousands(unit.members), members_row);
+        value_row(if unit.trained { "Soldiers" } else { "Members" }, &thousands(unit.members), members_row);
         value_row("Raised", &unit.raised.to_string(), raised_row);
-        value_row("Upkeep", &format!("{} coins a day", money(militia::upkeep(unit.members))), upkeep_row);
+        value_row("Upkeep", &format!("{} coins a day", money(unit.upkeep())), upkeep_row);
         value_row("Movement", &format!("{} of {} points left", unit.points, DAILY_POINTS), moves_row);
 
         // The siege switch, which is for the lists to cover while one is open. A militia under siege loses members each day.

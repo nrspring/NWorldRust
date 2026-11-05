@@ -26,8 +26,10 @@ pub const CITY_SHARE_PERCENT: u64 = 10;
 pub const MAX_NAME_CHARS: usize = 64;
 /// What each member costs to raise, in coins.
 pub const RAISING_COST: i64 = 10;
-/// What each member costs to keep each day, in coins.
+/// What each member costs to keep each day, in coins, and what each soldier (a member who has been trained at a barracks, see
+/// [`crate::barracks`]) costs: three times as much.
 pub const DAILY_UPKEEP: i64 = 1;
+pub const SOLDIER_UPKEEP: i64 = 3;
 
 /// How far outside the edge of a city its militia camp, in meters: the nearest, and the rings beyond that to try when
 /// the ground there is wet or high, or the places are taken.
@@ -66,6 +68,10 @@ pub struct Militia {
     /// (see [`after_siege`]).
     #[serde(default)]
     pub under_siege: bool,
+    /// Whether it has been trained at a barracks, and so is soldiers and not militia. Every member of it is trained, and each costs
+    /// more to keep. A trained group can only be combined with another trained group. (One saved before there were barracks is not.)
+    #[serde(default)]
+    pub trained: bool,
 }
 
 fn full_points() -> u32 {
@@ -103,7 +109,22 @@ pub fn split_spot(world: &World, from: Vec2, taken: &[Vec2], region: &dyn Fn(Vec
 impl Militia {
     /// The name to show for it: its own, or just "Militia" for one saved without.
     pub fn title(&self) -> &str {
-        if self.name.trim().is_empty() { "Militia" } else { &self.name }
+        if self.name.trim().is_empty() { self.kind_label() } else { &self.name }
+    }
+
+    /// What it is: "Militia" or, once trained, "Soldiers".
+    pub fn kind_label(&self) -> &'static str {
+        if self.trained { "Soldiers" } else { "Militia" }
+    }
+
+    /// What each of its members costs to keep each day, in coins.
+    pub fn upkeep_per_member(&self) -> i64 {
+        if self.trained { SOLDIER_UPKEEP } else { DAILY_UPKEEP }
+    }
+
+    /// What it costs to keep for a day, in coins.
+    pub fn upkeep(&self) -> i64 {
+        i64::from(self.members) * self.upkeep_per_member()
     }
 }
 
@@ -129,7 +150,8 @@ pub fn raising_cost(members: u32) -> i64 {
     i64::from(members) * RAISING_COST
 }
 
-/// What `members` members cost to keep for a day, in coins.
+/// What `members` members cost to keep for a day, in coins, if they are not trained.
+#[cfg(test)]
 pub fn upkeep(members: u32) -> i64 {
     i64::from(members) * DAILY_UPKEEP
 }

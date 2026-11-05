@@ -45,11 +45,11 @@ impl Menu {
         }
     }
 
-    /// How many tools it has: a path, a road and a bridge, or one for each kind of gatherer and the one kind of shipyard that can be built.
+    /// How many tools it has: a path, a road and a bridge, or one for each kind of gatherer, the one kind of shipyard that can be built, and the barracks.
     fn rows(self) -> usize {
         match self {
             Self::Travel => 3,
-            Self::Buildings => GathererKind::ALL.len() + ShipyardKind::BUILDABLE.len(),
+            Self::Buildings => GathererKind::ALL.len() + ShipyardKind::BUILDABLE.len() + 1,
         }
     }
 }

@@ -11,11 +11,12 @@ use crate::costs;
 use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::hud;
-use crate::ids::{GathererId, ShipyardId};
+use crate::ids::{BarracksId, GathererId, ShipyardId};
 use crate::path::{Kind, PathPiece};
 use crate::path_tool::Scene;
 use crate::path_view::{distance_to_segment, PathRenderer};
 use crate::gatherer_view;
+use crate::barracks_view;
 use crate::shipyard_view;
 
 /// What the tool can destroy.
@@ -25,6 +26,7 @@ pub enum Target {
     Built(Thing),
     Gatherer(GathererId),
     Shipyard(ShipyardId),
+    Barracks(BarracksId),
 }
 
 impl Target {
@@ -34,6 +36,7 @@ impl Target {
             Self::Built(thing) => day.destroy(thing),
             Self::Gatherer(id) => day.destroy_gatherer(id),
             Self::Shipyard(id) => day.destroy_shipyard(id),
+            Self::Barracks(id) => day.destroy_barracks(id),
         }
     }
 }
@@ -124,10 +127,12 @@ impl DestroyTool {
         } else {
             let gatherer = if scene.over_map { gatherer_view::under_ray(ray, scene.world, &day.gatherers) } else { None };
             let shipyard = if scene.over_map { shipyard_view::under_ray(ray, scene.world, &day.shipyards) } else { None };
-            match (gatherer, shipyard) {
-                (Some(id), _) => Some(Target::Gatherer(id)),
-                (None, Some(id)) => Some(Target::Shipyard(id)),
-                (None, None) => {
+            let barracks = if scene.over_map { barracks_view::under_ray(ray, scene.world, &day.barracks) } else { None };
+            match (gatherer, shipyard, barracks) {
+                (Some(id), _, _) => Some(Target::Gatherer(id)),
+                (None, Some(id), _) => Some(Target::Shipyard(id)),
+                (None, None, Some(id)) => Some(Target::Barracks(id)),
+                (None, None, None) => {
                     let under_mouse = if scene.over_map { pick_terrain(scene.eye, scene.world, scene.mouse) } else { None };
                     under_mouse.and_then(|at| Self::thing_near(day, paths, roads, at, reach.max(LEAST_REACH))).map(Target::Built)
                 }
@@ -142,6 +147,11 @@ impl DestroyTool {
         if let Some(Target::Shipyard(id)) = self.hovered {
             if let Some(shipyard) = day.shipyard(id) {
                 shipyard_view::outline(scene.world, shipyard, scene.eye.position, RED);
+            }
+        }
+        if let Some(Target::Barracks(id)) = self.hovered {
+            if let Some(barracks) = day.find_barracks(id) {
+                barracks_view::outline(scene.world, barracks, scene.eye.position, RED);
             }
         }
         if let Some(Target::Built(thing)) = self.hovered {
@@ -205,7 +215,7 @@ impl DestroyTool {
         draw_line(icon.x - 5.0, icon.y + 5.0, icon.x + 5.0, icon.y - 5.0, 2.0, color);
         style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
         if hovered {
-            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge, gatherer or shipyard for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
+            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge, gatherer, shipyard or barracks for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
         }
         button
     }
@@ -225,6 +235,7 @@ impl DestroyTool {
                 Target::Built(thing) => (thing.name(), if matches!(thing, Thing::Bridge(_)) { " The paths and roads from its ends go too." } else { "" }),
                 Target::Gatherer(id) => (day.gatherer(id).map_or("gatherer", |g| g.kind.noun()), ""),
                 Target::Shipyard(id) => (day.shipyard(id).map_or("shipyard", |s| s.kind.noun()), ""),
+                Target::Barracks(_) => ("barracks", ""),
             };
             style.text_mid(&format!("Destroy this {name}?"), panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
             style.text_mid(&format!("It is gone for good, and nothing is paid back.{more}"), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR);
@@ -245,7 +256,7 @@ impl DestroyTool {
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 88.0, width, 88.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
-        style.text_mid("Destroy a path, a road, a bridge, a gatherer or a shipyard", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+        style.text_mid("Destroy a path, a road, a bridge, a gatherer, a shipyard or a barracks", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
         match (&self.notice, self.hovered) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(Target::Built(thing))) => {
@@ -255,6 +266,7 @@ impl DestroyTool {
             }
             (None, Some(Target::Gatherer(id))) => style.text_mid(&format!("Click to destroy this {}.", day.gatherer(id).map_or("gatherer", |g| g.kind.noun())), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(Target::Shipyard(id))) => style.text_mid(&format!("Click to destroy this {}.", day.shipyard(id).map_or("shipyard", |s| s.kind.noun())), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
+            (None, Some(Target::Barracks(_))) => style.text_mid("Click to destroy this barracks.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, None) => style.text_mid("Point at one and click it. Esc stops.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         style.text_mid("Destroying is free, and nothing is paid back.", panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);

@@ -12,7 +12,7 @@ use crate::day::DaySave;
 use crate::format::{money, thousands};
 use crate::hud;
 use crate::ids::MilitiaId;
-use crate::militia::{upkeep, Militia};
+use crate::militia::Militia;
 use crate::movement::DAILY_POINTS;
 use crate::pieces::{self, Piece, GOLD};
 use crate::walk::Walks;
@@ -30,6 +30,8 @@ const HOP_RATE: f32 = 8.0;
 
 /// A country that can't be found is shown in gray.
 const NO_COUNTRY: Color = Color::new(0.6, 0.6, 0.6, 1.0);
+/// The steel of a soldier's helmet, which a militia that has been trained wears and one that hasn't does not.
+const STEEL: Color = Color::new(0.55, 0.58, 0.64, 1.0);
 
 /// How many coins are in the stack for a militia of `members`: one for every hundred, at least one and at most ten.
 pub fn coins_for(members: u32) -> usize {
@@ -41,7 +43,7 @@ pub fn coins_for(members: u32) -> usize {
 fn parts(world: &World, militia: &Militia, at: Vec2, marching: Option<f32>, country: Color, eye: Vec3) -> Vec<Piece> {
     let r = pieces::radius_at(eye, vec3(at.x, world.surface_height(at.x, at.y), at.y));
     if pieces::is_far(eye, vec3(at.x, world.surface_height(at.x, at.y), at.y)) {
-        return far_marker(world, at, r, marching, country);
+        return far_marker(world, at, r, marching, country, militia.trained);
     }
     let hop = marching.map_or(0.0, |time| (time * HOP_RATE).sin().abs() * HOP_HEIGHT * r);
     let foot = vec3(at.x, pieces::ground_under(world, at.x, at.y, r), at.y) + vec3(0.0, hop, 0.0);
@@ -66,15 +68,26 @@ fn parts(world: &World, militia: &Militia, at: Vec2, marching: Option<f32>, coun
         Piece::disc(top + vec3(0.0, 1.30 * q, 0.0), 0.50 * q, 0.1 * q, pieces::MEDALLION),
         Piece::ball(top + vec3(0.0, 1.72 * q, 0.0), 0.36 * q, pieces::shade(country, 1.3)),
     ];
+    let mut pawn = pawn;
+    if militia.trained {
+        // A helmet over the head: a round cap with a brim.
+        pawn.push(Piece::disc(top + vec3(0.0, 1.80 * q, 0.0), 0.44 * q, 0.26 * q, STEEL));
+        pawn.push(Piece::disc(top + vec3(0.0, 1.76 * q, 0.0), 0.56 * q, 0.07 * q, pieces::shade(STEEL, 0.8)));
+    }
     parts.extend(pieces::flatten(pawn, top.y, pieces::FLAT));
     parts
 }
 
 /// A militia seen from far off: a flat gold round with a disc of its country's color on it, and nothing else.
-fn far_marker(world: &World, at: Vec2, r: f32, marching: Option<f32>, country: Color) -> Vec<Piece> {
+fn far_marker(world: &World, at: Vec2, r: f32, marching: Option<f32>, country: Color, trained: bool) -> Vec<Piece> {
     let hop = marching.map_or(0.0, |time| (time * HOP_RATE).sin().abs() * HOP_HEIGHT * r);
     let foot = vec3(at.x, pieces::ground_under(world, at.x, at.y, r), at.y) + vec3(0.0, hop, 0.0);
-    vec![Piece::disc(foot, r, 0.1 * r, GOLD), Piece::disc(foot + vec3(0.0, 0.1 * r, 0.0), 0.62 * r, 0.06 * r, country)]
+    let mut marker = vec![Piece::disc(foot, r, 0.1 * r, GOLD), Piece::disc(foot + vec3(0.0, 0.1 * r, 0.0), 0.62 * r, 0.06 * r, country)];
+    if trained {
+        // A small steel dot on the country's disc, which soldiers have and militia do not.
+        marker.push(Piece::disc(foot + vec3(0.0, 0.16 * r, 0.0), 0.28 * r, 0.06 * r, STEEL));
+    }
+    marker
 }
 
 /// Draws the militia of `day`, as seen by the camera that is set, which must still be the one the map was drawn with, and
@@ -108,9 +121,9 @@ pub fn tooltip(style: &Style, day: &DaySave, militia: &Militia) {
     let origin = day.city(militia.city).map_or("a city", |city| city.name.as_str());
     let rows = [
         ("Country", day.country_name(militia.country).to_owned()),
-        ("Members", thousands(militia.members)),
+        (if militia.trained { "Soldiers" } else { "Members" }, thousands(militia.members)),
         ("Raised in", origin.to_owned()),
-        ("Upkeep", format!("{} coins a day", money(upkeep(militia.members)))),
+        ("Upkeep", format!("{} coins a day", money(militia.upkeep()))),
         ("Movement", format!("{} of {} points", militia.points, DAILY_POINTS)),
     ];
     let mut rows = rows.to_vec();
@@ -144,7 +157,7 @@ mod tests {
     use crate::test_support;
 
     fn militia(members: u32, at: Vec2) -> Militia {
-        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false }
+        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false, trained: false }
     }
 
     #[test]
@@ -219,6 +232,23 @@ mod tests {
         // It still hops when walking, and is picked where it is.
         let hopping = parts(&world, &militia(1_000, at), at, Some(0.05), COUNTRY, eye_over(at, &world, pieces::FAR + 500.0));
         assert!(hopping[0].middle.y >= far[0].middle.y);
+    }
+
+    #[test]
+    fn soldiers_wear_a_steel_helmet_and_from_far_off_a_steel_dot_and_militia_do_not() {
+        let world = test_support::small_continent();
+        let at = test_support::inland_spot(&world, 50.0);
+        let near = eye_over(at, &world, 300.0);
+        let far = eye_over(at, &world, pieces::FAR + 500.0);
+        let soldiers = Militia { trained: true, ..militia(100, at) };
+        let (plain, trained) = (parts(&world, &militia(100, at), at, None, COUNTRY, near), parts(&world, &soldiers, at, None, COUNTRY, near));
+        assert_eq!(trained.len(), plain.len() + 2, "a cap and its brim");
+        assert!(trained.iter().filter(|p| p.color == STEEL).count() == 1 && !plain.iter().any(|p| p.color == STEEL));
+        let top = |parts: &[Piece]| parts.iter().map(Piece::top).fold(f32::MIN, f32::max);
+        assert!(top(&trained) > top(&plain) - 1e-3, "the helmet is on the head");
+        let (plain, trained) = (parts(&world, &militia(100, at), at, None, COUNTRY, far), parts(&world, &soldiers, at, None, COUNTRY, far));
+        assert_eq!((plain.len(), trained.len()), (2, 3));
+        assert_eq!(trained[2].color, STEEL);
     }
 
     #[test]

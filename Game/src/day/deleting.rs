@@ -20,6 +20,7 @@ impl DaySave {
             counts.push((self.gatherers.iter().filter(|g| g.country == id && g.kind == kind).count(), kind.noun(), kind.plural().to_owned()));
         }
         counts.push((self.militias.iter().filter(|m| m.country == id).count(), "militia", "militia".to_owned()));
+        counts.push((self.barracks.iter().filter(|b| b.country == id).count(), "barracks", "barracks".to_owned()));
         for kind in crate::ship::ShipKind::ALL {
             counts.push((self.ships.iter().filter(|s| s.country == id && s.kind == kind).count(), kind.noun(), format!("{}s", kind.noun())));
         }

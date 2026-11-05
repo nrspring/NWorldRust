@@ -358,6 +358,32 @@ pub enum Event {
     },
     /// The subject is a ship called `name`, which was scrapped. It is gone, and what it cost is not given back.
     ShipScrapped { name: String },
+    /// The subject is a barracks, which the country `country` built, in the region numbered `region` if the map has regions, for
+    /// `cost`.
+    BarracksBuilt {
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+        cost: Vec<Cost>,
+    },
+    /// The subject is a barracks, which belonged to the country `country`, and it was destroyed. It is gone, so what the news says of
+    /// it is kept here.
+    BarracksDestroyed {
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+    },
+    /// The subject is a militia called `name` of `members` people, which the country `country` trained as soldiers at a barracks in
+    /// the region numbered `region` if the map has regions, for `cost`.
+    MilitiaTrained {
+        #[serde(default)]
+        name: String,
+        country: CountryId,
+        members: u32,
+        #[serde(default)]
+        region: Option<u16>,
+        cost: Vec<Cost>,
+    },
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -651,6 +677,19 @@ impl News {
                 }
             }
             Event::ShipScrapped { ref name } => format!("{name} is scrapped"),
+            Event::BarracksBuilt { country, region, ref cost } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                format!("{} builds a barracks{place}{}", day.country_name(country), for_cost(cost))
+            }
+            Event::BarracksDestroyed { country, region } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                format!("{}'s barracks{place} is destroyed", day.country_name(country))
+            }
+            Event::MilitiaTrained { ref name, country, members, region, ref cost } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let name = if name.is_empty() { "a militia" } else { name };
+                format!("{} trains {name}, {} members, as soldiers{place}{}", day.country_name(country), thousands(members), for_cost(cost))
+            }
             Event::Note { ref text } => text.clone(),
         }
     }

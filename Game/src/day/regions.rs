@@ -24,7 +24,8 @@ impl DaySave {
         let cities = self.cities.iter().filter(|c| c.region == Some(region)).map(|c| (format!("{} stands", c.name), c.country));
         let gatherers = self.gatherers.iter().filter(|g| g.region == region).map(|g| (format!("{} of {} is", g.kind.a_noun_capital(), self.country_name(g.country)), g.country));
         let shipyards = self.shipyards.iter().filter(|s| s.region == Some(region)).map(|s| (format!("{} of {} is", s.kind.a_noun_capital(), self.country_name(s.country)), s.country));
-        cities.chain(gatherers).chain(shipyards).collect()
+        let barracks = self.barracks.iter().filter(|b| b.region == Some(region)).map(|b| (format!("A barracks of {} is", self.country_name(b.country)), b.country));
+        cities.chain(gatherers).chain(shipyards).chain(barracks).collect()
     }
 
     /// Why the owner of the region numbered `region` can't be changed, or `None` if it can: a region that belongs to a
@@ -91,6 +92,9 @@ impl DaySave {
             }
             for shipyard in self.shipyards.iter_mut().filter(|s| s.region == Some(region)) {
                 shipyard.country = country;
+            }
+            for barracks in self.barracks.iter_mut().filter(|b| b.region == Some(region)) {
+                barracks.country = country;
             }
         }
         if let Some(subject) = owner.or(from) {

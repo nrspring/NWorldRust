@@ -25,6 +25,7 @@ pub enum Buildable {
     Bridge,
     Gatherer(GathererKind),
     Shipyard(ShipyardKind),
+    Barracks,
 }
 
 impl Buildable {
@@ -36,6 +37,7 @@ impl Buildable {
             Self::Bridge => "Bridge",
             Self::Gatherer(kind) => kind.label(),
             Self::Shipyard(kind) => kind.label(),
+            Self::Barracks => "Barracks",
         }
     }
 
@@ -47,6 +49,7 @@ impl Buildable {
             Self::Bridge => BRIDGE_COST,
             Self::Gatherer(kind) => kind.cost(),
             Self::Shipyard(kind) => kind.cost(),
+            Self::Barracks => crate::barracks::COST,
         }
     }
 
@@ -57,6 +60,7 @@ impl Buildable {
             Self::Bridge => &BRIDGE_MATERIALS,
             Self::Gatherer(kind) => kind.materials(),
             Self::Shipyard(kind) => kind.materials(),
+            Self::Barracks => &crate::barracks::MATERIALS,
         }
     }
 
@@ -96,6 +100,12 @@ impl Buildable {
             Self::Bridge => format!("Carries a route across a river. Fails {} of days.", percent(BRIDGE_FAILURE)),
             Self::Gatherer(kind) => format!("Provides {} {} a day while it has a route to a city.", format::thousands_u64(kind.daily_yield()), kind.product()),
             Self::Shipyard(kind) => format!("Where warships are built: {} only, resting between ships.", if kind == ShipyardKind::Small { "small ones" } else { "small and large ones" }),
+            Self::Barracks => format!(
+                "Trains a militia of its country in the same region into soldiers, for {} coins and {} iron a member. Rests a day for every {} trained.",
+                crate::barracks::TRAINING_COINS,
+                crate::barracks::TRAINING_IRON,
+                crate::barracks::MEMBERS_PER_REST_DAY
+            ),
         }
     }
 
@@ -111,6 +121,7 @@ impl Buildable {
                     lines.push((format!("Click it afterwards to upgrade it to {} for {}.", to.a_noun(), crate::newsreel::cost_text(&crate::shipyard::upgrade_full_cost())), style::TEXT_MUTED));
                 }
             }
+            Self::Barracks => lines.push(("Has to stand on dry land, not in the mountains, in a region you own.".to_owned(), style::TEXT_MUTED)),
             _ => lines.push(("A failed one is mended by building it again, for the same.".to_owned(), style::TEXT_MUTED)),
         }
         lines
@@ -164,6 +175,14 @@ mod tests {
             assert_eq!(Buildable::Shipyard(kind).cost(), kind.cost());
             assert_eq!(Buildable::Shipyard(kind).cost_text(), "10,000 coins, 1,000 stone, 1,000 wood and 500 iron");
         }
+    }
+
+    #[test]
+    fn a_barracks_costs_what_the_game_charges() {
+        assert_eq!(Buildable::Barracks.cost(), crate::barracks::COST);
+        assert_eq!(Buildable::Barracks.cost_text(), "5,000 coins, 500 stone, 500 wood and 200 iron");
+        assert_eq!(Buildable::Barracks.label(), "Barracks");
+        assert!(Buildable::Barracks.output().contains("20 coins and 1 iron a member"));
     }
 
     #[test]

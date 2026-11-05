@@ -23,7 +23,7 @@ impl DaySave {
         Some(format!("That region belongs to {}.", self.country_name(owner)))
     }
 
-    /// Why `country` can't put a gatherer or a shipyard in `region` (`None` for a map with no regions), or `None` if it can:
+    /// Why `country` can't put a gatherer, a shipyard or a barracks in `region` (`None` for a map with no regions), or `None` if it can:
     /// such a thing belongs to whoever owns the region it stands in, so the region has to be the country's already.
     pub fn placement_region_problem(&self, country: CountryId, region: Option<u16>) -> Option<String> {
         let Some(region) = region else { return Some("This map has no regions to build in.".to_owned()) };
