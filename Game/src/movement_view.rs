@@ -11,8 +11,7 @@ use crate::calendar::Date;
 use crate::day::DaySave;
 use crate::hud;
 use crate::failure::Thing;
-use crate::ids::MilitiaId;
-use crate::militia::Militia;
+use crate::ids::{Guid, MilitiaId, ShipId};
 use crate::movement::{self, Network, Reach, DAILY_POINTS};
 use crate::movement_mesh;
 use crate::path::{Kind, PathPiece};
@@ -33,7 +32,7 @@ pub enum PanelAction {
 /// What the overlay was made for, to know when to make it again.
 #[derive(Clone, Debug, PartialEq)]
 struct Key {
-    id: MilitiaId,
+    id: Guid,
     at: (u32, u32),
     points: u32,
     date: Date,
@@ -58,7 +57,7 @@ impl MovementView {
             return;
         };
         let counts = [day.paths.len(), day.roads.len(), day.bridges.len(), day.bridge_links.len() + day.road_links.len(), day.failed.len(), 0];
-        let key = Key { id: militia.id, at: (militia.x.to_bits(), militia.z.to_bits()), points: militia.points, date: day.date, counts };
+        let key = Key { id: militia.id.into(), at: (militia.x.to_bits(), militia.z.to_bits()), points: militia.points, date: day.date, counts };
         if self.key.as_ref() == Some(&key) {
             return;
         }
@@ -68,7 +67,25 @@ impl MovementView {
         self.key = Some(key);
     }
 
-    /// Where the selected militia can get to, if one is selected.
+    /// Makes sure the overlay is for the ship `selected`, which is nothing at all if it is `None` or not in `day`. A ship can get to the
+    /// water its size sails, and nowhere else, so the paths and roads are nothing to it.
+    pub fn update_ship(&mut self, world: &World, day: &DaySave, selected: Option<ShipId>) {
+        let Some(ship) = selected.and_then(|id| day.ship(id)) else {
+            *self = Self::default();
+            return;
+        };
+        let key = Key { id: ship.id.into(), at: (ship.x.to_bits(), ship.z.to_bits()), points: ship.points, date: day.date, counts: [0; 6] };
+        if self.key.as_ref() == Some(&key) {
+            return;
+        }
+        let kind = ship.kind;
+        let reach = movement::reach_by_water(world, &|water| kind.can_sail(water), kind.water_cost(), vec2(ship.x, ship.z), ship.points as f32);
+        self.meshes = movement_mesh::build(world, &reach);
+        self.reach = Some(reach);
+        self.key = Some(key);
+    }
+
+    /// Where the selected militia or ship can get to, if one is selected.
     pub fn reach(&self) -> Option<&Reach> {
         self.reach.as_ref()
     }
@@ -99,16 +116,17 @@ pub fn panel_rect() -> Rect {
     Rect::new((screen_width() - PANEL_SIZE.x) * 0.5, screen_height() - hud::FOOTER_HEIGHT - PANEL_MARGIN - PANEL_SIZE.y, PANEL_SIZE.x, PANEL_SIZE.y)
 }
 
-/// Draws the panel for the selected `militia`, and says what the player clicked on it, if anything.
-pub fn panel(style: &Style, militia: &Militia, error: Option<&str>) -> Option<PanelAction> {
+/// Draws the panel for the selected militia or ship called `title`, which has `points` movement points left, and says what the player
+/// clicked on it, if anything.
+pub fn panel(style: &Style, title: &str, points: u32, error: Option<&str>) -> Option<PanelAction> {
     let panel = panel_rect();
     let mouse = Vec2::from(mouse_position());
     style::card(panel, 12.0, style::GLASS);
-    style.text_mid(militia.title(), panel.x + 18.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
-    let status = format!("{} of {} movement points left", militia.points, DAILY_POINTS);
-    let color = if militia.points == 0 { style::ERROR } else { style::TEXT_MUTED };
+    style.text_mid(title, panel.x + 18.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+    let status = format!("{points} of {DAILY_POINTS} movement points left");
+    let color = if points == 0 { style::ERROR } else { style::TEXT_MUTED };
     style.text_mid(&status, panel.x + 18.0, panel.y + 46.0, 13, Weight::Regular, color);
-    let hint = match (error, militia.points) {
+    let hint = match (error, points) {
         (Some(error), _) => error,
         (None, 0) => "It can't move again today",
         _ => "Click a tinted spot to move there",

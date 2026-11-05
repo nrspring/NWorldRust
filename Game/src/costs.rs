@@ -95,7 +95,7 @@ impl Buildable {
             Self::Way(Kind::Road) => format!("Joins regions into routes. Fails {} of days.", percent(ROAD_FAILURE)),
             Self::Bridge => format!("Carries a route across a river. Fails {} of days.", percent(BRIDGE_FAILURE)),
             Self::Gatherer(kind) => format!("Provides {} {} a day while it has a route to a city.", format::thousands_u64(kind.daily_yield()), kind.product()),
-            Self::Shipyard(_) => "Where ships will be built. There are no ships yet.".to_owned(),
+            Self::Shipyard(kind) => format!("Where warships are built: {} only, resting between ships.", if kind == ShipyardKind::Small { "small ones" } else { "small and large ones" }),
         }
     }
 

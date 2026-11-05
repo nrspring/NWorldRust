@@ -85,7 +85,7 @@ impl DaySave {
         }
         let id = MilitiaId::new();
         let name = militia::default_name(&name, id);
-        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS });
+        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS, under_siege: false });
         self.newsreel.push(News::about(id, Event::MilitiaRaised { name, country, city, members, cost: vec![Cost::coins(cost)] }));
         Ok(())
     }
@@ -152,12 +152,14 @@ impl DaySave {
         // The name of the bigger of the two goes to the whole, and `keep` (the one that was selected) wins a tie.
         let (bigger, smaller) = if second.members > first.members { (second, first) } else { (first, second) };
         let (points, name, absorbed) = (first.points.min(second.points), bigger.name.clone(), smaller.title().to_owned());
+        let besieged = first.under_siege || second.under_siege;
         let kept_title = bigger.title().to_owned();
         self.militias.retain(|m| m.id != absorb);
         if let Some(unit) = self.militias.iter_mut().find(|m| m.id == keep) {
             unit.members = members as u32;
             unit.points = points;
             unit.name = name;
+            unit.under_siege |= besieged;
         }
         self.newsreel.push(News::about(keep, Event::MilitiaMerged { name: kept_title, absorbed, members: members as u32 }));
         Ok(())
@@ -194,6 +196,30 @@ impl DaySave {
         let unit = self.militias.remove(index);
         self.newsreel.push(News::about(id, Event::MilitiaDisbanded { name: unit.title().to_owned(), members: unit.members }));
         Ok(())
+    }
+
+    /// Puts the militia with this id under siege, or lifts the siege, which is reported in the newsreel unless it made no difference.
+    /// An error says why it can't be done.
+    pub fn set_militia_under_siege(&mut self, id: MilitiaId, under_siege: bool) -> Result<(), String> {
+        let unit = self.militias.iter_mut().find(|m| m.id == id).ok_or("There is no such militia.")?;
+        let changed = std::mem::replace(&mut unit.under_siege, under_siege) != under_siege;
+        let (name, members) = (unit.title().to_owned(), unit.members);
+        if changed {
+            self.newsreel.push(News::about(id, Event::MilitiaSiegeChanged { name, under_siege, members }));
+        }
+        Ok(())
+    }
+
+    /// Each militia under siege loses members: the same 5 to 10 percent a day a besieged city loses (see [`militia::after_siege`]),
+    /// `unit` giving the random numbers (each from 0 up to 1, one for each militia under siege). Each is in the newsreel.
+    pub fn shrink_besieged_militia(&mut self, mut unit: impl FnMut() -> f32) {
+        for militia in self.militias.iter_mut().filter(|m| m.under_siege) {
+            let from = militia.members;
+            militia.members = militia::after_siege(from, unit());
+            if militia.members != from {
+                self.newsreel.push(News::about(militia.id, Event::MilitiaShrank { name: militia.title().to_owned(), from, to: militia.members }));
+            }
+        }
     }
 
     /// Gives every militia all its movement points again, for a new day.
@@ -277,6 +303,97 @@ mod tests {
         // All the points that are left can be spent.
         day.move_militia(id, vec2(90.0, 5.0), 165, None).unwrap();
         assert_eq!(day.militia(id).unwrap().points, 0);
+    }
+
+    #[test]
+    fn a_militia_can_be_put_under_siege_and_freed_and_it_is_reported_and_saved() {
+        let mut day = day_with_a_city();
+        day.raise_militia(day.cities[0].id, 200, CAMP).unwrap();
+        let id = day.militias[0].id;
+        let name = day.militias[0].name.clone();
+        assert!(!day.militias[0].under_siege, "it starts free");
+        day.set_militia_under_siege(id, true).unwrap();
+        assert!(day.militia(id).unwrap().under_siege);
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), format!("{name}, a militia of 200, is put under siege"));
+        let news = day.newsreel.len();
+        day.set_militia_under_siege(id, true).unwrap();
+        assert_eq!(day.newsreel.len(), news, "no change is no news");
+        assert!(day.following(Date { year: 1, month: 1, day: 2 }).militia(id).unwrap().under_siege, "it carries forward");
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(json["militias"][0]["under_siege"], true);
+        let mut old = json;
+        old["militias"][0].as_object_mut().unwrap().remove("under_siege");
+        assert!(!serde_json::from_value::<DaySave>(old).unwrap().militias[0].under_siege);
+        day.set_militia_under_siege(id, false).unwrap();
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), format!("The siege of {name}, a militia of 200, is lifted"));
+        assert!(day.set_militia_under_siege(MilitiaId::new(), true).is_err());
+    }
+
+    #[test]
+    fn only_a_besieged_militia_shrinks_and_each_has_its_own_random_number() {
+        let mut day = day_with_a_city();
+        day.add_money(day.countries[0].id, 5_000).unwrap();
+        day.raise_militia(day.cities[0].id, 200, CAMP).unwrap();
+        day.following(Date { year: 1, month: 1, day: 2 });
+        let mut tomorrow = day.following(Date { year: 1, month: 1, day: 2 });
+        // Raise a second one from another city on the same day.
+        tomorrow.found_city("Highmark", 500.0, 0.0, None).unwrap();
+        let second = tomorrow.cities.len() - 1;
+        tomorrow.cities[second].population = 2_000;
+        tomorrow.raise_militia(tomorrow.cities[second].id, 100, vec2(540.0, 0.0)).unwrap();
+        let (free, besieged) = (tomorrow.militias[0].id, tomorrow.militias[1].id);
+        tomorrow.set_militia_under_siege(besieged, true).unwrap();
+
+        let mut numbers = [0.0f32, 1.0].into_iter();
+        tomorrow.shrink_besieged_militia(|| numbers.next().unwrap());
+        assert_eq!(tomorrow.militia(free).unwrap().members, 200, "a free one doesn't");
+        assert_eq!(tomorrow.militia(besieged).unwrap().members, 100 - 5, "5 percent of 100 (the least)");
+        assert_eq!(tomorrow.newsreel.last().unwrap().headline(&tomorrow), format!("{}, under siege, loses 5 members and falls to 95", tomorrow.militia(besieged).unwrap().name));
+
+        let mut worst = tomorrow.clone();
+        worst.shrink_besieged_militia(|| 1.0);
+        assert_eq!(worst.militia(besieged).unwrap().members, 95 - 10, "10 percent of 95 is 9.5, rounded up");
+    }
+
+    #[test]
+    fn a_besieged_militia_keeps_its_last_member_and_a_siege_shrinks_it_before_it_is_paid_for() {
+        let mut day = day_with_a_city();
+        day.raise_militia(day.cities[0].id, 20, CAMP).unwrap();
+        let id = day.militias[0].id;
+        day.set_militia_under_siege(id, true).unwrap();
+        for _ in 0..40 {
+            day.shrink_besieged_militia(|| 0.0);
+        }
+        assert_eq!(day.militia(id).unwrap().members, 1, "it never goes below 1");
+        let news = day.newsreel.len();
+        day.shrink_besieged_militia(|| 1.0);
+        assert_eq!(day.newsreel.len(), news, "and no change is no news");
+
+        // A whole day on: the siege rule runs before the upkeep, so only the members left are paid for.
+        let mut day = day_with_a_city();
+        day.raise_militia(day.cities[0].id, 200, CAMP).unwrap();
+        let id = day.militias[0].id;
+        day.set_militia_under_siege(id, true).unwrap();
+        let mut tomorrow = day.following(Date { year: 1, month: 1, day: 2 });
+        crate::rules::run(&mut tomorrow);
+        let members = tomorrow.militia(id).unwrap().members;
+        assert!((180..=190).contains(&members), "5 to 10 percent of 200 is gone: {members}");
+        assert!(tomorrow.newsreel.iter().any(|n| matches!(n.event, Event::MilitiaPaid { amount } if amount == u64::from(members))));
+    }
+
+    #[test]
+    fn combining_makes_the_whole_besieged_if_either_was_and_a_detachment_is_besieged_with_it() {
+        let mut day = day_with_a_city();
+        day.raise_militia(day.cities[0].id, 100, CAMP).unwrap();
+        day.following(Date { year: 1, month: 1, day: 2 });
+        let mut tomorrow = day.following(Date { year: 1, month: 1, day: 2 });
+        tomorrow.raise_militia(tomorrow.cities[0].id, 100, vec2(80.0, 0.0)).unwrap();
+        let (first, second) = (tomorrow.militias[0].id, tomorrow.militias[1].id);
+        tomorrow.set_militia_under_siege(second, true).unwrap();
+        tomorrow.merge_militia(first, second, (Some(1), Some(1))).unwrap();
+        assert!(tomorrow.militia(first).unwrap().under_siege);
+        tomorrow.split_militia(first, 50, vec2(0.0, 80.0)).unwrap();
+        assert!(tomorrow.militias.iter().all(|m| m.under_siege), "the detachment is surrounded too");
     }
 
     #[test]

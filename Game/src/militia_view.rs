@@ -113,6 +113,10 @@ pub fn tooltip(style: &Style, day: &DaySave, militia: &Militia) {
         ("Upkeep", format!("{} coins a day", money(upkeep(militia.members)))),
         ("Movement", format!("{} of {} points", militia.points, DAILY_POINTS)),
     ];
+    let mut rows = rows.to_vec();
+    if militia.under_siege {
+        rows.push(("Status", "Under siege".to_owned()));
+    }
     let label_w = rows.iter().map(|(label, _)| style.measure(label, 13, Weight::Regular).width).fold(0.0, f32::max);
     let value_w = rows.iter().map(|(_, value)| style.measure(value, 14, Weight::Semibold).width).fold(0.0, f32::max);
     let title = militia.title();
@@ -140,7 +144,7 @@ mod tests {
     use crate::test_support;
 
     fn militia(members: u32, at: Vec2) -> Militia {
-        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100 }
+        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false }
     }
 
     #[test]

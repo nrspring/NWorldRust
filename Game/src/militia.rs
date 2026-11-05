@@ -62,6 +62,10 @@ pub struct Militia {
     /// saved before it could move has all of them.
     #[serde(default = "full_points")]
     pub points: u32,
+    /// Whether it is surrounded. The player switches it on and off, as for a city. A militia under siege loses members each day
+    /// (see [`after_siege`]).
+    #[serde(default)]
+    pub under_siege: bool,
 }
 
 fn full_points() -> u32 {
@@ -108,6 +112,16 @@ impl Militia {
 pub fn most_from(population: u32) -> u32 {
     let share = u64::from(population) * CITY_SHARE_PERCENT / 100;
     share.min(u64::from(MAX_MEMBERS)) as u32
+}
+
+/// How many members a militia of `members` has the next day if it is under siege: it loses the same share a besieged city does (5
+/// to 10 percent, `unit` being how far through that range, from 0 up to 1), rounded up, so that even a small militia loses at least
+/// one member a day. It is never left with fewer than 1, as a city is never left with fewer than 100.
+pub fn after_siege(members: u32, unit: f32) -> u32 {
+    let (least, most) = crate::rules::SIEGE_LOSS_PERCENT;
+    let percent = least + (most - least) * f64::from(unit.clamp(0.0, 1.0));
+    let lost = (f64::from(members) * percent / 100.0).ceil() as u32;
+    members.saturating_sub(lost).max(1).min(members)
 }
 
 /// What `members` members cost to raise, in coins.
@@ -165,6 +179,19 @@ mod tests {
         assert_eq!(clean_name("  Port   Guard ").unwrap(), "Port Guard");
         assert_eq!(clean_name(" ").unwrap_err(), "Enter a name for your militia.");
         assert!(clean_name(&"a".repeat(MAX_NAME_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn a_besieged_militia_loses_five_to_ten_percent_rounded_up_and_is_never_left_with_none() {
+        assert_eq!(after_siege(1_000, 0.0), 950, "the least");
+        assert_eq!(after_siege(1_000, 1.0), 900, "the most");
+        assert_eq!(after_siege(1_000, 0.5), 925);
+        assert_eq!(after_siege(101, 0.0), 95, "5.05 is rounded up to 6");
+        assert_eq!(after_siege(10, 0.0), 9, "a small militia loses one");
+        assert_eq!(after_siege(2, 1.0), 1);
+        assert_eq!(after_siege(1, 1.0), 1, "the last member stays");
+        assert_eq!(after_siege(0, 0.5), 0, "an empty one is as it was");
+        assert!(after_siege(u32::MAX, 1.0) < u32::MAX);
     }
 
     #[test]

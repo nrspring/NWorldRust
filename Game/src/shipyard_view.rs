@@ -141,7 +141,7 @@ mod tests {
 
     fn of_kind(world: &World, kind: ShipyardKind) -> Shipyard {
         let at = test_support::inland_spot(world, 40.0);
-        Shipyard { id: ShipyardId::new(), kind, country: CountryId::new(), x: at.x, z: at.y, region: Some(1) }
+        Shipyard { id: ShipyardId::new(), kind, country: CountryId::new(), x: at.x, z: at.y, region: Some(1), ready_on: None }
     }
 
     fn eye_over(yard: &Shipyard, world: &World, distance: f32) -> Vec3 {

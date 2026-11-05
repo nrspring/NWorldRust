@@ -8,7 +8,7 @@ pub const MONTHS_PER_YEAR: u32 = 10;
 pub const DAYS_PER_MONTH: u32 = 20;
 
 /// A day of the game, written `year-month-day`: the first is 1-1-1 and the last of a year is 1-10-20.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub struct Date {
     pub year: u32,
     pub month: u32,
@@ -34,6 +34,22 @@ impl Date {
         } else {
             Date { year: self.year.saturating_add(1), month: 1, day: 1 }
         }
+    }
+
+    /// The day `days` days after this one.
+    pub fn plus_days(self, days: u32) -> Date {
+        (0..days).fold(self, |date, _| date.next())
+    }
+
+    /// How many days it is from this day to `later`, or 0 if `later` is not after it.
+    pub fn days_until(self, later: Date) -> u32 {
+        let mut date = self;
+        let mut days = 0;
+        while date < later {
+            date = date.next();
+            days += 1;
+        }
+        days
     }
 
     /// A name for the day's save file. Names sort in date order, up to year 9999.
@@ -79,6 +95,18 @@ mod tests {
             assert!(date.is_valid(), "{date}");
         }
         assert_eq!(date, Date { year: 11, month: 1, day: 1 });
+    }
+
+    #[test]
+    fn days_are_ordered_and_can_be_counted_on_across_months_and_years() {
+        let end_of_year = Date { year: 1, month: 10, day: 19 };
+        assert!(Date::FIRST < Date { year: 1, month: 1, day: 2 } && Date { year: 1, month: 10, day: 20 } < Date { year: 2, month: 1, day: 1 });
+        assert_eq!(Date::FIRST.plus_days(0), Date::FIRST);
+        assert_eq!(Date::FIRST.plus_days(19), Date { year: 1, month: 1, day: 20 });
+        assert_eq!(end_of_year.plus_days(3), Date { year: 2, month: 1, day: 2 });
+        assert_eq!(end_of_year.days_until(end_of_year.plus_days(10)), 10);
+        assert_eq!(end_of_year.days_until(end_of_year), 0);
+        assert_eq!(end_of_year.plus_days(5).days_until(end_of_year), 0, "never negative");
     }
 
     #[test]

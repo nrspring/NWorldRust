@@ -143,16 +143,67 @@ fn passable(world: &World, at: Vec2, cell: (i32, i32), ground: Ground) -> bool {
     world.water_class(at.x, at.y) == WaterClass::Dry && (ground != Ground::Land || world.surface_height(at.x, at.y) < MOUNTAIN_HEIGHT)
 }
 
+/// A search window of cells round `from`, big enough that `points` movement points can't get out of it if a meter costs at least
+/// `least_cost` points, with nothing found yet.
+fn window(world: &World, from: Vec2, points: f32, least_cost: f32) -> Reach {
+    let half = world.half_extents();
+    let start = cell_of(half, from);
+    // The farthest it can possibly get is by the cheapest ground, so that is how far to look.
+    let radius = (points / least_cost / CELL_SIZE).ceil() as i32 + 1;
+    let size = (2 * radius + 1) as usize;
+    let low = (start.0 - radius, start.1 - radius);
+    Reach { low, size, cost: vec![f32::INFINITY; size * size], points, half, from, came_from: vec![usize::MAX; size * size] }
+}
+
+/// Dijkstra's way over the window of `result`, from the cell it starts in: always on from the cell that costs least to have got to.
+/// `is_open` says whether a cell can be entered at all, `meter_cost` what a meter of the cell with this index costs, and `free_corner`
+/// whether a diagonal step between the cells with these two indexes may cut the corner of what can't be entered.
+fn search(
+    result: &mut Reach,
+    is_open: &mut dyn FnMut(&Reach, (i32, i32)) -> bool,
+    meter_cost: &dyn Fn(usize) -> f32,
+    free_corner: &dyn Fn(usize, usize) -> bool,
+) {
+    let (low, size, points) = (result.low, result.size, result.points);
+    let start = cell_of(result.half, result.from);
+    // The costs are not negative, so their bits sort in the same order as they do.
+    let mut queue = BinaryHeap::new();
+    let first = result.index(start).expect("the start is in the middle of the window");
+    result.cost[first] = 0.0;
+    queue.push(Reverse((0.0f32.to_bits(), first)));
+    while let Some(Reverse((bits, n))) = queue.pop() {
+        let here = f32::from_bits(bits);
+        if here > result.cost[n] {
+            continue;
+        }
+        let cell = (low.0 + (n % size) as i32, low.1 + (n / size) as i32);
+        for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+            let next = (cell.0 + di, cell.1 + dj);
+            let Some(m) = result.index(next) else { continue };
+            if !is_open(result, next) {
+                continue;
+            }
+            // A diagonal step may not cut the corner of what can't be entered, unless the caller says it may.
+            if di != 0 && dj != 0 && !free_corner(n, m) && !(is_open(result, (cell.0 + di, cell.1)) && is_open(result, (cell.0, cell.1 + dj))) {
+                continue;
+            }
+            let step = if di != 0 && dj != 0 { CELL_SIZE * std::f32::consts::SQRT_2 } else { CELL_SIZE };
+            let through = here + step * meter_cost(m);
+            if through < result.cost[m] && through <= points {
+                result.cost[m] = through;
+                result.came_from[m] = n;
+                queue.push(Reverse((through.to_bits(), m)));
+            }
+        }
+    }
+}
+
 /// Where a unit at `from` with `points` movement points can get to, over the ground of `world`, with the paths, roads and
 /// bridges of `network`.
 pub fn reach(world: &World, network: &Network, from: Vec2, points: f32) -> Reach {
     let half = world.half_extents();
-    let start = cell_of(half, from);
-    // The farthest it can possibly get is along a road, so that is how far to look.
-    let radius = (points / ROAD_COST / CELL_SIZE).ceil() as i32 + 1;
-    let size = (2 * radius + 1) as usize;
-    let low = (start.0 - radius, start.1 - radius);
-    let mut result = Reach { low, size, cost: vec![f32::INFINITY; size * size], points, half, from, came_from: vec![usize::MAX; size * size] };
+    let mut result = window(world, from, points, ROAD_COST);
+    let size = result.size;
 
     // What each cell of the window is: land, unless a line goes through it.
     let mut ground = vec![Ground::Land; size * size];
@@ -177,38 +228,31 @@ pub fn reach(world: &World, network: &Network, from: Vec2, points: f32) -> Reach
         let Some(n) = result.index(cell) else { return false };
         *open[n].get_or_insert_with(|| passable(world, centre_of(half, cell), cell, ground[n]))
     };
+    search(&mut result, &mut is_open, &|n| ground[n].cost(), &|n, m| ground[n] == Ground::Bridge && ground[m] == Ground::Bridge);
+    result
+}
 
-    // Dijkstra's way: always on from the cell that costs least to have got to. The costs are not negative, so their bits
-    // sort in the same order as they do.
-    let mut queue = BinaryHeap::new();
-    let first = result.index(start).expect("the start is in the middle of the window");
-    result.cost[first] = 0.0;
-    queue.push(Reverse((0.0f32.to_bits(), first)));
-    while let Some(Reverse((bits, n))) = queue.pop() {
-        let here = f32::from_bits(bits);
-        if here > result.cost[n] {
-            continue;
-        }
-        let cell = (low.0 + (n % size) as i32, low.1 + (n / size) as i32);
-        for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
-            let next = (cell.0 + di, cell.1 + dj);
-            let Some(m) = result.index(next) else { continue };
-            if !is_open(&result, next) {
-                continue;
+/// Where a ship at `from` with `points` movement points can get to over the water of `world`: every cell of water that `can_sail`
+/// says it can sail, at `meter_cost` points a meter. A ship goes where there is water and nowhere else: not on land, not under a
+/// bridge, and not on the water it can't sail (a small ship stays out of the deep sea, and a large one out of the rivers). Paths,
+/// roads and bridges are nothing to it.
+pub fn reach_by_water(world: &World, can_sail: &dyn Fn(WaterClass) -> bool, meter_cost: f32, from: Vec2, points: f32) -> Reach {
+    let half = world.half_extents();
+    let mut result = window(world, from, points, meter_cost);
+    let size = result.size;
+    let (nx, nz) = world.samples();
+    let mut open: Vec<Option<bool>> = vec![None; size * size];
+    let mut is_open = |result: &Reach, cell: (i32, i32)| -> bool {
+        let Some(n) = result.index(cell) else { return false };
+        *open[n].get_or_insert_with(|| {
+            if cell.0 < 0 || cell.1 < 0 || cell.0 as usize >= nx || cell.1 as usize >= nz {
+                return false;
             }
-            // A diagonal step may not cut the corner of what can't be walked on, unless it is along a bridge.
-            if di != 0 && dj != 0 && !(ground[n] == Ground::Bridge && ground[m] == Ground::Bridge) && !(is_open(&result, (cell.0 + di, cell.1)) && is_open(&result, (cell.0, cell.1 + dj))) {
-                continue;
-            }
-            let step = if di != 0 && dj != 0 { CELL_SIZE * std::f32::consts::SQRT_2 } else { CELL_SIZE };
-            let through = here + step * ground[m].cost();
-            if through < result.cost[m] && through <= points {
-                result.cost[m] = through;
-                result.came_from[m] = n;
-                queue.push(Reverse((through.to_bits(), m)));
-            }
-        }
-    }
+            let at = centre_of(half, cell);
+            can_sail(world.water_class(at.x, at.y))
+        })
+    };
+    search(&mut result, &mut is_open, &|_| meter_cost, &|_, _| false);
     result
 }
 
@@ -344,6 +388,55 @@ mod tests {
         assert!((length - reach.cost_to(there).unwrap()).abs() < CELL_SIZE, "on open land the way costs its length: {length}");
         assert_eq!(reach.route_to(from + vec2(900.0, 0.0)), None, "none to somewhere it can't get to");
         assert_eq!(reach.route_to(from).unwrap(), vec![from], "none to go to where it is");
+    }
+
+    /// A spot in the sea with plenty of water of one class round it, if the test continent has one: the point and the class.
+    fn open_water(world: &World, class: WaterClass) -> Option<Vec2> {
+        let half = world.half_extents();
+        let (nx, nz) = world.samples();
+        (0..nz).step_by(2).flat_map(|j| (0..nx).step_by(2).map(move |i| (i, j))).map(|(i, j)| vec2(i as f32 * CELL_SIZE - half.x, j as f32 * CELL_SIZE - half.y)).find(|at| {
+            (-3..=3).all(|a| (-3..=3).all(|b| world.water_class(at.x + a as f32 * CELL_SIZE, at.y + b as f32 * CELL_SIZE) == class))
+        })
+    }
+
+    #[test]
+    fn a_ship_sails_only_the_water_it_can_and_never_the_land() {
+        let world = test_support::small_continent();
+        let mut tested = 0;
+        for (class, other) in [(WaterClass::Shallow, WaterClass::Deep), (WaterClass::Deep, WaterClass::Shallow)] {
+            let Some(from) = open_water(&world, class) else { continue };
+            tested += 1;
+            // A ship that sails only this class gets somewhere, and never to anything else.
+            let only = |water: WaterClass| water == class;
+            let reach = reach_by_water(&world, &only, 0.5, from, 100.0);
+            assert_eq!(reach.cost_to(from), Some(0.0));
+            let mut farthest: f32 = 0.0;
+            for (at, cost) in reach.cells() {
+                assert_eq!(world.water_class(at.x, at.y), class, "{at} is not {class:?} (not {other:?} either)");
+                assert!(cost <= 100.0);
+                farthest = farthest.max(at.distance(from));
+            }
+            // A meter of water costs 0.5 points, so 100 points go about 200 m in open water.
+            assert!(farthest > 100.0 && farthest <= 210.0, "{class:?}: {farthest}");
+        }
+        assert!(tested > 0, "the test continent has open water");
+    }
+
+    #[test]
+    fn a_cheaper_meter_of_water_goes_farther() {
+        let world = test_support::small_continent();
+        let from = open_water(&world, WaterClass::Shallow).or_else(|| open_water(&world, WaterClass::Deep)).expect("the test continent has open water");
+        let count = |cost: f32| reach_by_water(&world, &|w| w != WaterClass::Dry, cost, from, 100.0).cells().count();
+        assert!(count(0.4) > count(0.5) && count(0.5) > count(1.0), "{} {} {}", count(0.4), count(0.5), count(1.0));
+        assert_eq!(reach_by_water(&world, &|w| w != WaterClass::Dry, 0.5, from, 0.0).cells().count(), 1, "with no points it is only where it is");
+    }
+
+    #[test]
+    fn a_ship_on_the_land_or_the_wrong_water_is_stuck_and_cannot_cross_land_to_other_water() {
+        let world = test_support::small_continent();
+        let land = spot(&world);
+        let reach = reach_by_water(&world, &|w| w == WaterClass::Shallow, 0.4, land, 100.0);
+        assert_eq!(reach.cells().count(), 1, "nothing round it is water it can sail");
     }
 
     #[test]

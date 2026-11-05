@@ -25,7 +25,7 @@ pub struct Rule {
 /// between these.
 const GROWTH_PERCENT: (f64, f64) = (1.0, 3.0);
 /// How much a city under siege shrinks by in a day, as a percent of its population: somewhere between these.
-const SIEGE_LOSS_PERCENT: (f64, f64) = (5.0, 10.0);
+pub const SIEGE_LOSS_PERCENT: (f64, f64) = (5.0, 10.0);
 
 /// The rules, in the order they run.
 pub const DAY_RULES: &[Rule] = &[
@@ -41,8 +41,17 @@ pub const DAY_RULES: &[Rule] = &[
     Rule { description: "Each woodcutter, sawmill, stonecutter or quarry that has a path, road or bridge route to a city of its country provides its wood or stone to the country each day: 100 from a woodcutter or stonecutter, and 1,000 from a sawmill or quarry.", apply: gather },
     Rule { description: "Each militia gets all of its movement points back: 200 a day.", apply: militia_rest },
     Rule {
+        description: "A militia under siege loses 5 to 10 percent of its members, each by a random amount, rounded up so that it loses at least one, and is never left with fewer than 1.",
+        apply: militia_siege,
+    },
+    Rule {
         description: "Each country pays 1 coin a day for each member of its militia, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
         apply: militia_upkeep,
+    },
+    Rule { description: "Each ship gets all of its movement points back: 200 a day.", apply: ships_rest },
+    Rule {
+        description: "Each country pays a day's upkeep for each of its ships, the oldest first: 50 coins for a small warship and 250 for a large one. A ship it can't pay for is abandoned by its crew and is gone.",
+        apply: ships_upkeep,
     },
 ];
 
@@ -89,10 +98,26 @@ fn militia_rest(day: &mut DaySave) {
     day.rest_militia();
 }
 
+/// Each militia under siege loses members (see [`DaySave::shrink_besieged_militia`]). This comes before the militia are paid for, so
+/// that a country pays only for the members that are left.
+fn militia_siege(day: &mut DaySave) {
+    day.shrink_besieged_militia(ids::random_unit);
+}
+
 /// Each country pays to keep its militia (see [`DaySave::pay_militia`]). This comes last, after the income, so that a
 /// country pays out of what it earned today.
 fn militia_upkeep(day: &mut DaySave) {
     day.pay_militia();
+}
+
+/// Each ship has all its movement points again.
+fn ships_rest(day: &mut DaySave) {
+    day.rest_ships();
+}
+
+/// Each country pays to keep its ships (see [`DaySave::pay_ships`]), after the militia.
+fn ships_upkeep(day: &mut DaySave) {
+    day.pay_ships();
 }
 
 /// Each path, road and bridge that hasn't failed already has a chance of failing: `PATH_FAILURE`, 0.1% and 0.05%. What fails is
@@ -549,6 +574,42 @@ mod tests {
     }
 
     #[test]
+    fn the_ships_get_their_points_back_and_are_paid_for_each_day_and_the_unpaid_are_abandoned() {
+        let rest_at = DAY_RULES.iter().position(|r| r.description.contains("Each ship gets all of its movement points back")).unwrap();
+        let ships_at = DAY_RULES.iter().position(|r| r.description.contains("upkeep for each of its ships")).unwrap();
+        assert!(rest_at < ships_at);
+
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let aldoria = day.countries[0].id;
+        day.add_money(aldoria, 20_000).unwrap();
+        for resource in nworld_map::world::Resource::ALL {
+            day.add_resource(aldoria, resource, 2_000).unwrap();
+        }
+        day.build_shipyard_claiming(crate::shipyard::ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
+        let yard = day.shipyards[0].id;
+        day.build_ship(yard, crate::ship::ShipKind::Small, macroquad::math::vec2(40.0, 0.0)).unwrap();
+        let id = day.ships[0].id;
+        day.move_ship(id, macroquad::math::vec2(60.0, 0.0), 150, None).unwrap();
+        let money = day.country(aldoria).unwrap().money;
+
+        // A day on: it is rested, and a day's upkeep of 50 coins is paid.
+        let mut tomorrow = day.following(day.date.next());
+        run(&mut tomorrow);
+        assert_eq!(tomorrow.ship(id).unwrap().points, 200);
+        assert_eq!(tomorrow.country(aldoria).unwrap().money, money - 50);
+        assert!(tomorrow.newsreel.iter().any(|n| matches!(n.event, Event::ShipPaid { amount: 50 })));
+
+        // With no money at all, and no cities to earn any, it is abandoned.
+        let mut broke = day.clone();
+        broke.add_money(aldoria, -money).unwrap();
+        let mut tomorrow = broke.following(broke.date.next());
+        run(&mut tomorrow);
+        assert!(tomorrow.ships.is_empty());
+        assert!(tomorrow.newsreel.iter().any(|n| matches!(n.event, Event::ShipDeserted { .. })));
+    }
+
+    #[test]
     fn the_wood_comes_after_the_failures_in_the_rules_and_a_day_with_no_gatherers_gathers_none() {
         let wood_at = DAY_RULES.iter().position(|r| r.description.contains("provides its wood or stone")).unwrap();
         let failures_at = DAY_RULES.iter().position(|r| r.description.contains("chance of failing")).unwrap();
@@ -561,9 +622,11 @@ mod tests {
     }
 
     #[test]
-    fn the_militia_are_paid_for_last_out_of_what_the_country_earned_that_day() {
+    fn the_militia_are_paid_for_after_the_income_and_before_the_ships_out_of_what_the_country_earned_that_day() {
         let paid_at = DAY_RULES.iter().position(|r| r.description.contains("member of its militia")).unwrap();
-        assert_eq!(paid_at, DAY_RULES.len() - 1);
+        let ships_at = DAY_RULES.iter().position(|r| r.description.contains("upkeep for each of its ships")).unwrap();
+        assert_eq!(ships_at, DAY_RULES.len() - 1, "the ships are paid for last");
+        assert!(paid_at < ships_at);
 
         let mut day = day();
         day.found_country("Aldoria").unwrap();

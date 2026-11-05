@@ -1,10 +1,10 @@
-//! Militia walking. A militia that is moved is moved in the day at once, and saved, but it is shown walking to where it
+//! Militia walking (and ships sailing, which is the same thing). A militia that is moved is moved in the day at once, and saved, but it is shown walking to where it
 //! is going, along the way that it was found to take, so that the move can be seen. Nothing of this is saved: a game that
 //! is opened again has every militia where it is.
 
 use macroquad::math::Vec2;
 
-use crate::ids::MilitiaId;
+use crate::ids::Guid;
 use crate::militia::Militia;
 
 /// How fast a militia walks, in meters a second, and the shortest and the longest a walk takes, in seconds: a long way
@@ -18,7 +18,7 @@ const SMOOTHING: usize = 3;
 /// One militia on its way.
 #[derive(Clone, Debug)]
 struct Walk {
-    id: MilitiaId,
+    id: Guid,
     /// The way it goes, and how long that is, in meters.
     way: Vec<Vec2>,
     length: f32,
@@ -65,7 +65,8 @@ fn smoothed(way: &[Vec2]) -> Vec<Vec2> {
 impl Walks {
     /// Starts the militia with this id walking along `way`, which starts where it is. A way with nowhere to go is no
     /// walk at all.
-    pub fn start(&mut self, id: MilitiaId, way: &[Vec2]) {
+    pub fn start(&mut self, id: impl Into<Guid>, way: &[Vec2]) {
+        let id = id.into();
         let way = smoothed(way);
         let length: f32 = way.windows(2).map(|pair| pair[0].distance(pair[1])).sum();
         self.walks.retain(|walk| walk.id != id);
@@ -83,13 +84,21 @@ impl Walks {
     }
 
     /// Whether the militia with this id is walking.
-    pub fn is_walking(&self, id: MilitiaId) -> bool {
+    pub fn is_walking(&self, id: impl Into<Guid>) -> bool {
+        let id = id.into();
         self.walks.iter().any(|walk| walk.id == id)
     }
 
     /// Where to show `militia`: part of the way along its walk if it is walking, and otherwise where it is.
     pub fn position(&self, militia: &Militia) -> Vec2 {
-        self.walks.iter().find(|walk| walk.id == militia.id).map_or(Vec2::new(militia.x, militia.z), Walk::at)
+        self.position_of(militia.id, Vec2::new(militia.x, militia.z))
+    }
+
+    /// Where to show the unit with this id, which the day has at `resting`: part of the way along its walk if it is walking, and
+    /// otherwise there.
+    pub fn position_of(&self, id: impl Into<Guid>, resting: Vec2) -> Vec2 {
+        let id = id.into();
+        self.walks.iter().find(|walk| walk.id == id).map_or(resting, Walk::at)
     }
 
 }
@@ -98,11 +107,11 @@ impl Walks {
 mod tests {
     use super::*;
     use crate::calendar::Date;
-    use crate::ids::{CityId, CountryId};
+    use crate::ids::{CityId, CountryId, MilitiaId, ShipId};
     use macroquad::math::vec2;
 
     fn militia(at: Vec2) -> Militia {
-        Militia { id: MilitiaId::new(), name: String::new(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members: 10, x: at.x, z: at.y, points: 0 }
+        Militia { id: MilitiaId::new(), name: String::new(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members: 10, x: at.x, z: at.y, points: 0, under_siege: false }
     }
 
     fn straight() -> Vec<Vec2> {
@@ -183,5 +192,20 @@ mod tests {
         assert_eq!(smooth.len(), stairs.len());
         let length = |way: &[Vec2]| way.windows(2).map(|p| p[0].distance(p[1])).sum::<f32>();
         assert!(length(&smooth) < length(&stairs), "it is shorter without the corners");
+    }
+
+    #[test]
+    fn a_ship_walks_like_a_militia_under_its_own_id() {
+        let ship = ShipId::new();
+        let mut walks = Walks::default();
+        assert!(!walks.is_walking(ship));
+        walks.start(ship, &[vec2(0.0, 0.0), vec2(100.0, 0.0)]);
+        assert!(walks.is_walking(ship));
+        walks.update(0.1);
+        let at = walks.position_of(ship, vec2(100.0, 0.0));
+        assert!(at.x < 100.0, "it is on its way, not yet where the day says: {at}");
+        assert_eq!(walks.position_of(ShipId::new(), vec2(7.0, 8.0)), vec2(7.0, 8.0), "one that isn't walking is where it is");
+        walks.update(10.0);
+        assert!(!walks.is_walking(ship));
     }
 }

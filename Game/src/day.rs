@@ -26,6 +26,7 @@ use crate::saves::DAY_VERSION;
 use crate::title_type::TitleType;
 use crate::gatherer::Gatherer;
 use crate::militia::Militia;
+use crate::ship::Ship;
 use crate::shipyard::Shipyard;
 
 mod cities;
@@ -34,6 +35,7 @@ mod deleting;
 mod militias;
 mod people;
 mod regions;
+mod ships;
 
 /// How much a country has and owns, as [`DaySave::country_totals`] counts it.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -120,6 +122,9 @@ pub struct DaySave {
     /// The shipyards that have been built, each owned by a country. Carried forward from day to day.
     #[serde(default)]
     pub shipyards: Vec<Shipyard>,
+    /// The ships that have been built, each owned by a country. Carried forward from day to day.
+    #[serde(default)]
+    pub ships: Vec<Ship>,
     /// What happened today. Not carried forward.
     #[serde(default)]
     pub newsreel: Vec<News>,
@@ -127,7 +132,7 @@ pub struct DaySave {
 
 impl DaySave {
     pub fn new(date: Date, map: &str) -> Self {
-        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), former_countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), gatherers: Vec::new(), militias: Vec::new(), shipyards: Vec::new(), newsreel: Vec::new() }
+        Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), former_countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), gatherers: Vec::new(), militias: Vec::new(), shipyards: Vec::new(), ships: Vec::new(), newsreel: Vec::new() }
     }
 
     /// The save of the day after this one, as it starts: with everything that carries forward, and

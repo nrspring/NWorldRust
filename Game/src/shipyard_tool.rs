@@ -169,7 +169,9 @@ impl ShipyardTool {
 /// What there is to know of `shipyard`, next to the mouse: whose it is and the region it stands in.
 pub fn tooltip(style: &Style, day: &DaySave, shipyard: &Shipyard) {
     let region = shipyard.region.map_or_else(|| "None".to_owned(), |region| day.region_name(region).map_or_else(|| format!("Region {}", region & 0x3FFF), str::to_owned));
-    let rows = [("Country", day.country_name(shipyard.country).to_owned()), ("Region", region)];
+    let rest = shipyard.rest_left(day.date);
+    let ships = if rest == 0 { "Ready to build".to_owned() } else { format!("Resting for {}", crate::ship::days_text(rest)) };
+    let rows = [("Country", day.country_name(shipyard.country).to_owned()), ("Region", region), ("Ships", ships)];
     let label_w = rows.iter().map(|(label, _)| style.measure(label, 13, Weight::Regular).width).fold(0.0, f32::max);
     let value_w = rows.iter().map(|(_, value)| style.measure(value, 14, Weight::Semibold).width).fold(0.0, f32::max);
     let title = shipyard.kind.label();

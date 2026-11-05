@@ -1,12 +1,15 @@
-//! The shipyard popup, opened by clicking a shipyard: what there is to know of it, and a button to upgrade it to the next size. A
-//! shipyard belongs to whoever owns the region it stands in, so there is no changing its country here.
+//! The shipyard popup, opened by clicking a shipyard: what there is to know of it, a button to upgrade it to the next size, and a button
+//! for each size of warship it can build, with what the ship costs and how long the shipyard has to rest after. A shipyard belongs to
+//! whoever owns the region it stands in, so there is no changing its country here.
 
 use macroquad::prelude::*;
+use nworld_map::world::World;
 use nworld_view::style::{self, Style, Weight};
 
 use crate::day::DaySave;
 use crate::ids::ShipyardId;
 use crate::newsreel::cost_text;
+use crate::ship::{self, days_text, ShipKind};
 use crate::shipyard::upgrade_full_cost;
 
 const CARD_WIDTH: f32 = 380.0;
@@ -17,6 +20,10 @@ const BUTTON_HEIGHT: f32 = 40.0;
 const ROWS_TOP: f32 = 84.0;
 /// The room for upgrading: the reason it can't be done or what it costs, and the button.
 const UPGRADE_HEIGHT: f32 = 12.0 + 34.0 + 6.0 + BUTTON_HEIGHT;
+/// The room for building a ship: the reason it can't be done or what it costs, and the button.
+const SHIP_HEIGHT: f32 = 12.0 + 34.0 + 6.0 + BUTTON_HEIGHT;
+/// How many rows of information there are.
+const ROW_COUNT: usize = 4;
 /// How long the popup takes to appear, in seconds.
 const FADE_IN: f64 = 0.22;
 
@@ -25,6 +32,8 @@ const FADE_IN: f64 = 0.22;
 pub enum Change {
     /// The shipyard is upgraded to the next size.
     Upgrade(ShipyardId),
+    /// The shipyard builds a ship of this size, which floats at this place.
+    Build { yard: ShipyardId, kind: ShipKind, berth: Vec2 },
 }
 
 impl Change {
@@ -32,6 +41,7 @@ impl Change {
     pub fn apply(&self, day: &mut DaySave) -> Result<(), String> {
         match self {
             Self::Upgrade(id) => day.upgrade_shipyard(*id),
+            Self::Build { yard, kind, berth } => day.build_ship(*yard, *kind, *berth),
         }
     }
 }
@@ -67,8 +77,8 @@ impl ShipyardPopup {
     }
 
     /// Takes the mouse and Enter for this frame and draws the popup over everything. A shipyard that is not in `day` is not
-    /// shown. Returns what the player changed about the shipyard, if they did.
-    pub fn show(&mut self, style: &Style, day: &DaySave) -> Option<Change> {
+    /// shown. `world` is the water a new ship floats on. Returns what the player changed about the shipyard, if they did.
+    pub fn show(&mut self, style: &Style, day: &DaySave, world: &World) -> Option<Change> {
         let Some(yard) = self.shipyard.and_then(|id| day.shipyard(id)) else {
             self.shipyard = None;
             return None;
@@ -83,7 +93,7 @@ impl ShipyardPopup {
         draw_rectangle(0.0, 0.0, screen_w, screen_h, Color::new(0.02, 0.03, 0.05, 0.6 * ease));
 
         let error_height = if self.error.is_some() { 24.0 } else { 0.0 };
-        let height = ROWS_TOP + ROW_HEIGHT * 3.0 + UPGRADE_HEIGHT + 16.0 + error_height + BUTTON_HEIGHT + PADDING;
+        let height = ROWS_TOP + ROW_HEIGHT * ROW_COUNT as f32 + UPGRADE_HEIGHT + SHIP_HEIGHT * ShipKind::ALL.len() as f32 + 16.0 + error_height + BUTTON_HEIGHT + PADDING;
         let card = Rect::new((screen_w - CARD_WIDTH) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, CARD_WIDTH, height);
         style::card(card, 18.0, style::PANEL);
 
@@ -98,8 +108,8 @@ impl ShipyardPopup {
         // What there is to know, a row each.
         let inner_x = card.x + PADDING;
         let inner_w = card.w - PADDING * 2.0;
-        let rows: Vec<Rect> = (0..3).map(|k| Rect::new(inner_x, card.y + ROWS_TOP + ROW_HEIGHT * k as f32, inner_w, ROW_HEIGHT)).collect();
-        for y in [rows[0].y, rows[1].y, rows[2].y, rows[2].bottom()] {
+        let rows: Vec<Rect> = (0..ROW_COUNT).map(|k| Rect::new(inner_x, card.y + ROWS_TOP + ROW_HEIGHT * k as f32, inner_w, ROW_HEIGHT)).collect();
+        for y in [rows[0].y, rows[1].y, rows[2].y, rows[3].y, rows[3].bottom()] {
             draw_line(inner_x, y, inner_x + inner_w, y, 1.0, style::BORDER);
         }
         let country = day.country(yard.country);
@@ -116,12 +126,15 @@ impl ShipyardPopup {
         value_row("Country", country.map_or("an unknown country", |c| c.name.as_str()), rows[0], country.map(|c| c.color.color()));
         value_row("Region", &region, rows[1], None);
         value_row("Size", &size, rows[2], None);
+        let rest = yard.rest_left(day.date);
+        let ships = if rest == 0 { "Ready to build".to_owned() } else { format!("Resting for {}", days_text(rest)) };
+        value_row("Ships", &ships, rows[3], None);
 
         // Upgrading it: what it costs, or why it can't be done, and the button. A large shipyard is as big as it gets.
         let problem = day.upgrade_problem(yard.id);
         let next = yard.kind.upgrade();
         let upgradable = next.is_some() && problem.is_none();
-        let note_rect = Rect::new(inner_x, rows[2].bottom() + 12.0, inner_w, 34.0);
+        let note_rect = Rect::new(inner_x, rows[3].bottom() + 12.0, inner_w, 34.0);
         let button = Rect::new(inner_x, note_rect.bottom() + 6.0, inner_w, BUTTON_HEIGHT);
         let note = match (&problem, next) {
             (_, None) => "It is the largest size.".to_owned(),
@@ -141,8 +154,38 @@ impl ShipyardPopup {
             change = Some(Change::Upgrade(yard.id));
         }
 
+        // Building a ship of each size: what it costs and how long the shipyard rests after, or why it can't be done, and the button.
+        let mut bottom = button.bottom();
+        for kind in ShipKind::ALL {
+            let note_rect = Rect::new(inner_x, bottom + 12.0, inner_w, 34.0);
+            let button = Rect::new(inner_x, note_rect.bottom() + 6.0, inner_w, BUTTON_HEIGHT);
+            bottom = button.bottom();
+            let problem = day.ship_problem(yard.id, kind);
+            let note = match &problem {
+                Some(problem) => problem.clone(),
+                None => format!("Costs {}. Rests {} after.", cost_text(&kind.full_cost()), days_text(yard.kind.break_days(kind).unwrap_or(0))),
+            };
+            for (n, line) in crate::hud::wrap(style, &note, 12, inner_w).iter().take(2).enumerate() {
+                style.text_mid(line, note_rect.x, note_rect.y + 9.0 + n as f32 * 15.0, 12, Weight::Regular, style::TEXT_MUTED);
+            }
+            let buildable = problem.is_none();
+            let over = button.contains(mouse) && buildable;
+            style::rounded_rect(button, 8.0, if !buildable { style::HOVER } else if over { style::ACCENT_HOVER } else { style::ACCENT });
+            style.text_centered(&format!("Build {}", kind.a_noun()), button, 14, Weight::Semibold, if buildable { WHITE } else { style::TEXT_MUTED });
+            if clicked && over {
+                let taken = day.berths_taken();
+                match ship::berth_near(world, kind, vec2(yard.x, yard.z), &taken) {
+                    Some(berth) => {
+                        self.error = None;
+                        change = Some(Change::Build { yard: yard.id, kind, berth });
+                    }
+                    None => self.error = Some(format!("There is no {} near this shipyard for {} to float on.", kind.waters_text(), kind.a_noun())),
+                }
+            }
+        }
+
         if let Some(error) = &self.error {
-            style.text(error, inner_x, button.bottom() + 20.0, 12, Weight::Regular, style::ERROR);
+            style.text(error, inner_x, bottom + 20.0, 12, Weight::Regular, style::ERROR);
         }
 
         // The button that closes it.
@@ -194,6 +237,18 @@ mod tests {
         let mut popup = ShipyardPopup { shipyard: Some(ShipyardId::new()), ..ShipyardPopup::default() };
         popup.fail("no".to_owned());
         assert_eq!(popup.error.as_deref(), Some("no"));
+    }
+
+    #[test]
+    fn building_a_ship_does_what_it_says_to_the_day() {
+        let mut day = day();
+        let yard = day.shipyards[0].id;
+        Change::Build { yard, kind: ShipKind::Small, berth: vec2(30.0, 0.0) }.apply(&mut day).unwrap();
+        assert_eq!(day.ships.len(), 1);
+        assert!(day.shipyard(yard).unwrap().rest_left(day.date) > 0);
+        assert!(Change::Build { yard, kind: ShipKind::Small, berth: vec2(60.0, 0.0) }.apply(&mut day).is_err(), "it is resting");
+        assert!(Change::Build { yard, kind: ShipKind::Large, berth: vec2(60.0, 0.0) }.apply(&mut day).is_err(), "a small shipyard can't build a large ship");
+        assert_eq!(day.ships.len(), 1);
     }
 
     #[test]

@@ -1,17 +1,22 @@
 //! Shipyards: where a country will build ships. A shipyard is a small one or a large one, belongs to whichever country owns the
 //! region it stands in, which is the country that built it, and which has to own the region to build there; it pays for it in
 //! coins, stone, wood and iron. It can't be given to another country: only the region changes hands, and the shipyard goes with
-//! it. It has to stand on a coast: dry land with the sea within a short way of it. Only a small one can be built; a small one can then be upgraded to a large one, for a price. (There are no ships
-//! to build yet.)
+//! it. It has to stand on a coast: dry land with the sea within a short way of it. Only a small one can be built; a small one can then be upgraded to a large one, for a price.
+//!
+//! A shipyard builds warships (see [`crate::ship`]). A small shipyard can only build small ones, and has to rest for 5 days after
+//! each; a large shipyard can build a small one, and rest for 3 days, or a large one, and rest for 10. While it rests it can build
+//! nothing.
 
 use macroquad::prelude::*;
 use nworld_map::world::{Resource, WaterClass, World};
 use serde::{Deserialize, Serialize};
 
+use crate::calendar::Date;
 use crate::day::DaySave;
 use crate::format;
 use crate::ids::{CountryId, ShipyardId};
 use crate::newsreel::{Cost, Event, News};
+use crate::ship::ShipKind;
 use crate::transfer::Asset;
 
 /// How far from a shipyard the sea can be for it to count as on the coast, in meters.
@@ -42,6 +47,22 @@ impl ShipyardKind {
     pub const ALL: [ShipyardKind; 2] = [ShipyardKind::Small, ShipyardKind::Large];
     /// The kinds that can be built, which is all in the Buildings menu: only a small shipyard, which can then be upgraded.
     pub const BUILDABLE: [ShipyardKind; 1] = [ShipyardKind::Small];
+
+    /// Whether a shipyard of this size can build a ship of this size: a small shipyard only small ones, a large one either.
+    pub fn can_build(self, ship: ShipKind) -> bool {
+        self.break_days(ship).is_some()
+    }
+
+    /// How many days a shipyard of this size has to rest after building a ship of this size, or `None` if it can't build one: 5 days
+    /// for a small one building a small ship, 3 for a large one building a small ship, and 10 for a large one building a large ship.
+    pub fn break_days(self, ship: ShipKind) -> Option<u32> {
+        match (self, ship) {
+            (Self::Small, ShipKind::Small) => Some(5),
+            (Self::Large, ShipKind::Small) => Some(3),
+            (Self::Large, ShipKind::Large) => Some(10),
+            (Self::Small, ShipKind::Large) => None,
+        }
+    }
 
     /// What it can be upgraded to, if it can be.
     pub fn upgrade(self) -> Option<ShipyardKind> {
@@ -133,6 +154,17 @@ pub struct Shipyard {
     /// The number of the map region it stands in, if the map has regions.
     #[serde(default)]
     pub region: Option<u16>,
+    /// The first day it can build a ship again, if it is resting after building one. A shipyard that has never built a ship, or whose
+    /// rest is over, can build one now. (A shipyard saved before there were ships has none.)
+    #[serde(default)]
+    pub ready_on: Option<Date>,
+}
+
+impl Shipyard {
+    /// How many days it still has to rest on `today`: 0 if it can build a ship now.
+    pub fn rest_left(&self, today: Date) -> u32 {
+        self.ready_on.map_or(0, |ready| today.days_until(ready))
+    }
 }
 
 /// Whether there is sea within [`COAST_REACH`] of (`x`, `z`): shallow or deep water, which rivers and lakes are not.
@@ -172,7 +204,7 @@ impl DaySave {
 
     /// Why the country being played can't pay `coins` and `materials` for `what` ("a small shipyard"), or `None` if it can:
     /// the coins are asked for first, and then each resource in turn.
-    fn payment_problem(&self, what: &str, coins: i64, materials: &[(Resource, u64)]) -> Option<String> {
+    pub(crate) fn payment_problem(&self, what: &str, coins: i64, materials: &[(Resource, u64)]) -> Option<String> {
         let country = self.player_country()?;
         if country.money < coins {
             return Some(format!("Not enough coin: {what} costs {} coins, and {} has {}.", format::money(coins), country.name, format::money(country.money)));
@@ -236,7 +268,7 @@ impl DaySave {
             self.add_resource(country, *resource, -(*needed as i64))?;
         }
         let id = ShipyardId::new();
-        self.shipyards.push(Shipyard { id, kind, country, x, z, region });
+        self.shipyards.push(Shipyard { id, kind, country, x, z, region, ready_on: None });
         self.newsreel.push(News::about(id, Event::ShipyardBuilt { kind, country, region, cost: kind.full_cost() }));
         Ok(())
     }

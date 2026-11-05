@@ -14,6 +14,9 @@ mod costs;
 mod gatherer;
 mod gatherer_popup;
 mod gatherer_tool;
+mod ship;
+mod ship_popup;
+mod ship_view;
 mod shipyard;
 mod shipyard_popup;
 mod shipyard_tool;
@@ -101,6 +104,7 @@ use militia_popup::MilitiaPopup;
 use movement_view::{MovementView, PanelAction};
 use walk::Walks;
 use gatherer_tool::GathererTool;
+use ship_popup::ShipPopup;
 use shipyard::ShipyardKind;
 use shipyard_popup::ShipyardPopup;
 use shipyard_tool::ShipyardTool;
@@ -305,6 +309,11 @@ async fn main() {
     let mut naming_militia: Option<(ids::MilitiaId, Popup)> = None;
     // The militia that was clicked, which shows where it can go, and why the last move couldn't be made.
     let mut selected_militia: Option<ids::MilitiaId> = None;
+    // The popup for the ship that was clicked, the popup for a new name for a ship, and the ship that was clicked, which shows where it
+    // can go. (Only one militia or ship is selected at a time.)
+    let mut ship_popup = ShipPopup::default();
+    let mut naming_ship: Option<(ids::ShipId, Popup)> = None;
+    let mut selected_ship: Option<ids::ShipId> = None;
     let mut movement_view = MovementView::default();
     let mut move_error: Option<String> = None;
     // The militia that are walking to where they were moved, which is only for showing.
@@ -338,6 +347,8 @@ async fn main() {
                 shipyard_popup.escape();
             } else if militia_popup.is_open() {
                 militia_popup.escape();
+            } else if ship_popup.is_open() {
+                ship_popup.escape();
             } else if country_menu.is_open() {
                 country_menu.escape();
             } else if options_ui.is_open() || overlays_ui.is_open() || toolbar.is_open() {
@@ -356,10 +367,14 @@ async fn main() {
                 naming_place = None;
             } else if naming_militia.is_some() {
                 naming_militia = None;
+            } else if naming_ship.is_some() {
+                naming_ship = None;
             } else if settling_from.is_some() {
                 settling_from = None;
             } else if selected_militia.is_some() {
                 selected_militia = None;
+            } else if selected_ship.is_some() {
+                selected_ship = None;
             } else if noting.is_some() {
                 noting = None;
             } else if path_tool.is_active() {
@@ -393,14 +408,14 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || shipyard_popup.is_open() || militia_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || naming_ship.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || shipyard_popup.is_open() || militia_popup.is_open() || ship_popup.is_open() || advance_popup.is_open();
         if modal {
             toolbar.close();
         }
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || (selected_militia.is_some() && movement_view::panel_rect().contains(mouse));
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || ((selected_militia.is_some() || selected_ship.is_some()) && movement_view::panel_rect().contains(mouse));
         if modal {
             camera.skip_frame();
         } else {
@@ -475,8 +490,17 @@ async fn main() {
         if selected_militia.is_some_and(|id| day.militia(id).is_none()) {
             selected_militia = None;
         }
-        let at_rest = selected_militia.filter(|id| !walks.is_walking(*id));
-        movement_view.update(&world, &day, &paths, &roads, at_rest);
+        ship_view::draw(&world, &day, &walks, time, eye.position);
+        if selected_ship.is_some_and(|id| day.ship(id).is_none()) {
+            selected_ship = None;
+        }
+        // The overlay is for the militia or the ship that is selected, whichever it is, once it has got where it is going.
+        if selected_ship.is_some() {
+            movement_view.update_ship(&world, &day, selected_ship.filter(|id| !walks.is_walking(*id)));
+        } else {
+            let at_rest = selected_militia.filter(|id| !walks.is_walking(*id));
+            movement_view.update(&world, &day, &paths, &roads, at_rest);
+        }
         movement_view.draw();
         if let Some(at) = site {
             cities.draw_site(&world, at, problem.is_none(), &eye);
@@ -493,15 +517,18 @@ async fn main() {
         // The militia under the mouse, if there is one and no city or gatherer is in front of it, which the tooltip tells about.
         let militia_hover = if modal || over_interface || tool_on || hovered.is_some() || gatherer_hover.is_some() || shipyard_hover.is_some() { None } else { militia_view::under_ray(mouse_ray(&eye, mouse), &world, &day.militias, &walks) };
 
+        // The ship under the mouse, if there is one and nothing else is in front of it, which the tooltip tells about.
+        let ship_hover = if modal || over_interface || tool_on || hovered.is_some() || gatherer_hover.is_some() || shipyard_hover.is_some() || militia_hover.is_some() { None } else { ship_view::under_ray(mouse_ray(&eye, mouse), &world, &day.ships, &walks) };
+
         // The label of a place under the mouse while the named places are showing.
-        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
+        let place_hover = if options.show_named_places && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && ship_hover.is_none() && !placing && !tool_on {
             region_labels::place_under(&style, &day, &world, &eye, mouse)
         } else {
             None
         };
         // The river or lake under the mouse while the named places are showing, with a little give so that a thin river can be
         // hit when the camera is far away.
-        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
+        let water_hover = if options.show_named_places && place_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && ship_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 1.5, 40.0);
             ground_at().and_then(|at| water_bodies.near(at.x, at.y, reach))
         } else {
@@ -627,10 +654,51 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 move_error = None;
+                selected_ship = None;
                 if selected_militia == Some(id) {
                     militia_popup.open(id);
                 } else {
                     selected_militia = Some(id);
+                }
+            } else if let Some(id) = ship_hover {
+                // A click on a ship shows where it can sail, and a second click on it opens its popup.
+                options_ui.close();
+                overlays_ui.close();
+                move_error = None;
+                selected_militia = None;
+                if selected_ship == Some(id) {
+                    ship_popup.open(id);
+                } else {
+                    selected_ship = Some(id);
+                }
+            } else if let Some(id) = selected_ship {
+                // With a ship selected, a click on a tinted spot of water sails it there, and any other click puts it away. While it
+                // is sailing there is nothing tinted, and a click is left alone.
+                options_ui.close();
+                overlays_ui.close();
+                let target = ground_at().and_then(|at| {
+                    let reach = movement_view.reach()?;
+                    Some((reach.snap(at), reach.cost_to(at)?.ceil() as u32, reach.route_to(at)?))
+                });
+                match target {
+                    _ if walks.is_walking(id) => {}
+                    Some((to, cost, way)) if cost > 0 => {
+                        // Only keep the move if it is saved too.
+                        let mut updated = day.clone();
+                        let region = world.region_at(to.x, to.y).map(|r| r.raw());
+                        match updated.move_ship(id, to, cost, region).and_then(|()| autosave.save_now(&saves, &updated)) {
+                            Ok(()) => {
+                                day = updated;
+                                move_error = None;
+                                walks.start(id, &way);
+                            }
+                            Err(message) => move_error = Some(message),
+                        }
+                    }
+                    _ => {
+                        selected_ship = None;
+                        move_error = None;
+                    }
                 }
             } else if let Some(id) = selected_militia {
                 // With a militia selected, a click on a tinted spot moves it there, and any other click puts it away. While
@@ -695,13 +763,13 @@ async fn main() {
 
         // The region under the mouse, for a note about it while the region names are showing, unless it is a river or
         // lake that is under the mouse and the named places are showing.
-        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
+        let region_hover = if options.show_region_names && water_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && ship_hover.is_none() && !placing && !tool_on {
             ground_at().and_then(|at| world.region_at(at.x, at.y))
         } else {
             None
         };
         // The resource under the mouse, for a note about what it is, when nothing else has the mouse.
-        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && !placing && !tool_on {
+        let resource_hover = if water_hover.is_none() && region_hover.is_none() && !modal && !over_interface && hovered.is_none() && gatherer_hover.is_none() && shipyard_hover.is_none() && militia_hover.is_none() && ship_hover.is_none() && !placing && !tool_on {
             let reach = (camera.distance() * 0.01).clamp(CELL_SIZE * 2.5, 40.0);
             ground_at().and_then(|at| resource_hover::deposit_near(&world, at.x, at.y, reach))
         } else {
@@ -786,10 +854,21 @@ async fn main() {
             }
             if let Some(militia) = selected_militia.and_then(|id| day.militia(id)) {
                 let id = militia.id;
-                match movement_view::panel(&style, militia, move_error.as_deref()) {
+                match movement_view::panel(&style, militia.title(), militia.points, move_error.as_deref()) {
                     Some(PanelAction::Details) => militia_popup.open(id),
                     Some(PanelAction::Deselect) => {
                         selected_militia = None;
+                        move_error = None;
+                    }
+                    None => {}
+                }
+            }
+            if let Some(ship) = selected_ship.and_then(|id| day.ship(id)) {
+                let id = ship.id;
+                match movement_view::panel(&style, ship.title(), ship.points, move_error.as_deref()) {
+                    Some(PanelAction::Details) => ship_popup.open(id),
+                    Some(PanelAction::Deselect) => {
+                        selected_ship = None;
                         move_error = None;
                     }
                     None => {}
@@ -803,6 +882,8 @@ async fn main() {
                 shipyard_tool::tooltip(&style, &day, shipyard);
             } else if let Some(militia) = militia_hover.and_then(|id| day.militia(id)) {
                 militia_view::tooltip(&style, &day, militia);
+            } else if let Some(ship) = ship_hover.and_then(|id| day.ship(id)) {
+                ship_view::tooltip(&style, &day, ship);
             } else if let Some(id) = water_hover {
                 if water_bodies.body(id).is_some_and(|b| b.lake) {
                     hud::river_tooltip(&style, day.lake_name(id.0), "lake");
@@ -980,7 +1061,7 @@ async fn main() {
             settling_from = Some(from);
         }
 
-        if let Some(change) = shipyard_popup.show(&style, &day) {
+        if let Some(change) = shipyard_popup.show(&style, &day, &world) {
             // Only keep the change if it is saved too.
             let mut updated = day.clone();
             match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
@@ -997,7 +1078,7 @@ async fn main() {
             let mut updated = day.clone();
             let marching = change.militia().into_iter().find(|id| walks.is_walking(*id));
             let result = match marching {
-                Some(id) if !matches!(change, militia_popup::Change::Country(..)) => Err(format!("{} is still marching.", day.militia(id).map_or("A militia", |m| m.title()))),
+                Some(id) if !matches!(change, militia_popup::Change::Country(..) | militia_popup::Change::Siege(..)) => Err(format!("{} is still marching.", day.militia(id).map_or("A militia", |m| m.title()))),
                 _ => change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)),
             };
             match result {
@@ -1010,6 +1091,50 @@ async fn main() {
                 }
                 Err(message) => militia_popup.fail(message),
             }
+        }
+
+        if let Some(change) = ship_popup.show(&style, &day) {
+            // Only keep the change if it is saved too. A ship that is still sailing to where it was moved can't be scrapped until it
+            // has got there.
+            let mut updated = day.clone();
+            let sailing = walks.is_walking(change.ship()) && !matches!(change, ship_popup::Change::Country(..));
+            let result = if sailing {
+                Err(format!("{} is still sailing.", day.ship(change.ship()).map_or("A ship", |s| s.title())))
+            } else {
+                change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated))
+            };
+            match result {
+                Ok(()) => {
+                    if selected_ship.is_some_and(|id| updated.ship(id).is_none()) {
+                        selected_ship = None;
+                    }
+                    day = updated;
+                }
+                Err(message) => ship_popup.fail(message),
+            }
+        }
+
+        if let Some(id) = ship_popup.take_rename() {
+            if let Some(ship) = day.ship(id) {
+                naming_ship = Some((id, Popup::ship(ship.title())));
+            }
+        }
+        let mut ship_named = false;
+        if let Some((id, popup)) = naming_ship.as_mut() {
+            if let Some(typed) = popup.show(&style) {
+                // Only keep the name if it is saved too.
+                let mut updated = day.clone();
+                match updated.rename_ship(*id, &typed[0]).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        ship_named = true;
+                    }
+                    Err(message) => popup.fail(message),
+                }
+            }
+        }
+        if ship_named {
+            naming_ship = None;
         }
 
         if let Some(id) = militia_popup.take_rename() {

@@ -144,12 +144,23 @@ id_type!(
     ShipyardId
 );
 id_type!(
+    /// The id of a ship.
+    ShipId
+);
+id_type!(
     /// The id of a happening in the newsreel that is about no one thing with an id of its own, such as a stretch of
     /// road failing, a river being named or a day beginning.
     EventId
 );
 
 impl MilitiaId {
+    /// The first part of the id, up to its first hyphen: eight hexadecimal digits, like "3f9a2b1c".
+    pub fn short(self) -> String {
+        self.0.hyphenated().to_string().chars().take(8).collect()
+    }
+}
+
+impl ShipId {
     /// The first part of the id, up to its first hyphen: eight hexadecimal digits, like "3f9a2b1c".
     pub fn short(self) -> String {
         self.0.hyphenated().to_string().chars().take(8).collect()

@@ -8,7 +8,7 @@ use crate::country::FormerCountry;
 
 impl DaySave {
     /// Why the country with this id can't be deleted, or `None` if it can: it can't own anything, which is cities,
-    /// gatherers of any kind, shipyards, and regions that it owns with no city of its in them. Its people don't count.
+    /// gatherers of any kind, militia, ships, shipyards, and regions that it owns with no city of its in them. Its people don't count.
     pub fn delete_problem(&self, id: CountryId) -> Option<String> {
         let country = self.country(id)?;
         let cities = self.cities.iter().filter(|c| c.country == id).count();
@@ -20,6 +20,9 @@ impl DaySave {
             counts.push((self.gatherers.iter().filter(|g| g.country == id && g.kind == kind).count(), kind.noun(), kind.plural().to_owned()));
         }
         counts.push((self.militias.iter().filter(|m| m.country == id).count(), "militia", "militia".to_owned()));
+        for kind in crate::ship::ShipKind::ALL {
+            counts.push((self.ships.iter().filter(|s| s.country == id && s.kind == kind).count(), kind.noun(), format!("{}s", kind.noun())));
+        }
         for kind in crate::shipyard::ShipyardKind::ALL {
             counts.push((self.shipyards.iter().filter(|s| s.country == id && s.kind == kind).count(), kind.noun(), format!("{}s", kind.noun())));
         }

@@ -13,6 +13,7 @@ use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::format::{capitalized, money, thousands, thousands_u64};
 use crate::gatherer::GathererKind;
+use crate::ship::ShipKind;
 use crate::shipyard::ShipyardKind;
 use crate::ids::{CityId, CountryId, EventId, GathererId, Guid, NoteId, PersonId};
 use crate::rgb::Rgb;
@@ -278,6 +279,15 @@ pub enum Event {
         #[serde(default)]
         region: Option<u16>,
     },
+    /// The subject is a militia called `name` of `members` people, and it was put under siege or the siege was lifted.
+    MilitiaSiegeChanged {
+        #[serde(default)]
+        name: String,
+        under_siege: bool,
+        members: u32,
+    },
+    /// The subject is a militia called `name` under siege, which lost members and has `to` left of the `from` it had.
+    MilitiaShrank { name: String, from: u32, to: u32 },
     /// The subject is a militia called `name`, which the militia called `absorbed` joined, making `members` of them.
     MilitiaMerged { name: String, absorbed: String, members: u32 },
     /// The subject is a militia called `name`, which split `members` of its people off into the new militia called
@@ -313,6 +323,41 @@ pub enum Event {
         #[serde(default)]
         region: Option<u16>,
     },
+    /// The subject is a ship of `kind` called `name`, which the country `country` built at a shipyard in the region numbered `region`
+    /// if the map has regions, for `cost`.
+    ShipBuilt {
+        #[serde(default)]
+        name: String,
+        kind: ShipKind,
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+        cost: Vec<Cost>,
+    },
+    /// The subject is a country, and it paid this many coins to keep its ships for a day.
+    ShipPaid { amount: u64 },
+    /// The subject is a ship called `name` of the country `country`, whose crew deserted because the country couldn't pay them. The
+    /// ship is abandoned, and is gone.
+    ShipDeserted {
+        #[serde(default)]
+        name: String,
+        country: CountryId,
+    },
+    /// The subject is a ship, and it went from the country `from` to the country `to`.
+    ShipTransferred { from: CountryId, to: CountryId },
+    /// The subject is a ship, which was called `from` and is called `to`.
+    ShipRenamed { from: String, to: String },
+    /// The subject is a ship called `name`, and it sailed, which took `points` of its movement points, to somewhere in the map region
+    /// numbered `region`, if the map has regions.
+    ShipMoved {
+        #[serde(default)]
+        name: String,
+        points: u32,
+        #[serde(default)]
+        region: Option<u16>,
+    },
+    /// The subject is a ship called `name`, which was scrapped. It is gone, and what it cost is not given back.
+    ShipScrapped { name: String },
     /// The subject is the note itself, which the player wrote, and this is what it says.
     Note { text: String },
 }
@@ -556,6 +601,15 @@ impl News {
                     None => format!("{name} marches, spending {spent}"),
                 }
             }
+            Event::MilitiaSiegeChanged { ref name, under_siege, members } => {
+                let name = if name.is_empty() { "A militia" } else { name };
+                if under_siege {
+                    format!("{name}, a militia of {}, is put under siege", thousands(members))
+                } else {
+                    format!("The siege of {name}, a militia of {}, is lifted", thousands(members))
+                }
+            }
+            Event::MilitiaShrank { ref name, from, to } => format!("{name}, under siege, loses {} members and falls to {}", thousands(from.saturating_sub(to)), thousands(to)),
             Event::MilitiaMerged { ref name, ref absorbed, members } => format!("{absorbed} joins {name}, making {} members", thousands(members)),
             Event::MilitiaSplit { ref name, ref new_name, members, remaining } => {
                 format!("{name} splits off {} members as {new_name}, leaving {}", thousands(members), thousands(remaining))
@@ -573,6 +627,30 @@ impl News {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
                 format!("{}'s {}{place} is destroyed", day.country_name(country), kind.noun())
             }
+            Event::ShipBuilt { ref name, kind, country, region, ref cost } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let name = if name.is_empty() { kind.a_noun() } else { name.clone() };
+                format!("{} builds {name}{place}{}", day.country_name(country), for_cost(cost))
+            }
+            Event::ShipPaid { amount } => format!("{} pays {} to keep its ships", day.country_name(CountryId::from(self.subject)), amount_text(Asset::Coins, amount)),
+            Event::ShipDeserted { ref name, country } => {
+                let name = if name.is_empty() { format!("a ship of {}", day.country_name(country)) } else { name.clone() };
+                format!("The crew of {name} desert for want of pay, and it is abandoned")
+            }
+            Event::ShipTransferred { from, to } => {
+                let name = day.ship(crate::ids::ShipId::from(self.subject)).map_or_else(|| "A ship".to_owned(), |s| s.title().to_owned());
+                format!("{name} passes from {} to {}", day.country_name(from), day.country_name(to))
+            }
+            Event::ShipRenamed { ref from, ref to } => format!("{from} is renamed {to}"),
+            Event::ShipMoved { ref name, points, region } => {
+                let name = if name.is_empty() { "A ship" } else { name };
+                let spent = format!("{} movement {}", thousands(points), if points == 1 { "point" } else { "points" });
+                match region {
+                    Some(region) => format!("{name} sails to {}, spending {spent}", day.region_label(region)),
+                    None => format!("{name} sails, spending {spent}"),
+                }
+            }
+            Event::ShipScrapped { ref name } => format!("{name} is scrapped"),
             Event::Note { ref text } => text.clone(),
         }
     }

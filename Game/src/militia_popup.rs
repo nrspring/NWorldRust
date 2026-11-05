@@ -11,6 +11,7 @@ use crate::day::DaySave;
 use crate::format::{money, thousands};
 use crate::ids::{CountryId, MilitiaId};
 use crate::militia::{self, Militia};
+use crate::options;
 use crate::movement::DAILY_POINTS;
 
 const CARD_WIDTH: f32 = 380.0;
@@ -29,7 +30,7 @@ const FADE_IN: f64 = 0.22;
 const SPLIT_HEIGHT: f32 = 36.0 + SLIDER_HEIGHT + 6.0 + BUTTON_HEIGHT;
 const SLIDER_HEIGHT: f32 = 30.0;
 /// How many rows the information has.
-const ROW_COUNT: usize = 7;
+const ROW_COUNT: usize = 8;
 
 /// What the player changed about the militia in the popup.
 #[derive(Debug, PartialEq)]
@@ -40,6 +41,8 @@ pub enum Change {
     Merge { keep: MilitiaId, absorb: MilitiaId, regions: (Option<u16>, Option<u16>) },
     /// This many members of the militia split off into a militia that stands at this place.
     Split { id: MilitiaId, members: u32, at: Vec2 },
+    /// The militia is now under siege (or not).
+    Siege(MilitiaId, bool),
     /// The militia is disbanded.
     Disband(MilitiaId),
 }
@@ -51,6 +54,7 @@ impl Change {
             Self::Country(militia, country) => day.set_militia_country(*militia, *country),
             Self::Merge { keep, absorb, regions } => day.merge_militia(*keep, *absorb, *regions),
             Self::Split { id, members, at } => day.split_militia(*id, *members, *at),
+            Self::Siege(id, under_siege) => day.set_militia_under_siege(*id, *under_siege),
             Self::Disband(id) => day.disband_militia(*id),
         }
     }
@@ -58,7 +62,7 @@ impl Change {
     /// The militia it is about, which can't be changed while they are walking.
     pub fn militia(&self) -> Vec<MilitiaId> {
         match self {
-            Self::Country(id, _) | Self::Split { id, .. } | Self::Disband(id) => vec![*id],
+            Self::Country(id, _) | Self::Split { id, .. } | Self::Siege(id, _) | Self::Disband(id) => vec![*id],
             Self::Merge { keep, absorb, .. } => vec![*keep, *absorb],
         }
     }
@@ -168,8 +172,8 @@ impl MilitiaPopup {
         let inner_x = card.x + PADDING;
         let inner_w = card.w - PADDING * 2.0;
         let rows: Vec<Rect> = (0..ROW_COUNT).map(|k| Rect::new(inner_x, card.y + ROWS_TOP + ROW_HEIGHT * k as f32, inner_w, ROW_HEIGHT)).collect();
-        let [name_row, country_row, members_row, raised_row, upkeep_row, moves_row, combine_row] = [rows[0], rows[1], rows[2], rows[3], rows[4], rows[5], rows[6]];
-        for y in [name_row.y, country_row.y, members_row.y, raised_row.y, upkeep_row.y, moves_row.y, combine_row.y, combine_row.bottom()] {
+        let [name_row, country_row, members_row, raised_row, upkeep_row, moves_row, siege_row, combine_row] = [rows[0], rows[1], rows[2], rows[3], rows[4], rows[5], rows[6], rows[7]];
+        for y in [name_row.y, country_row.y, members_row.y, raised_row.y, upkeep_row.y, moves_row.y, siege_row.y, combine_row.y, combine_row.bottom()] {
             draw_line(inner_x, y, inner_x + inner_w, y, 1.0, style::BORDER);
         }
 
@@ -222,6 +226,13 @@ impl MilitiaPopup {
         value_row("Raised", &unit.raised.to_string(), raised_row);
         value_row("Upkeep", &format!("{} coins a day", money(militia::upkeep(unit.members))), upkeep_row);
         value_row("Movement", &format!("{} of {} points left", unit.points, DAILY_POINTS), moves_row);
+
+        // The siege switch, which is for the lists to cover while one is open. A militia under siege loses members each day.
+        let mut under_siege = unit.under_siege;
+        options::toggle(style, Rect::new(siege_row.x - 12.0, siege_row.y, siege_row.w + 24.0, siege_row.h), "Under siege", None, &mut under_siege, !listing);
+        if under_siege != unit.under_siege {
+            change = Some(Change::Siege(unit.id, under_siege));
+        }
 
         // Combining with another militia of the country that stands in the same region: a row that opens the list of them.
         let partners = day.merge_partners(unit.id, &|m| region_of(world, m));
