@@ -22,8 +22,10 @@ const FULL_BELOW: f32 = 1.15;
 const GONE_ABOVE: f32 = 1.35;
 /// How far over the top of the unit the bubble is held, as a share of the token's radius.
 const CLEARANCE: f32 = 0.15;
+/// The least a bubble shrinks to, against its full size, from far out: it shrinks as the camera goes out, as the pieces do.
+const LEAST: f32 = 0.55;
 /// The bubble's radius, the length of the tail that points down to the unit, and how thick the ring of movement points is,
-/// in pixels.
+/// in pixels, at its full size.
 const RADIUS: f32 = 9.0;
 const TAIL: f32 = 7.0;
 const RING: f32 = 3.0;
@@ -103,39 +105,45 @@ pub fn draw(world: &World, day: &DaySave, walks: &Walks, camera: &Camera3D, pitc
         if tip.x < -reach || tip.x > screen_width() + reach || tip.y < -reach || tip.y > screen_height() + reach * 2.0 {
             continue;
         }
-        draw_bubble(tip, bubble, strength);
+        let scale = pieces::screen_scale(camera.position.distance(bubble.over)).max(LEAST);
+        draw_bubble(tip, bubble, strength, scale);
     }
 }
 
-/// Draws `bubble` with the point of its tail at `tip`, on the screen, `strength` strong.
-fn draw_bubble(tip: Vec2, bubble: &Bubble, strength: f32) {
+/// Draws `bubble` with the point of its tail at `tip`, on the screen, `strength` strong and `scale` times its full size.
+fn draw_bubble(tip: Vec2, bubble: &Bubble, strength: f32, scale: f32) {
     let fade = |c: Color| Color::new(c.r, c.g, c.b, c.a * strength);
-    let middle = tip - vec2(0.0, TAIL + RADIUS);
+    let (radius, tail, ring) = (RADIUS * scale, TAIL * scale, RING * scale);
+    let middle = tip - vec2(0.0, tail + radius);
     // The tail, and a dark edge round it all, so that it shows over any ground or water.
-    let (left, right) = (middle + vec2(-RADIUS * 0.55, RADIUS * 0.6), middle + vec2(RADIUS * 0.55, RADIUS * 0.6));
+    let (left, right) = (middle + vec2(-radius * 0.55, radius * 0.6), middle + vec2(radius * 0.55, radius * 0.6));
     draw_triangle(tip + vec2(0.0, 1.5), left + vec2(-1.5, 0.0), right + vec2(1.5, 0.0), fade(TRACK));
-    draw_circle(middle.x, middle.y, RADIUS + RING + 1.0, fade(TRACK));
+    draw_circle(middle.x, middle.y, radius + ring + 1.0, fade(TRACK));
     draw_triangle(tip, left, right, fade(WHITE));
     // The ring of the movement points left, going round from the top as a clock does.
     if bubble.moves > 0.0 {
-        draw_arc(middle.x, middle.y, 40, RADIUS, -90.0, RING, 360.0 * bubble.moves, fade(MOVES));
+        draw_arc(middle.x, middle.y, 40, radius, -90.0, ring, 360.0 * bubble.moves, fade(MOVES));
     }
-    draw_circle(middle.x, middle.y, RADIUS, fade(WHITE));
-    draw_circle(middle.x, middle.y, RADIUS - 1.5, fade(bubble.country));
+    draw_circle(middle.x, middle.y, radius, fade(WHITE));
+    draw_circle(middle.x, middle.y, radius - 1.5 * scale, fade(bubble.country));
     if bubble.under_siege {
-        draw_siege_badge(middle + vec2(RADIUS * 0.85, -RADIUS * 0.85), strength);
+        draw_siege_badge(middle + vec2(radius * 0.85, -radius * 0.85), strength, scale);
     }
 }
 
 /// A red badge with a white tower on it, at `at`.
-fn draw_siege_badge(at: Vec2, strength: f32) {
+fn draw_siege_badge(at: Vec2, strength: f32, scale: f32) {
     let fade = |c: Color| Color::new(c.r, c.g, c.b, c.a * strength);
-    draw_circle(at.x, at.y, BADGE + 1.2, fade(TRACK));
-    draw_circle(at.x, at.y, BADGE, fade(SIEGE));
-    let white = fade(WHITE);
-    draw_rectangle(at.x - 2.6, at.y - 1.0, 5.2, 4.2, white);
-    for dx in [-2.6, -0.8, 1.0] {
-        draw_rectangle(at.x + dx, at.y - 3.2, 1.6, 2.4, white);
+    let badge = BADGE * scale;
+    draw_circle(at.x, at.y, badge + 1.2, fade(TRACK));
+    draw_circle(at.x, at.y, badge, fade(SIEGE));
+    // The tower is left out when the badge is too small to show it.
+    if scale >= 0.8 {
+        let white = fade(WHITE);
+        draw_rectangle(at.x - 2.6 * scale, at.y - 1.0 * scale, 5.2 * scale, 4.2 * scale, white);
+        for dx in [-2.6, -0.8, 1.0] {
+            draw_rectangle(at.x + dx * scale, at.y - 3.2 * scale, 1.6 * scale, 2.4 * scale, white);
+        }
     }
 }
 
@@ -155,6 +163,13 @@ mod tests {
         assert_eq!(strength(0.6), 1.0);
         let between = strength((FULL_BELOW + GONE_ABOVE) * 0.5);
         assert!(between > 0.2 && between < 0.8, "{between}");
+    }
+
+    #[test]
+    fn they_shrink_as_the_camera_goes_out_but_not_below_a_size_that_can_be_read() {
+        let size = |distance: f32| pieces::screen_scale(distance).max(LEAST);
+        assert_eq!(size(100.0), 1.0);
+        assert!(size(900.0) < 1.0 && size(1_100.0) < size(900.0) && size(1_000_000.0) == LEAST);
     }
 
     #[test]

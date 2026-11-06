@@ -17,6 +17,7 @@ use crate::failure::Thing;
 use crate::hud;
 use crate::ids::{BridgeId, CityId, CountryId, GathererId, MilitiaId};
 use crate::path::PathPiece;
+use crate::pieces;
 use crate::gatherer::GathererKind;
 use crate::{gatherer_view, path_view, region_labels};
 
@@ -40,6 +41,8 @@ const CITY_MARK_HOLD: f32 = 40.0;
 const MILITIA_MARK_HOLD: f32 = 12.0;
 const MARK_WIDTH: f32 = 24.0;
 const MARK_HEIGHT: f32 = 21.0;
+/// The least a warning icon shrinks to, against its full size, from far out.
+const LEAST_MARK: f32 = 0.4;
 
 #[derive(Debug, PartialEq)]
 pub enum Alert {
@@ -159,25 +162,37 @@ pub fn draw_marks(day: &DaySave, failures: &[Thing], map: &RegionMap, world: &Wo
     let flash = 0.5 + 0.5 * (time * std::f32::consts::TAU / FLASH_PERIOD).sin();
     let strength = 0.25 + 0.75 * flash;
     for (at, hold) in Alert::current(day, failures).iter().filter_map(|alert| alert.place(day, map)) {
-        let Some(at) = region_labels::to_screen(camera, vec3(at.x, world.surface_height(at.x, at.y) + hold, at.y)) else { continue };
-        if at.x < -MARK_WIDTH || at.x > screen_width() + MARK_WIDTH || at.y < 0.0 || at.y > screen_height() + MARK_HEIGHT {
+        let point = vec3(at.x, world.surface_height(at.x, at.y) + hold, at.y);
+        let Some(on_screen) = region_labels::to_screen(camera, point) else { continue };
+        if on_screen.x < -MARK_WIDTH || on_screen.x > screen_width() + MARK_WIDTH || on_screen.y < 0.0 || on_screen.y > screen_height() + MARK_HEIGHT {
             continue;
         }
-        draw_warning(vec2(at.x, at.y - 4.0), strength);
+        let scale = mark_scale(camera.position.distance(point));
+        draw_warning(vec2(on_screen.x, on_screen.y - 4.0 * scale), strength, scale);
     }
 }
 
-/// A warning triangle with an exclamation mark in it, standing with the middle of its base at `base`.
-fn draw_warning(base: Vec2, strength: f32) {
-    let (half, height) = (MARK_WIDTH * 0.5, MARK_HEIGHT);
+/// How big a warning icon is, against its full size, for a point `distance` meters from the camera: it shrinks as the camera
+/// goes out, as the pieces on the map do, but never to less than a share of its size that can still be read.
+pub fn mark_scale(distance: f32) -> f32 {
+    pieces::screen_scale(distance).max(LEAST_MARK)
+}
+
+/// A warning triangle with an exclamation mark in it, standing with the middle of its base at `base`, `scale` times its full size.
+fn draw_warning(base: Vec2, strength: f32, scale: f32) {
+    let (half, height) = (MARK_WIDTH * 0.5 * scale, MARK_HEIGHT * scale);
     let top = vec2(base.x, base.y - height);
     let (left, right) = (vec2(base.x - half, base.y), vec2(base.x + half, base.y));
+    let edge = 3.0 * scale;
     // A dark edge first, so that it shows on any ground.
-    draw_triangle(top + vec2(0.0, -2.5), left + vec2(-3.0, 1.5), right + vec2(3.0, 1.5), Color::new(0.10, 0.02, 0.02, 0.7 * strength));
+    draw_triangle(top + vec2(0.0, -edge * 0.8), left + vec2(-edge, edge * 0.5), right + vec2(edge, edge * 0.5), Color::new(0.10, 0.02, 0.02, 0.7 * strength));
     draw_triangle(top, left, right, Color::new(0.88, 0.10, 0.10, strength));
-    let white = Color::new(1.0, 1.0, 1.0, strength);
-    draw_rectangle(base.x - 1.3, base.y - 15.0, 2.6, 8.0, white);
-    draw_circle(base.x, base.y - 3.8, 1.5, white);
+    // The exclamation mark is left out when the icon is too small for it to be read.
+    if scale >= 0.6 {
+        let white = Color::new(1.0, 1.0, 1.0, strength);
+        draw_rectangle(base.x - 1.3 * scale, base.y - 15.0 * scale, 2.6 * scale, 8.0 * scale, white);
+        draw_circle(base.x, base.y - 3.8 * scale, 1.5 * scale, white);
+    }
 }
 
 /// The alerts panel under the newsreel.
@@ -353,6 +368,13 @@ mod tests {
 
     fn day() -> DaySave {
         DaySave::new(Date::FIRST, "Assets/map.nworld")
+    }
+
+    #[test]
+    fn the_warning_icon_shrinks_as_the_camera_goes_out_but_stays_big_enough_to_see() {
+        assert_eq!(mark_scale(100.0), 1.0);
+        assert!(mark_scale(2_000.0) < 0.7 && mark_scale(5_000.0) < mark_scale(2_000.0));
+        assert_eq!(mark_scale(1_000_000.0), LEAST_MARK);
     }
 
     #[test]

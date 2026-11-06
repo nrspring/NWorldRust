@@ -17,6 +17,14 @@ use crate::model::{self, Model};
 const SCREEN_SHARE: f32 = 0.02;
 const MIN_RADIUS: f32 = 8.0;
 const MAX_RADIUS: f32 = 48.0;
+/// The distance, in meters, up to which a token keeps its share of the screen. Past it the token takes up less and less of the
+/// screen (its share falls as the distance to the power of -[`SHRINK`]), so that from far out the map is not crowded with big
+/// icons, though it still grows a little in meters so that it can be found.
+pub const NEAR: f32 = 500.0;
+const SHRINK: f32 = 0.6;
+/// The distance, in meters, from which a token is drawn in a simpler form, as it is too small on the screen for the detail to
+/// show.
+pub const SIMPLE_FROM: f32 = 900.0;
 /// How far from the mouse's ray, as a fraction of how far away it is, a token still counts as pointed at, so that a small one
 /// can be hit from far away.
 const HOVER_SLOP: f32 = 0.006;
@@ -27,14 +35,17 @@ pub struct Token {
     pub look: Look,
     pub foot: Vec3,
     pub radius: f32,
+    /// Whether it is far enough from the camera to be drawn simply, without its detail.
+    pub simple: bool,
 }
 
 impl Token {
     /// A token of `look` standing at (`x`, `z`), for a camera at `eye`: on the highest ground under it, so that none of it is
     /// buried.
     pub fn at(world: &World, look: Look, x: f32, z: f32, eye: Vec3) -> Self {
-        let radius = radius_at(eye, vec3(x, world.surface_height(x, z), z));
-        Self { look, foot: vec3(x, ground_under(world, x, z, radius * look.reach()), z), radius }
+        let at = vec3(x, world.surface_height(x, z), z);
+        let radius = radius_at(eye, at);
+        Self { look, foot: vec3(x, ground_under(world, x, z, radius * look.reach()), z), radius, simple: eye.distance(at) >= SIMPLE_FROM }
     }
 
     /// The same token, lifted `by` meters (as a unit is, when it steps along).
@@ -58,7 +69,11 @@ impl Token {
     /// Its model, facing `turn`, in the color of `country`, as it is at `moment`.
     pub fn model(&self, turn: Mat3, country: Color, moment: Moment) -> Model {
         let mut m = Model::turned(self.foot, self.radius, turn);
-        miniatures::build(&mut m, self.look, country, moment);
+        if self.simple {
+            miniatures::build_simple(&mut m, self.look, country);
+        } else {
+            miniatures::build(&mut m, self.look, country, moment);
+        }
         m
     }
 
@@ -106,9 +121,16 @@ pub fn hit((origin, direction): (Vec3, Vec3), middle: Vec3, size: Vec3, slop: f3
     Some(near)
 }
 
+/// How much of the screen a thing that is held to a share of it takes, against what it does close by, for something `distance`
+/// meters from the camera: 1 up to [`NEAR`], and less the farther off it is. Icons drawn on the screen shrink by it too.
+pub fn screen_scale(distance: f32) -> f32 {
+    if distance <= NEAR { 1.0 } else { (NEAR / distance).powf(SHRINK) }
+}
+
 /// The radius a token at `at` is made with, for a camera at `eye`, in meters.
 pub fn radius_at(eye: Vec3, at: Vec3) -> f32 {
-    (eye.distance(at) * SCREEN_SHARE).clamp(MIN_RADIUS, MAX_RADIUS)
+    let distance = eye.distance(at);
+    (distance * SCREEN_SHARE * screen_scale(distance)).clamp(MIN_RADIUS, MAX_RADIUS)
 }
 
 /// How far past the distance that can be seen (beyond which everything is lost in the haze) a thing may stand and still be
@@ -167,8 +189,27 @@ mod tests {
         assert_eq!(radius(100.0), MIN_RADIUS, "close up it keeps a size that can be seen");
         assert_eq!(radius(100_000.0), MAX_RADIUS, "far off it does not cover regions");
         assert!(radius(3_000.0) > radius(2_000.0) && radius(2_000.0) > radius(1_000.0), "it grows with the distance");
-        assert!((radius(2_000.0) - 40.0).abs() < 1e-3);
+        assert!((radius(NEAR) - NEAR * SCREEN_SHARE).abs() < 1e-3, "up to {NEAR} m it is a fixed share of the screen");
         assert!(MAX_RADIUS * 2.0 <= 100.0, "and is never more than about 100 m across");
+    }
+
+    #[test]
+    fn farther_off_it_takes_up_less_of_the_screen() {
+        let share = |distance: f32| radius_at(vec3(0.0, distance, 0.0), Vec3::ZERO) / distance;
+        assert!((share(NEAR) - SCREEN_SHARE).abs() < 1e-5);
+        assert!(share(1_000.0) < share(NEAR) * 0.8 && share(2_000.0) < share(1_000.0) && share(5_000.0) < share(2_000.0) * 0.8);
+        assert!(share(5_000.0) < SCREEN_SHARE * 0.35, "from far out it is under a third of the size: {}", share(5_000.0) / SCREEN_SHARE);
+        assert_eq!((screen_scale(100.0), screen_scale(NEAR)), (1.0, 1.0));
+        assert!(screen_scale(2_000.0) < 0.6 && screen_scale(8_000.0) < screen_scale(2_000.0));
+    }
+
+    #[test]
+    fn it_is_drawn_simply_from_far_off_only() {
+        let world = test_support::small_continent();
+        let at = test_support::inland_spot(&world, 50.0);
+        let ground = world.surface_height(at.x, at.y);
+        let token = |distance: f32| Token::at(&world, Look::Quarry, at.x, at.y, vec3(at.x, ground + distance, at.y + 1.0));
+        assert!(!token(SIMPLE_FROM - 100.0).simple && token(SIMPLE_FROM + 100.0).simple);
     }
 
     #[test]

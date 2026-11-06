@@ -128,7 +128,7 @@ mod tests {
         let across = |distance: f32| token(&world, gatherer.kind, gatherer.x, gatherer.z, eye_over(&gatherer, &world, distance)).bounds().1.x;
         assert!(across(50.0) >= 16.0, "close up it is still a token: {}", across(50.0));
         assert!(across(3_000.0) > across(1_000.0) && across(1_000.0) > across(300.0));
-        assert!(across(3_000.0) > 60.0, "from 3 km it is over 60 m across: {}", across(3_000.0));
+        assert!(across(3_000.0) > 35.0, "from 3 km it is over 35 m across: {}", across(3_000.0));
         assert!(across(1_000_000.0) <= 120.0, "but not so big that it covers a region: {}", across(1_000_000.0));
     }
 

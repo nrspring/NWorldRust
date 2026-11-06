@@ -143,7 +143,7 @@ mod tests {
         let across = |distance: f32| token(&world, &militia(300, at), at, None, eye_over(at, &world, distance)).bounds().1.x;
         assert!(across(50.0) >= 16.0, "close up: {}", across(50.0));
         assert!(across(3_000.0) > across(1_000.0) && across(1_000.0) > across(300.0));
-        assert!(across(3_000.0) > 60.0, "{}", across(3_000.0));
+        assert!(across(3_000.0) > 40.0, "{}", across(3_000.0));
     }
 
     #[test]

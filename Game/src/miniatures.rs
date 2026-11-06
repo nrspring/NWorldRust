@@ -107,6 +107,104 @@ pub fn build(m: &mut Model, look: Look, country: Color, moment: Moment) {
     }
 }
 
+/// Builds a simple model of `look` into `m`, in the color of `country`, for when it is far off and too small on the screen for
+/// the detail to show: the same base and the same dominant colors and outline as [`build`], from a handful of shapes, and still.
+pub fn build_simple(m: &mut Model, look: Look, country: Color) {
+    match look {
+        Look::Militia { figures, trained } => m.scaled(Vec3::ZERO, UNIT, |m| {
+            let floor = unit_base(m, if trained { STEEL } else { GOLD }, country);
+            for (k, (x, z)) in formation(figures).iter().enumerate() {
+                let (tunic, head) = if trained { (country, shade(country, 1.25)) } else { (TUNICS[k % TUNICS.len()], STRAW) };
+                let foot = v(x * 1.1, floor, z * 1.1);
+                m.column(foot, 0.2, 0.12, 0.85, 6, tunic, Finish::Matte);
+                m.ball(foot + Vec3::Y * 1.0, v(0.16, 0.16, 0.16), 6, head, Finish::Matte);
+            }
+            let top = if trained { 1.5 } else { 1.38 };
+            m.rod(v(-0.62, floor, -0.5), v(-0.62, floor + top, -0.5), 0.03, WOOD_DARK);
+            m.cuboid(v(-0.62, floor + top - 0.14, -0.5 + 0.2), v(0.02, 0.26, 0.4), country, Finish::Matte);
+        }),
+        Look::Ship { large } => {
+            let ring = if large { 1.3 } else { 1.0 };
+            m.ring(Vec3::ZERO, ring * 0.85, ring, 0.03, 24, GOLD, Finish::Metal);
+            m.set_floor(-1.0);
+            if large {
+                m.ball(v(0.0, 0.08, 0.0), v(1.15, 0.2, 0.36), 8, HULL_TAR, Finish::Matte);
+                for (x, height) in [(-0.62, 1.3), (0.02, 1.75), (0.6, 1.4)] {
+                    m.rod(v(x, 0.2, 0.0), v(x, height + 0.15, 0.0), 0.035, WOOD_DARK);
+                    m.cuboid(v(x + 0.04, 0.2 + height * 0.55, 0.0), v(0.05, height * 0.8, 0.8), CLOTH, Finish::Matte);
+                }
+                m.cuboid(v(0.06, 0.55, 0.0), v(0.055, 0.3, 0.8), country, Finish::Matte);
+            } else {
+                m.ball(v(0.0, 0.07, 0.0), v(0.85, 0.16, 0.28), 8, HULL_WOOD, Finish::Matte);
+                m.rod(v(0.05, 0.15, 0.0), v(0.05, 1.4, 0.0), 0.03, WOOD_DARK);
+                m.cuboid(v(0.09, 0.8, 0.0), v(0.05, 1.0, 0.8), country, Finish::Matte);
+            }
+        }
+        Look::Woodcutter => {
+            let f = plot(m, Look::Woodcutter.reach(), GRASS, country);
+            m.column(v(-0.4, f, -0.3), 0.36, 0.0, 1.0, 6, PINE, Finish::Matte);
+            m.column(v(-0.4, f, 0.4), 0.3, 0.0, 0.8, 6, shade(PINE, 1.2), Finish::Matte);
+            m.block(v(0.4, f, 0.1), v(0.45, 0.3, 0.45), THATCH);
+        }
+        Look::Sawmill => {
+            let f = plot(m, Look::Sawmill.reach(), DIRT, country);
+            house(m, v(0.0, f, 0.0), v(0.95, 0.45, 0.65), 0.0, WOOD, ROOF_RED, 0.3);
+        }
+        Look::Stonecutter => {
+            let f = plot(m, Look::Stonecutter.reach(), DIRT, country);
+            m.block(v(0.0, f, 0.0), v(0.8, 0.5, 0.6), STONE_LIGHT);
+            m.block(v(-0.3, f, 0.5), v(0.4, 0.25, 0.3), STONE);
+        }
+        Look::Quarry => {
+            let f = plot(m, Look::Quarry.reach(), GRAVEL, country);
+            for (k, size) in [1.4, 1.0, 0.6].into_iter().enumerate() {
+                m.block(v(0.0, f + 0.3 * k as f32, 0.0), v(size, 0.3, size), if k % 2 == 0 { STONE_DARK } else { STONE_LIGHT });
+            }
+        }
+        Look::IronMine => {
+            let f = plot(m, Look::IronMine.reach(), DIRT, country);
+            m.block(v(0.0, f, 0.0), v(0.8, 0.35, 0.7), RUST);
+            m.column(v(0.1, f, 0.0), 0.18, 0.06, 1.7, 4, IRON, Finish::Metal);
+        }
+        Look::CopperMine => {
+            let f = plot(m, Look::CopperMine.reach(), RED_EARTH, country);
+            m.block(v(0.0, f, 0.0), v(0.8, 0.4, 0.7), MALACHITE);
+            m.block(v(0.5, f, -0.4), v(0.3, 0.2, 0.3), COPPER);
+            m.column(v(-0.3, f, 0.3), 0.14, 0.1, 1.6, 6, BRICK, Finish::Matte);
+        }
+        Look::SulphurPit => {
+            let f = plot(m, Look::SulphurPit.reach(), ASH, country);
+            m.column(v(0.0, f, 0.0), 0.7, 0.55, 0.12, 12, SULPHUR, Finish::Matte);
+            m.column(v(0.0, f + 0.12, 0.0), 0.5, 0.2, 0.35, 8, shade(SULPHUR, 0.85), Finish::Matte);
+        }
+        Look::OilWell => {
+            let f = plot(m, Look::OilWell.reach(), OILY, country);
+            m.column(v(-0.2, f, 0.0), 0.35, 0.05, 2.0, 4, WOOD_DARK, Finish::Matte);
+            m.column(v(0.45, f, 0.35), 0.35, 0.35, 0.45, 8, TANK, Finish::Metal);
+            m.block(v(0.3, f, -0.45), v(0.55, 0.3, 0.2), PUMP_RED);
+        }
+        Look::Shipyard { large } => {
+            let half = Look::Shipyard { large }.reach();
+            let f = plot(m, half, SAND, country);
+            let inner = half * 0.88;
+            m.cuboid(v(inner * 0.71, f + 0.004, 0.0), v(inner * 0.58, 0.012, inner * 2.0), WATER, Finish::Gloss);
+            let length = if large { 2.0 } else { 1.5 };
+            m.ball(v(-inner * 0.1, f + 0.3, 0.0), v(length * 0.5, 0.2, 0.3), 8, HULL_WOOD, Finish::Matte);
+            m.column(v(-inner * 0.4, f, inner * 0.7), 0.1, 0.05, 1.5, 4, WOOD_DARK, Finish::Matte);
+        }
+        Look::Barracks => {
+            let half = Look::Barracks.reach();
+            let f = plot(m, half, GRAVEL, country);
+            let w = half * 0.76;
+            m.block(v(0.0, f, 0.0), v(w * 2.0, 0.4, w * 2.0), STONE);
+            for (x, z) in [(-w, -w), (w, -w), (-w, w), (w, w)] {
+                m.column(v(x, f, z), 0.17, 0.17, 0.75, 6, STONE_LIGHT, Finish::Matte);
+                m.column(v(x, f + 0.75, z), 0.22, 0.0, 0.3, 6, country, Finish::Gloss);
+            }
+        }
+    }
+}
+
 const fn c(r: f32, g: f32, b: f32) -> Color {
     Color::new(r, g, b, 1.0)
 }
@@ -1035,6 +1133,26 @@ mod tests {
                 wrong.push(format!("{look:?}: {} high, said to be {}", high.y, look.height()));
             }
             assert!(low.y > -0.3, "{look:?}: only a ship's keel goes below the ground, and not far: {}", low.y);
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("
+"));
+    }
+
+    #[test]
+    fn the_simple_forms_are_simpler_and_stand_in_the_same_room() {
+        let mut wrong = Vec::new();
+        for look in ALL {
+            let mut m = Model::new(Vec3::ZERO, 1.0, 0.0);
+            build_simple(&mut m, look, COUNTRY);
+            let full = built_at(look, Moment { time: 1.3, busy: false });
+            assert!(m.len() > 20 && m.len() * 2 < full.len(), "{look:?}: {} corners, against {} in full", m.len(), full.len());
+            let (low, high) = m.bounds();
+            let reach = look.reach();
+            assert!(low.x > -reach * 1.25 && high.x < reach * 1.25 && low.z > -reach * 1.25 && high.z < reach * 1.25, "{look:?}: {low} {high} for a reach of {reach}");
+            if !(high.y <= look.height() + 0.02 && high.y > look.height() * 0.5) {
+                wrong.push(format!("{look:?}: {} high, said to be {}", high.y, look.height()));
+            }
+            assert!(low.y > -0.3, "{look:?}: {}", low.y);
         }
         assert!(wrong.is_empty(), "{}", wrong.join("
 "));
