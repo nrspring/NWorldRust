@@ -135,6 +135,8 @@ pub struct Scene<'a> {
     pub mouse: Vec2,
     /// Whether the mouse is over the map, and not the interface.
     pub over_map: bool,
+    /// The seconds the game has run, for what moves.
+    pub time: f32,
 }
 
 #[derive(Default)]

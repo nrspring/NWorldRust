@@ -105,7 +105,7 @@ impl ShipyardTool {
             };
             draw_sphere(lifted, size, None, color);
             // And the shipyard itself, in outline, so that its size can be seen against the coast.
-            shipyard_view::preview(scene.world, self.kind, *at, scene.eye.position, color);
+            shipyard_view::preview(scene.world, self.kind, *at, scene.eye.position, scene.time, color);
         }
 
         if !clicked {

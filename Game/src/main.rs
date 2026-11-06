@@ -58,6 +58,8 @@ mod options;
 mod path;
 mod path_tool;
 mod path_view;
+mod miniatures;
+mod model;
 mod pieces;
 mod overlays;
 mod person;
@@ -497,9 +499,9 @@ async fn main() {
         paths.draw(&world, &region_map, &day);
         roads.draw(&world, &region_map, &day);
         bridges.draw(&world, &day);
-        gatherer_view::draw(&world, &day, eye.position);
-        shipyard_view::draw(&world, &day, eye.position);
-        barracks_view::draw(&world, &day, eye.position);
+        gatherer_view::draw(&world, &day, eye.position, time);
+        shipyard_view::draw(&world, &day, eye.position, time);
+        barracks_view::draw(&world, &day, eye.position, time);
         walks.update(dt);
         militia_view::draw(&world, &day, &walks, time, eye.position);
         // Where the militia that was clicked can go, tinted over everything else on the map, once it has got where it is going.
@@ -565,7 +567,7 @@ async fn main() {
         if !modal && (path_tool.is_active() || road_tool.is_active()) {
             let tool = if path_tool.is_active() { &mut path_tool } else { &mut road_tool };
             let kind = tool.kind();
-            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface, time };
             if let Some(piece) = tool.update(&scene, &day, clicked) {
                 // Only keep it if it is saved too.
                 let mut updated = day.clone();
@@ -583,7 +585,7 @@ async fn main() {
             }
         } else if !modal && bridge_tool.is_active() {
             // With the bridge tool on, clicks are for choosing the two ends of a bridge.
-            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface, time };
             // A bridge that has failed doesn't count as there, since building it again mends it.
             let standing: Vec<bridge::Bridge> = day.bridges.iter().filter(|b| !day.is_failed(failure::Thing::Bridge(b.id))).copied().collect();
             if let Some((first, second)) = bridge_tool.update(&scene, &standing, clicked) {
@@ -603,7 +605,7 @@ async fn main() {
             }
         } else if !modal && gatherer_tools.iter().any(|tool| tool.is_active()) {
             // With a gatherer tool on, a click is for building one of its kind where the mouse is.
-            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface, time };
             if let Some(tool) = gatherer_tools.iter_mut().find(|tool| tool.is_active()) {
                 let kind = tool.kind();
                 if let Some((at, region)) = tool.update(&scene, &day, &deposits, clicked) {
@@ -620,7 +622,7 @@ async fn main() {
             }
         } else if !modal && shipyard_tools.iter().any(|tool| tool.is_active()) {
             // With a shipyard tool on, a click is for building one of its size where the mouse is.
-            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface, time };
             if let Some(tool) = shipyard_tools.iter_mut().find(|tool| tool.is_active()) {
                 let kind = tool.kind();
                 if let Some((at, region)) = tool.update(&scene, &day, clicked) {
@@ -637,7 +639,7 @@ async fn main() {
             }
         } else if !modal && barracks_tool.is_active() {
             // With the barracks tool on, a click is for building one where the mouse is.
-            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface, time };
             if let Some((at, region)) = barracks_tool.update(&scene, &day, clicked) {
                 // Only keep the barracks if it is saved too.
                 let mut updated = day.clone();
@@ -651,7 +653,7 @@ async fn main() {
             }
         } else if !modal && destroy_tool.is_active() {
             // With the destroy tool on, a click is for destroying the path, road, bridge or gatherer the mouse is on.
-            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface };
+            let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface, time };
             let reach = (camera.distance() * 0.006).clamp(0.0, 20.0);
             if let Some(target) = destroy_tool.update(&scene, &day, &paths, &roads, reach, clicked) {
                 // Only keep it destroyed if that is saved too.

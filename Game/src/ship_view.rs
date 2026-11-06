@@ -1,8 +1,11 @@
-//! Drawing the ships, as a low boat: a board game piece with a hull, a stripe of its country's color along the deck and white sails,
-//! standing on the same round, gold base as a militia, so that it is known at a glance for a unit that moves. A small warship has one
-//! mast and a large one is bigger, with two. While it is sailing it bobs along. The pieces are sized by how far the camera is from
-//! them (see [`crate::pieces`]), so that they can be seen on the map from far off. This is the game's own drawing, and not part of
+//! Drawing the ships, as hulls with sails (see [`crate::miniatures`]) in a ring of gold and of the color of the country they
+//! belong to, which floats on the water round them, so that a ship is known at a glance for a unit that moves. A small warship
+//! has one mast with a striped sail, and a large one is longer, with three masts and a row of gun ports. A ship faces the way
+//! it last sailed, and rocks on the water, more while it is under way. The pieces are sized by how far the camera is from them
+//! (see [`crate::pieces`]), so that they can be seen on the map from far off. This is the game's own drawing, and not part of
 //! drawing the map.
+
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use macroquad::prelude::*;
 use nworld_map::world::World;
@@ -12,97 +15,76 @@ use crate::day::DaySave;
 use crate::format::money;
 use crate::hud;
 use crate::ids::ShipId;
+use crate::miniatures::{Look, Moment};
 use crate::movement::DAILY_POINTS;
-use crate::pieces::{self, Piece, GOLD, MEDALLION};
+use crate::pieces::{self, Token};
 use crate::ship::{Ship, ShipKind};
 use crate::walk::Walks;
 
-/// How thick the gold base is, as a share of the token's radius, and how high a wave lifts the boat, and how many times a second.
-const BASE_THICKNESS: f32 = 0.09;
-const BOB_HEIGHT: f32 = 0.3;
-const BOB_RATE: f32 = 5.0;
-/// The brown of the hull, and the color of a ship whose country can't be found.
-const HULL: Color = Color::new(0.38, 0.25, 0.15, 1.0);
+/// How far a ship rolls from side to side and pitches, in radians, at rest and under way, and how high a wave lifts it, as a
+/// share of the token's radius.
+const ROLL: (f32, f32) = (0.035, 0.07);
+const PITCH: (f32, f32) = (0.015, 0.035);
+const BOB: (f32, f32) = (0.02, 0.06);
+/// The color of a ship whose country can't be found.
 const NO_COUNTRY: Color = Color::new(0.6, 0.6, 0.6, 1.0);
 
-/// How big the boat is, as a share of the base under it: a large one is bigger than a small one.
-fn scale(kind: ShipKind) -> f32 {
-    match kind {
-        ShipKind::Small => 1.0,
-        ShipKind::Large => 1.3,
-    }
+/// What a ship of `kind` looks like.
+pub fn look(kind: ShipKind) -> Look {
+    Look::Ship { large: kind == ShipKind::Large }
 }
 
 /// How many masts a ship has.
+#[cfg(test)]
 pub fn masts_of(kind: ShipKind) -> usize {
     match kind {
         ShipKind::Small => 1,
-        ShipKind::Large => 2,
+        ShipKind::Large => 3,
     }
 }
 
-/// The pieces a ship is drawn as, floating at `at` for a camera at `eye`: the gold base, and the boat on it in the color of `country`,
-/// bobbing to the time `sailing` if it is under way.
-fn parts(world: &World, ship: &Ship, at: Vec2, sailing: Option<f32>, country: Color, eye: Vec3) -> Vec<Piece> {
-    let water = vec3(at.x, world.surface_height(at.x, at.y), at.y);
-    let r = pieces::radius_at(eye, water);
-    let bob = sailing.map_or(0.0, |time| (time * BOB_RATE).sin().abs() * BOB_HEIGHT * r);
-    let foot = vec3(at.x, pieces::ground_under(world, at.x, at.y, r), at.y) + vec3(0.0, bob, 0.0);
-    if pieces::is_far(eye, water) {
-        return far_marker(foot, r, country);
-    }
-    let s = scale(ship.kind);
-    let mut parts = vec![Piece::disc(foot, r * s.min(1.15), BASE_THICKNESS * r, GOLD)];
-    let top = foot + vec3(0.0, BASE_THICKNESS * r, 0.0);
-
-    // The boat, from the hull up: the hull itself, a stripe of the country's color on its deck, and a mast with a sail for each.
-    let (length, beam) = (1.5 * r * s, 0.62 * r * s);
-    let mut boat = vec![
-        Piece::block_on(top, vec3(length, 0.34 * r * s, beam), HULL),
-        Piece::block_on(top + vec3(0.0, 0.34 * r * s, 0.0), vec3(length * 0.86, 0.1 * r * s, beam * 0.76), country),
-    ];
-    let deck = top + vec3(0.0, 0.44 * r * s, 0.0);
-    let masts = masts_of(ship.kind);
-    for k in 0..masts {
-        let x = if masts == 1 { 0.0 } else { (k as f32 - 0.5) * 0.7 * r * s };
-        boat.push(Piece::block_on(deck + vec3(x, 0.0, 0.0), vec3(0.07 * r * s, 1.15 * r * s, 0.07 * r * s), HULL));
-        boat.push(Piece::block_on(deck + vec3(x, 0.25 * r * s, 0.0), vec3(0.05 * r * s, 0.8 * r * s, 0.62 * r * s), MEDALLION));
-    }
-    parts.extend(pieces::flatten(boat, top.y, pieces::FLAT));
-    parts
+/// How far into its rocking a ship is at `time`, so that ships don't all rock together: 0 to a full turn.
+fn phase(id: ShipId) -> f32 {
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    (hasher.finish() % 1_000) as f32 / 1_000.0 * std::f32::consts::TAU
 }
 
-/// A ship seen from far off: a flat gold round with a disc of its country's color on it, and a small pale mark for the sail, which is
-/// what tells it from a militia.
-fn far_marker(foot: Vec3, r: f32, country: Color) -> Vec<Piece> {
-    let on = foot + vec3(0.0, 0.1 * r, 0.0);
-    vec![
-        Piece::disc(foot, r, 0.1 * r, GOLD),
-        Piece::disc(on, 0.62 * r, 0.06 * r, country),
-        Piece::block_on(on + vec3(0.0, 0.06 * r, 0.0), vec3(0.14 * r, 0.1 * r, 0.5 * r), MEDALLION),
-    ]
+/// The token of `ship`, floating at `at` for a camera at `eye`.
+fn token(world: &World, ship: &Ship, at: Vec2, eye: Vec3) -> Token {
+    Token::at(world, look(ship.kind), at.x, at.y, eye)
+}
+
+/// The way a ship heading `yaw` leans on the water at `time`, and how high the water lifts it, as a share of its radius.
+fn rocking(yaw: f32, time: f32, phase: f32, sailing: bool) -> (Mat3, f32) {
+    let pick = |(rest, way): (f32, f32)| if sailing { way } else { rest };
+    let t = time + phase;
+    let roll = (t * 1.3).sin() * pick(ROLL);
+    let pitch = (t * 0.9 + 1.0).sin() * pick(PITCH);
+    let bob = (t * 1.1).sin() * pick(BOB);
+    (Mat3::from_rotation_y(yaw) * Mat3::from_rotation_x(roll) * Mat3::from_rotation_z(pitch), bob)
 }
 
 /// Draws the ships of `day`, as seen by the camera that is set, which must still be the one the map was drawn with, and is at `eye`.
 pub fn draw(world: &World, day: &DaySave, walks: &Walks, time: f32, eye: Vec3) {
-    for ship in &day.ships {
+    let models = day.ships.iter().filter_map(|ship| {
         let at = walks.position_of(ship.id, vec2(ship.x, ship.z));
         if !pieces::within_view(eye, at.x, at.y) {
-            continue;
+            return None;
         }
         let country = day.country(ship.country).map_or(NO_COUNTRY, |c| c.color.color());
-        let sailing = walks.is_walking(ship.id).then_some(time);
-        for piece in parts(world, ship, at, sailing, country, eye) {
-            piece.draw();
-        }
-    }
+        let (turn, bob) = rocking(walks.facing(ship.id), time, phase(ship.id), walks.is_walking(ship.id));
+        let token = token(world, ship, at, eye);
+        Some(token.lifted(bob * token.radius).model(turn, country, Moment { time, busy: true }))
+    });
+    pieces::draw_models(eye, Vec4::ZERO, models);
 }
 
 /// The ship the ray (where it starts and which way it points, as `mouse_ray` gives it) goes through first, if it goes through any.
 pub fn under_ray(ray: (Vec3, Vec3), world: &World, ships: &[Ship], walks: &Walks) -> Option<ShipId> {
     ships
         .iter()
-        .filter_map(|ship| Some((pieces::first_hit(ray, &parts(world, ship, walks.position_of(ship.id, vec2(ship.x, ship.z)), None, WHITE, ray.0))?, ship.id)))
+        .filter_map(|ship| Some((token(world, ship, walks.position_of(ship.id, vec2(ship.x, ship.z)), ray.0).hit(ray)?, ship.id)))
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, id)| id)
 }
@@ -150,8 +132,6 @@ mod tests {
         vec3(at.x, world.surface_height(at.x, at.y) + distance, at.y + 1.0)
     }
 
-    const COUNTRY: Color = Color::new(0.2, 0.4, 0.9, 1.0);
-
     /// A point out in the water, if the test continent has any.
     fn water() -> (World, Vec2) {
         let world = test_support::small_continent();
@@ -160,40 +140,21 @@ mod tests {
     }
 
     #[test]
-    fn a_ship_is_a_boat_in_its_countrys_color_on_a_gold_base_and_a_large_one_has_two_masts() {
+    fn a_large_ship_is_bigger_and_has_more_masts() {
+        assert_eq!((masts_of(ShipKind::Small), masts_of(ShipKind::Large)), (1, 3));
+        assert!(look(ShipKind::Large).reach() > look(ShipKind::Small).reach());
         let (world, at) = water();
         let eye = eye_over(at, &world, 300.0);
-        let small = parts(&world, &ship(ShipKind::Small, at), at, None, COUNTRY, eye);
-        let large = parts(&world, &ship(ShipKind::Large, at), at, None, COUNTRY, eye);
-        // The base, the hull, the stripe, and a mast and a sail for each mast.
-        assert_eq!(small.len(), 1 + 2 + 2 * masts_of(ShipKind::Small));
-        assert_eq!(large.len(), 1 + 2 + 2 * masts_of(ShipKind::Large));
-        assert_eq!((masts_of(ShipKind::Small), masts_of(ShipKind::Large)), (1, 2));
-        assert_eq!((small[0].shape, small[0].color), (pieces::Shape::Disc, GOLD), "a unit that moves stands on a round gold base");
-        assert!(small.iter().any(|p| p.color == COUNTRY) && small.iter().any(|p| p.color == MEDALLION) && small.iter().any(|p| p.color == HULL));
-        let hull = |parts: &[Piece]| parts.iter().find(|p| p.color == HULL).unwrap().size.x;
-        assert!(hull(&large) > hull(&small), "a large one is bigger");
+        assert!(token(&world, &ship(ShipKind::Large, at), at, eye).bounds().1.x > token(&world, &ship(ShipKind::Small, at), at, eye).bounds().1.x);
     }
 
     #[test]
-    fn from_far_off_it_is_a_gold_round_with_its_countrys_color_and_a_pale_sail_mark() {
-        let (world, at) = water();
-        let near = parts(&world, &ship(ShipKind::Large, at), at, None, COUNTRY, eye_over(at, &world, 300.0));
-        let far = parts(&world, &ship(ShipKind::Large, at), at, None, COUNTRY, eye_over(at, &world, pieces::FAR + 500.0));
-        assert!(far.len() == 3 && far.len() < near.len());
-        assert_eq!((far[0].shape, far[0].color), (pieces::Shape::Disc, GOLD));
-        assert_eq!(far[1].color, COUNTRY);
-        assert_eq!(far[2].color, MEDALLION, "the sail is what tells it from a militia");
-    }
-
-    #[test]
-    fn it_bobs_only_while_sailing_and_never_below_the_water() {
-        let (world, at) = water();
-        let eye = eye_over(at, &world, 300.0);
-        let standing = parts(&world, &ship(ShipKind::Small, at), at, None, COUNTRY, eye);
-        let heights: Vec<f32> = (0..40).map(|k| parts(&world, &ship(ShipKind::Small, at), at, Some(k as f32 * 0.05), COUNTRY, eye)[0].middle.y - standing[0].middle.y).collect();
-        assert!(heights.iter().all(|h| *h >= -1e-4) && heights.iter().any(|h| *h > 0.5));
-        assert!(standing[0].middle.y - standing[0].size.y * 0.5 >= world.surface_height(at.x, at.y) - 1e-3, "the base is not under the water");
+    fn it_rocks_more_while_sailing_and_always_faces_the_way_it_goes() {
+        let lean = |sailing: bool| (0..60).map(|k| (rocking(0.0, k as f32 * 0.1, 0.0, sailing).0 * Vec3::Y).y).fold(1.0f32, f32::min);
+        assert!(lean(true) < lean(false) && lean(false) < 1.0, "it leans, and leans more under way");
+        let (turn, _) = rocking(1.0, 0.0, 0.0, false);
+        let front = turn * Vec3::X;
+        assert!((vec2(front.x, front.z).normalize() - vec2(1.0f32.cos(), -1.0f32.sin())).length() < 0.05, "facing the way of its yaw");
     }
 
     #[test]
@@ -204,12 +165,13 @@ mod tests {
         assert_eq!(under_ray(down, &world, std::slice::from_ref(&boat), &Walks::default()), Some(boat.id));
         let aside = (down.0 + vec3(400.0, 0.0, 400.0), vec3(0.0, -1.0, 0.0));
         assert_eq!(under_ray(aside, &world, std::slice::from_ref(&boat), &Walks::default()), None);
+        assert!(token(&world, &boat, at, down.0).foot.y >= world.surface_height(at.x, at.y) - 1e-3, "it floats on the water");
     }
 
     #[test]
     fn it_is_big_enough_to_see_from_far_away() {
         let (world, at) = water();
-        let across = |distance: f32| parts(&world, &ship(ShipKind::Small, at), at, None, COUNTRY, eye_over(at, &world, distance))[0].size.x;
+        let across = |distance: f32| token(&world, &ship(ShipKind::Small, at), at, eye_over(at, &world, distance)).bounds().1.x;
         assert!(across(50.0) >= 16.0 && across(3_000.0) > across(1_000.0) && across(1_000.0) > across(300.0));
     }
 }

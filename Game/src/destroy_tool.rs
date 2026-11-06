@@ -141,17 +141,17 @@ impl DestroyTool {
 
         if let Some(Target::Gatherer(id)) = self.hovered {
             if let Some(gatherer) = day.gatherer(id) {
-                gatherer_view::outline(scene.world, gatherer, scene.eye.position, RED);
+                gatherer_view::outline(scene.world, gatherer, scene.eye.position, scene.time, RED);
             }
         }
         if let Some(Target::Shipyard(id)) = self.hovered {
             if let Some(shipyard) = day.shipyard(id) {
-                shipyard_view::outline(scene.world, shipyard, scene.eye.position, RED);
+                shipyard_view::outline(scene.world, shipyard, scene.eye.position, scene.time, RED);
             }
         }
         if let Some(Target::Barracks(id)) = self.hovered {
             if let Some(barracks) = day.find_barracks(id) {
-                barracks_view::outline(scene.world, barracks, scene.eye.position, RED);
+                barracks_view::outline(scene.world, barracks, scene.eye.position, scene.time, RED);
             }
         }
         if let Some(Target::Built(thing)) = self.hovered {

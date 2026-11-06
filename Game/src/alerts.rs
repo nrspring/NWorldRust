@@ -390,9 +390,8 @@ mod tests {
         assert_eq!(alerts, [Alert::GathererCutOff(id)]);
         assert_eq!(alerts[0].text(&day), "The woodcutter in region 2 has no path, road or bridge to a city of Aldoria");
         assert_eq!(alerts[0].target(), AlertTarget::Gatherer(id));
-        assert_eq!(alerts[0].place(&day, &RegionMap::default()), Some((vec2(100.0, 0.0), 17.0)));
-        assert!(gatherer_mark_hold(GathererKind::Woodcutter) > 14.0, "above the top of its flag pole");
-        assert_eq!(gatherer_mark_hold(GathererKind::Sawmill), 30.0);
+        assert_eq!(alerts[0].place(&day, &RegionMap::default()), Some((vec2(100.0, 0.0), gatherer_mark_hold(GathererKind::Woodcutter))));
+        assert!(gatherer_mark_hold(GathererKind::Woodcutter) > gatherer_view::height(GathererKind::Woodcutter), "above the top of it");
         assert!(gatherer_mark_hold(GathererKind::Quarry) > gatherer_mark_hold(GathererKind::Stonecutter), "the icon is higher over a bigger one");
         day.set_region_name(CUTTER, "The Marches").unwrap();
         assert_eq!(Alert::current(&day, &[])[0].text(&day), "The woodcutter in The Marches has no path, road or bridge to a city of Aldoria");
@@ -402,7 +401,7 @@ mod tests {
         let stone = day.gatherers[1].id;
         assert_eq!(Alert::current(&day, &[]), [Alert::GathererCutOff(id), Alert::GathererCutOff(stone)]);
         assert_eq!(Alert::GathererCutOff(stone).text(&day), "The stonecutter in The Marches has no path, road or bridge to a city of Aldoria");
-        assert_eq!(Alert::GathererCutOff(stone).place(&day, &RegionMap::default()), Some((vec2(130.0, 0.0), 17.0)));
+        assert_eq!(Alert::GathererCutOff(stone).place(&day, &RegionMap::default()), Some((vec2(130.0, 0.0), gatherer_mark_hold(GathererKind::Stonecutter))));
         day.destroy_gatherer(stone).unwrap();
 
         // After the countries that have no city, and before what failed.

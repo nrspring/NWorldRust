@@ -93,7 +93,7 @@ impl BarracksTool {
             };
             draw_sphere(lifted, size, None, color);
             // And the barracks itself, in outline.
-            barracks_view::preview(scene.world, *at, scene.eye.position, color);
+            barracks_view::preview(scene.world, *at, scene.eye.position, scene.time, color);
         }
 
         if !clicked {

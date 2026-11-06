@@ -2,6 +2,9 @@
 //! is going, along the way that it was found to take, so that the move can be seen. Nothing of this is saved: a game that
 //! is opened again has every militia where it is.
 
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use macroquad::math::Vec2;
 
 use crate::ids::Guid;
@@ -41,12 +44,32 @@ impl Walk {
         }
         *self.way.last().unwrap_or(&Vec2::ZERO)
     }
+
+    /// Which way it is going now: a little way back along the way to a little way on.
+    fn heading(&self) -> Option<Vec2> {
+        let mut ahead = self.clone();
+        ahead.elapsed = (self.elapsed + HEADING_LOOK).min(self.duration);
+        let mut behind = self.clone();
+        behind.elapsed = (self.elapsed - HEADING_LOOK).max(0.0);
+        let d = ahead.at() - behind.at();
+        (d.length() > 1e-3).then(|| d.normalize())
+    }
 }
+
+/// How far back and on along a walk, in seconds, which way it goes is worked out from.
+const HEADING_LOOK: f32 = 0.08;
 
 /// The militia that are walking now.
 #[derive(Default)]
 pub struct Walks {
     walks: Vec<Walk>,
+    /// Which way each unit that has walked was last going, as an angle (see [`Walks::facing`]).
+    facings: HashMap<Guid, f32>,
+}
+
+/// The turn about the upright, from the east, that faces the way `heading` (along x and z) goes.
+pub fn yaw_of(heading: Vec2) -> f32 {
+    (-heading.y).atan2(heading.x)
 }
 
 /// `way` with each point taken to the average of those round it, which keeps its ends.
@@ -79,6 +102,9 @@ impl Walks {
     pub fn update(&mut self, seconds: f32) {
         for walk in &mut self.walks {
             walk.elapsed += seconds;
+            if let Some(heading) = walk.heading() {
+                self.facings.insert(walk.id, yaw_of(heading));
+            }
         }
         self.walks.retain(|walk| walk.elapsed < walk.duration);
     }
@@ -99,6 +125,21 @@ impl Walks {
     pub fn position_of(&self, id: impl Into<Guid>, resting: Vec2) -> Vec2 {
         let id = id.into();
         self.walks.iter().find(|walk| walk.id == id).map_or(resting, Walk::at)
+    }
+
+    /// Which way the unit with this id faces, as a turn about the upright from the east (as [`crate::model::Model::new`] takes
+    /// it): the way it is going while it walks, and then the way it last went. One that hasn't moved since the game started
+    /// faces a way of its own, which is always the same for it.
+    pub fn facing(&self, id: impl Into<Guid>) -> f32 {
+        let id = id.into();
+        if let Some(heading) = self.walks.iter().find(|walk| walk.id == id).and_then(Walk::heading) {
+            return yaw_of(heading);
+        }
+        self.facings.get(&id).copied().unwrap_or_else(|| {
+            let mut hasher = DefaultHasher::new();
+            id.hash(&mut hasher);
+            (hasher.finish() % 3_600) as f32 / 3_600.0 * std::f32::consts::TAU
+        })
     }
 
 }
@@ -207,5 +248,21 @@ mod tests {
         assert_eq!(walks.position_of(ShipId::new(), vec2(7.0, 8.0)), vec2(7.0, 8.0), "one that isn't walking is where it is");
         walks.update(10.0);
         assert!(!walks.is_walking(ship));
+    }
+
+    #[test]
+    fn a_walker_faces_the_way_it_goes_and_keeps_facing_it_when_it_stops() {
+        let mut walks = Walks::default();
+        let id = MilitiaId::new();
+        let still = walks.facing(id);
+        assert_eq!(still, walks.facing(id), "one that hasn't moved always faces the same way");
+        walks.start(id, &[Vec2::ZERO, Vec2::new(0.0, -200.0)]);
+        walks.update(0.5);
+        let north = yaw_of(Vec2::new(0.0, -1.0));
+        assert!((walks.facing(id) - north).abs() < 1e-3, "going north: {}", walks.facing(id));
+        walks.update(100.0);
+        assert!(!walks.is_walking(id));
+        assert!((walks.facing(id) - north).abs() < 1e-3, "and still facing north when it gets there");
+        assert!((yaw_of(Vec2::new(1.0, 0.0))).abs() < 1e-6, "east is no turn");
     }
 }
