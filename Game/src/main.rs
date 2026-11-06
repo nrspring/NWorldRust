@@ -76,6 +76,7 @@ mod saves;
 #[cfg(test)]
 mod test_support;
 mod text;
+mod unit_bubbles;
 mod walk;
 mod title_type;
 mod toolbar;
@@ -825,6 +826,8 @@ async fn main() {
             region_labels::draw_lakes(&style, &day, &water_bodies, &world, &eye);
             region_labels::draw_places(&style, &day, &world, &eye);
         }
+        // A bubble over each unit, in its country's color, while the map is seen at an angle.
+        unit_bubbles::draw(&world, &day, &walks, &eye, camera.pitch());
         // A flashing red warning over whatever an alert is about, under the interface.
         alerts::draw_marks(&day, &day_failures, &region_map, &world, &eye, time);
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.

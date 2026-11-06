@@ -66,6 +66,11 @@ impl GameCamera {
         self.distance
     }
 
+    /// How steeply it looks down, in radians: [`MAX_PITCH`] is straight down, and less is more along the ground.
+    pub fn pitch(&self) -> f32 {
+        self.pitch
+    }
+
     /// The compass direction being looked in, in radians. Zero looks towards +z, which is south on the map, and
     /// [`NORTH`] looks north.
     pub fn yaw(&self) -> f32 {

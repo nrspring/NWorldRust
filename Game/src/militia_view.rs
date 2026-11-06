@@ -36,7 +36,7 @@ pub fn figures_for(members: u32) -> usize {
 }
 
 /// What `militia` looks like.
-fn look(militia: &Militia) -> Look {
+pub fn look(militia: &Militia) -> Look {
     Look::Militia { figures: figures_for(militia.members), trained: militia.trained }
 }
 
