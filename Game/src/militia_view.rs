@@ -2,7 +2,7 @@
 //! color of the country it belongs to, and there is a figure for every two hundred members, up to five, so that a bigger
 //! militia is the bigger band, with a flag of its country flying behind them. Militia are in brown, with straw hats and spears,
 //! on a gold rim, and soldiers, a militia that has been trained, in their country's color, with steel helmets, pikes and
-//! shields, on a steel rim. They face the way they last went, and while they walk they step along. The tokens are sized by how
+//! shields, on a steel rim, and archers, in green hoods with a bow and a quiver, on a green rim. They face the way they last went, and while they walk they step along. The tokens are sized by how
 //! far the camera is from them (see [`crate::pieces`]), so that they can be seen on the map from far off. This is the game's own
 //! drawing, and not part of drawing the map.
 
@@ -14,15 +14,16 @@ use crate::day::DaySave;
 use crate::format::{money, thousands};
 use crate::hud;
 use crate::ids::MilitiaId;
-use crate::militia::Militia;
+use crate::militia::{Class, Militia};
 use crate::miniatures::{Look, Moment};
-use crate::movement::DAILY_POINTS;
 use crate::pieces::{self, Token};
 use crate::walk::Walks;
 
 /// How many members each figure stands for, and the most figures there are.
 const MEMBERS_PER_FIGURE: u32 = 200;
 const MOST_FIGURES: usize = 5;
+/// The most horsemen a band of cavalry has: a horse is bigger than a man on foot.
+const MOST_HORSEMEN: usize = 3;
 /// How high a step lifts the band, as a share of the token's radius, and how many times a second it steps.
 const STEP_HEIGHT: f32 = 0.18;
 const STEP_RATE: f32 = 8.0;
@@ -37,7 +38,12 @@ pub fn figures_for(members: u32) -> usize {
 
 /// What `militia` looks like.
 pub fn look(militia: &Militia) -> Look {
-    Look::Militia { figures: figures_for(militia.members), trained: militia.trained }
+    let figures = figures_for(militia.members);
+    match militia.class() {
+        Class::Cavalry => Look::Cavalry { figures: figures.min(MOST_HORSEMEN) },
+        Class::Archers => Look::Archers { figures },
+        class => Look::Militia { figures, trained: class != Class::Militia },
+    }
 }
 
 /// The token of `militia`, standing at `at` for a camera at `eye`, stepping to the time `marching` if it is walking.
@@ -78,10 +84,10 @@ pub fn tooltip(style: &Style, day: &DaySave, militia: &Militia) {
     let origin = day.city(militia.city).map_or("a city", |city| city.name.as_str());
     let rows = [
         ("Country", day.country_name(militia.country).to_owned()),
-        (if militia.trained { "Soldiers" } else { "Members" }, thousands(militia.members)),
+        (militia.people_label(), thousands(militia.members)),
         ("Raised in", origin.to_owned()),
         ("Upkeep", format!("{} coins a day", money(militia.upkeep()))),
-        ("Movement", format!("{} of {} points", militia.points, DAILY_POINTS)),
+        ("Movement", format!("{} of {} points", militia.points, militia.daily_points())),
     ];
     let mut rows = rows.to_vec();
     if militia.under_siege {
@@ -114,7 +120,7 @@ mod tests {
     use crate::test_support;
 
     fn militia(members: u32, at: Vec2) -> Militia {
-        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false, trained: false, pay_first: false, garrison: false }
+        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false }
     }
 
     fn eye_over(at: Vec2, world: &World, distance: f32) -> Vec3 {
@@ -134,6 +140,12 @@ mod tests {
         let soldiers = Militia { trained: true, ..militia(300, at) };
         assert_eq!(look(&militia(300, at)), Look::Militia { figures: 2, trained: false });
         assert_eq!(look(&soldiers), Look::Militia { figures: 2, trained: true });
+        let archers = Militia { trained: true, archers: true, ..militia(300, at) };
+        assert_eq!(look(&archers), Look::Archers { figures: 2 });
+        let mut cavalry = militia(900, at);
+        cavalry.set_class(Class::Cavalry);
+        assert_eq!(look(&cavalry), Look::Cavalry { figures: 3 }, "five figures' worth of members, but never more than three horsemen");
+        assert_eq!(look(&Militia { members: 100, ..cavalry }), Look::Cavalry { figures: 1 });
     }
 
     #[test]

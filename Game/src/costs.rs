@@ -15,6 +15,7 @@ use crate::format;
 use crate::gatherer::GathererKind;
 use crate::hud;
 use crate::path::{Kind, PATH_COST, ROAD_COST};
+use crate::barracks::BarracksKind;
 use crate::shipyard::ShipyardKind;
 
 /// A thing that can be built, and so has a cost.
@@ -25,7 +26,8 @@ pub enum Buildable {
     Bridge,
     Gatherer(GathererKind),
     Shipyard(ShipyardKind),
-    Barracks,
+    /// A barracks or an archery range.
+    Barracks(BarracksKind),
 }
 
 impl Buildable {
@@ -37,7 +39,7 @@ impl Buildable {
             Self::Bridge => "Bridge",
             Self::Gatherer(kind) => kind.label(),
             Self::Shipyard(kind) => kind.label(),
-            Self::Barracks => "Barracks",
+            Self::Barracks(kind) => kind.label(),
         }
     }
 
@@ -49,7 +51,7 @@ impl Buildable {
             Self::Bridge => BRIDGE_COST,
             Self::Gatherer(kind) => kind.cost(),
             Self::Shipyard(kind) => kind.cost(),
-            Self::Barracks => crate::barracks::COST,
+            Self::Barracks(kind) => kind.cost(),
         }
     }
 
@@ -60,7 +62,7 @@ impl Buildable {
             Self::Bridge => &BRIDGE_MATERIALS,
             Self::Gatherer(kind) => kind.materials(),
             Self::Shipyard(kind) => kind.materials(),
-            Self::Barracks => &crate::barracks::MATERIALS,
+            Self::Barracks(kind) => kind.materials(),
         }
     }
 
@@ -100,10 +102,12 @@ impl Buildable {
             Self::Bridge => format!("Carries a route across a river. Fails {} of days.", percent(BRIDGE_FAILURE)),
             Self::Gatherer(kind) => format!("Provides {} {} a day while it has a route to a city.", format::thousands_u64(kind.daily_yield()), kind.product()),
             Self::Shipyard(kind) => format!("Where warships are built: {} only, resting between ships.", if kind == ShipyardKind::Small { "small ones" } else { "small and large ones" }),
-            Self::Barracks => format!(
-                "Trains a militia of its country in the same region into soldiers, for {} coins and {} iron a member. Rests a day for every {} trained.",
-                crate::barracks::TRAINING_COINS,
-                crate::barracks::TRAINING_IRON,
+            Self::Barracks(kind) => format!(
+                "Trains a militia of its country in the same region into {}, for {} coins and {} {} a member. Rests a day for every {} trained.",
+                kind.trains_into(),
+                kind.training_coins_each(),
+                kind.training_each(),
+                resource_name(kind.training_resource()),
                 crate::barracks::MEMBERS_PER_REST_DAY
             ),
         }
@@ -121,7 +125,7 @@ impl Buildable {
                     lines.push((format!("Click it afterwards to upgrade it to {} for {}.", to.a_noun(), crate::newsreel::cost_text(&crate::shipyard::upgrade_full_cost())), style::TEXT_MUTED));
                 }
             }
-            Self::Barracks => lines.push(("Has to stand on dry land, not in the mountains, in a region you own.".to_owned(), style::TEXT_MUTED)),
+            Self::Barracks(_) => lines.push(("Has to stand on dry land, not in the mountains, in a region you own.".to_owned(), style::TEXT_MUTED)),
             _ => lines.push(("A failed one is mended by building it again, for the same.".to_owned(), style::TEXT_MUTED)),
         }
         lines
@@ -179,10 +183,19 @@ mod tests {
 
     #[test]
     fn a_barracks_costs_what_the_game_charges() {
-        assert_eq!(Buildable::Barracks.cost(), crate::barracks::COST);
-        assert_eq!(Buildable::Barracks.cost_text(), "5,000 coins, 500 stone, 500 wood and 200 iron");
-        assert_eq!(Buildable::Barracks.label(), "Barracks");
-        assert!(Buildable::Barracks.output().contains("20 coins and 1 iron a member"));
+        let barracks = Buildable::Barracks(BarracksKind::Barracks);
+        assert_eq!(barracks.cost(), crate::barracks::COST);
+        assert_eq!(barracks.cost_text(), "5,000 coins, 500 stone, 500 wood and 200 iron");
+        assert_eq!(barracks.label(), "Barracks");
+        assert!(barracks.output().contains("into soldiers, for 20 coins and 1 iron a member"));
+    }
+
+    #[test]
+    fn an_archery_range_costs_wood_and_stone_and_no_iron_and_trains_archers_for_wood() {
+        let range = Buildable::Barracks(BarracksKind::ArcheryRange);
+        assert_eq!(range.cost_text(), "5,000 coins, 800 wood and 200 stone");
+        assert_eq!(range.label(), "Archery range");
+        assert!(range.output().contains("into archers, for 20 coins and 2 wood a member"), "{}", range.output());
     }
 
     #[test]

@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::barracks::BarracksKind;
 use crate::calendar::Date;
 use crate::day::DaySave;
 use crate::failure::Thing;
@@ -358,9 +359,11 @@ pub enum Event {
     },
     /// The subject is a ship called `name`, which was scrapped. It is gone, and what it cost is not given back.
     ShipScrapped { name: String },
-    /// The subject is a barracks, which the country `country` built, in the region numbered `region` if the map has regions, for
-    /// `cost`.
+    /// The subject is a barracks (or an archery range, as `kind` says), which the country `country` built, in the region numbered
+    /// `region` if the map has regions, for `cost`.
     BarracksBuilt {
+        #[serde(default)]
+        kind: BarracksKind,
         country: CountryId,
         #[serde(default)]
         region: Option<u16>,
@@ -369,15 +372,19 @@ pub enum Event {
     /// The subject is a barracks, which belonged to the country `country`, and it was destroyed. It is gone, so what the news says of
     /// it is kept here.
     BarracksDestroyed {
+        #[serde(default)]
+        kind: BarracksKind,
         country: CountryId,
         #[serde(default)]
         region: Option<u16>,
     },
-    /// The subject is a militia called `name` of `members` people, which the country `country` trained as soldiers at a barracks in
-    /// the region numbered `region` if the map has regions, for `cost`.
+    /// The subject is a militia called `name` of `members` people, which the country `country` trained as soldiers at a barracks (or
+    /// as archers at an archery range, as `kind` says) in the region numbered `region` if the map has regions, for `cost`.
     MilitiaTrained {
         #[serde(default)]
         name: String,
+        #[serde(default)]
+        kind: BarracksKind,
         country: CountryId,
         members: u32,
         #[serde(default)]
@@ -677,18 +684,18 @@ impl News {
                 }
             }
             Event::ShipScrapped { ref name } => format!("{name} is scrapped"),
-            Event::BarracksBuilt { country, region, ref cost } => {
+            Event::BarracksBuilt { kind, country, region, ref cost } => {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
-                format!("{} builds a barracks{place}{}", day.country_name(country), for_cost(cost))
+                format!("{} builds {}{place}{}", day.country_name(country), kind.a_noun(), for_cost(cost))
             }
-            Event::BarracksDestroyed { country, region } => {
+            Event::BarracksDestroyed { kind, country, region } => {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
-                format!("{}'s barracks{place} is destroyed", day.country_name(country))
+                format!("{}'s {}{place} is destroyed", day.country_name(country), kind.noun())
             }
-            Event::MilitiaTrained { ref name, country, members, region, ref cost } => {
+            Event::MilitiaTrained { ref name, kind, country, members, region, ref cost } => {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
                 let name = if name.is_empty() { "a militia" } else { name };
-                format!("{} trains {name}, {} members, as soldiers{place}{}", day.country_name(country), thousands(members), for_cost(cost))
+                format!("{} trains {name}, {} members, as {}{place}{}", day.country_name(country), thousands(members), kind.trains_into(), for_cost(cost))
             }
             Event::Note { ref text } => text.clone(),
         }

@@ -27,9 +27,14 @@ pub const MAX_NAME_CHARS: usize = 64;
 /// What each member costs to raise, in coins.
 pub const RAISING_COST: i64 = 10;
 /// What each member costs to keep each day, in coins, and what each soldier (a member who has been trained at a barracks, see
-/// [`crate::barracks`]) costs: three times as much.
+/// [`crate::barracks`]) costs: three times as much, and an archer (trained at an archery range) four times.
 pub const DAILY_UPKEEP: i64 = 1;
 pub const SOLDIER_UPKEEP: i64 = 3;
+pub const ARCHER_UPKEEP: i64 = 4;
+/// What each member of cavalry (trained at a stable) costs to keep each day: they and their horses eat.
+pub const CAVALRY_UPKEEP: i64 = 6;
+/// How many times the movement points of a militia cavalry get each day.
+pub const CAVALRY_MOVE_FACTOR: u32 = 2;
 
 /// How far outside the edge of a city its militia camp, in meters: the nearest, and the rings beyond that to try when
 /// the ground there is wet or high, or the places are taken.
@@ -41,6 +46,55 @@ const CAMP_SPACING: f32 = 22.0;
 const SPLIT_RINGS: [f32; 3] = [24.0, 40.0, 64.0];
 /// A turn of this many radians takes the next camp of a city well away from the last, however many there are.
 const GOLDEN_ANGLE: f32 = 2.399_963;
+
+/// What a militia is: plain militia, or, once trained, soldiers (at a barracks), archers (at an archery range) or cavalry (at a stable).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    Militia,
+    Soldiers,
+    Archers,
+    Cavalry,
+}
+
+impl Class {
+    /// What it is called, to begin a sentence.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Militia => "Militia",
+            Self::Soldiers => "Soldiers",
+            Self::Archers => "Archers",
+            Self::Cavalry => "Cavalry",
+        }
+    }
+
+    /// What to call the people in it, to begin a sentence.
+    pub fn people_label(self) -> &'static str {
+        match self {
+            Self::Militia => "Members",
+            Self::Soldiers => "Soldiers",
+            Self::Archers => "Archers",
+            Self::Cavalry => "Riders",
+        }
+    }
+
+    /// What each of its members costs to keep each day, in coins.
+    pub fn upkeep_per_member(self) -> i64 {
+        match self {
+            Self::Militia => DAILY_UPKEEP,
+            Self::Soldiers => SOLDIER_UPKEEP,
+            Self::Archers => ARCHER_UPKEEP,
+            Self::Cavalry => CAVALRY_UPKEEP,
+        }
+    }
+
+    /// The movement points it gets each day: cavalry get twice as many as the rest.
+    pub fn daily_points(self) -> u32 {
+        match self {
+            Self::Cavalry => DAILY_POINTS * CAVALRY_MOVE_FACTOR,
+            _ => DAILY_POINTS,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Militia {
@@ -68,10 +122,19 @@ pub struct Militia {
     /// (see [`after_siege`]).
     #[serde(default)]
     pub under_siege: bool,
-    /// Whether it has been trained at a barracks, and so is soldiers and not militia. Every member of it is trained, and each costs
-    /// more to keep. A trained group can only be combined with another trained group. (One saved before there were barracks is not.)
+    /// Whether it has been trained at a barracks or an archery range, and so is soldiers or archers and not militia. Every member of
+    /// it is trained, and each costs more to keep. A trained group can only be combined with another of the same kind. (One saved
+    /// before there were barracks is not.)
     #[serde(default)]
     pub trained: bool,
+    /// Whether it was trained at an archery range, and so is archers and not soldiers. Only a trained group can be this. (One saved
+    /// before there were archers is not.)
+    #[serde(default)]
+    pub archers: bool,
+    /// Whether it was trained at a stable, and so is cavalry. Only a trained group can be this. (One saved before there was cavalry is
+    /// not.)
+    #[serde(default)]
+    pub cavalry: bool,
     /// Whether the player picked it to be paid for, in the list that comes up when its country can't afford all its upkeep (see
     /// [`crate::upkeep`]). The country pays for the units picked before the others, so when there is not enough money it is the others
     /// that go unpaid.
@@ -120,14 +183,41 @@ impl Militia {
         if self.name.trim().is_empty() { self.kind_label() } else { &self.name }
     }
 
-    /// What it is: "Militia" or, once trained, "Soldiers".
+    /// What it is: plain militia, or soldiers, archers or cavalry once trained.
+    pub fn class(&self) -> Class {
+        match (self.trained, self.cavalry, self.archers) {
+            (false, _, _) => Class::Militia,
+            (true, true, _) => Class::Cavalry,
+            (true, false, true) => Class::Archers,
+            (true, false, false) => Class::Soldiers,
+        }
+    }
+
+    /// Makes it of `class`: trained, as soldiers, archers or cavalry, or not trained at all.
+    pub fn set_class(&mut self, class: Class) {
+        self.trained = class != Class::Militia;
+        self.archers = class == Class::Archers;
+        self.cavalry = class == Class::Cavalry;
+    }
+
+    /// What it is, to begin a sentence: "Militia", "Soldiers", "Archers" or "Cavalry".
     pub fn kind_label(&self) -> &'static str {
-        if self.trained { "Soldiers" } else { "Militia" }
+        self.class().label()
+    }
+
+    /// What to call the people in it, to begin a sentence: "Members", "Soldiers", "Archers" or "Riders".
+    pub fn people_label(&self) -> &'static str {
+        self.class().people_label()
     }
 
     /// What each of its members costs to keep each day, in coins.
     pub fn upkeep_per_member(&self) -> i64 {
-        if self.trained { SOLDIER_UPKEEP } else { DAILY_UPKEEP }
+        self.class().upkeep_per_member()
+    }
+
+    /// The movement points it gets each day.
+    pub fn daily_points(&self) -> u32 {
+        self.class().daily_points()
     }
 
     /// What it costs to keep for a day, in coins.

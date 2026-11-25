@@ -54,9 +54,9 @@ pub fn strength(pitch: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// How much of the day's movement points `points` is, from 0 to 1.
-fn share(points: u32) -> f32 {
-    (points as f32 / DAILY_POINTS as f32).clamp(0.0, 1.0)
+/// How much of a day's movement points, `full` of them, `points` is, from 0 to 1.
+fn share(points: u32, full: u32) -> f32 {
+    (points as f32 / full as f32).clamp(0.0, 1.0)
 }
 
 /// The point over `token` that a bubble points to.
@@ -73,7 +73,7 @@ pub fn bubbles(world: &World, day: &DaySave, walks: &Walks, eye: Vec3) -> Vec<Bu
         pieces::within_view(eye, at.x, at.y).then(|| Bubble {
             over: over(&Token::at(world, militia_view::look(militia), at.x, at.y, eye)),
             country: country(militia.country),
-            moves: share(militia.points),
+            moves: share(militia.points, militia.daily_points()),
             under_siege: militia.under_siege,
         })
     });
@@ -82,7 +82,7 @@ pub fn bubbles(world: &World, day: &DaySave, walks: &Walks, eye: Vec3) -> Vec<Bu
         pieces::within_view(eye, at.x, at.y).then(|| Bubble {
             over: over(&Token::at(world, ship_view::look(ship.kind), at.x, at.y, eye)),
             country: country(ship.country),
-            moves: share(ship.points),
+            moves: share(ship.points, DAILY_POINTS),
             under_siege: false,
         })
     });
@@ -174,8 +174,9 @@ mod tests {
 
     #[test]
     fn the_ring_is_the_share_of_the_points_left() {
-        assert_eq!((share(DAILY_POINTS), share(0), share(DAILY_POINTS * 2)), (1.0, 0.0, 1.0));
-        assert!((share(DAILY_POINTS / 2) - 0.5).abs() < 0.01);
+        assert_eq!((share(DAILY_POINTS, DAILY_POINTS), share(0, DAILY_POINTS), share(DAILY_POINTS * 2, DAILY_POINTS)), (1.0, 0.0, 1.0));
+        assert!((share(DAILY_POINTS / 2, DAILY_POINTS) - 0.5).abs() < 0.01);
+        assert!((share(DAILY_POINTS, DAILY_POINTS * 2) - 0.5).abs() < 0.01, "cavalry have twice as many to spend");
     }
 
     #[test]
@@ -184,7 +185,7 @@ mod tests {
         let at = test_support::inland_spot(&world, 50.0);
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         let country = CountryId::new();
-        day.militias.push(Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country, city: CityId::new(), raised: Date::FIRST, members: 300, x: at.x, z: at.y, points: 0, under_siege: true, trained: false, pay_first: false, garrison: false });
+        day.militias.push(Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country, city: CityId::new(), raised: Date::FIRST, members: 300, x: at.x, z: at.y, points: 0, under_siege: true, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false });
         let eye = vec3(at.x + 200.0, world.surface_height(at.x, at.y) + 150.0, at.y);
         let bubbles = bubbles(&world, &day, &Walks::default(), eye);
         assert_eq!(bubbles.len(), 1);

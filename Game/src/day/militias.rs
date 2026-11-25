@@ -85,7 +85,7 @@ impl DaySave {
         }
         let id = MilitiaId::new();
         let name = militia::default_name(&name, id);
-        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS, under_siege: false, trained: false, pay_first: false, garrison: false });
+        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS, under_siege: false, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false });
         self.newsreel.push(News::about(id, Event::MilitiaRaised { name, country, city, members, cost: vec![Cost::coins(cost)] }));
         Ok(())
     }
@@ -122,11 +122,11 @@ impl DaySave {
 
     /// The militia that the one with this id could be combined with, or could be if there were room: the others of its
     /// country that stand in the same map region as it, where `region` says which region a militia is in. Nothing if
-    /// the map has no region where it stands. Soldiers can only be combined with soldiers, and militia with militia.
+    /// the map has no region where it stands. Soldiers can only be combined with soldiers, archers with archers, cavalry with cavalry, and militia with militia.
     pub fn merge_partners(&self, id: MilitiaId, region: &dyn Fn(&Militia) -> Option<u16>) -> Vec<&Militia> {
         let Some(unit) = self.militia(id) else { return Vec::new() };
         let Some(here) = region(unit) else { return Vec::new() };
-        self.militias.iter().filter(|m| m.id != id && m.country == unit.country && m.trained == unit.trained && region(m) == Some(here)).collect()
+        self.militias.iter().filter(|m| m.id != id && m.country == unit.country && m.class() == unit.class() && region(m) == Some(here)).collect()
     }
 
     /// Combines the militia `absorb` into the militia `keep`: they must belong to the same country and stand in the same
@@ -142,8 +142,14 @@ impl DaySave {
         if first.country != second.country {
             return Err(format!("{} and {} belong to different countries.", first.title(), second.title()));
         }
-        if first.trained != second.trained {
-            return Err(format!("{} and {} can't be combined: one is soldiers, who have been trained, and the other is militia.", first.title(), second.title()));
+        if first.class() != second.class() {
+            return Err(format!(
+                "{} and {} can't be combined: one is {}, and the other is {}.",
+                first.title(),
+                second.title(),
+                first.kind_label().to_lowercase(),
+                second.kind_label().to_lowercase()
+            ));
         }
         if regions.0.is_none() || regions.0 != regions.1 {
             return Err(format!("{} and {} are not in the same region.", first.title(), second.title()));
@@ -232,7 +238,7 @@ impl DaySave {
     /// Gives every militia all its movement points again, for a new day, except a garrison, which gets none.
     pub fn rest_militia(&mut self) {
         for militia in &mut self.militias {
-            militia.points = if militia.garrison { 0 } else { DAILY_POINTS };
+            militia.points = if militia.garrison { 0 } else { militia.daily_points() };
         }
     }
 

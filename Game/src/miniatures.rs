@@ -13,6 +13,12 @@
 //! - **Militia and soldiers** are figures, more of them the more members there are: militia in brown, with straw hats, spears
 //!   and a pennant, on a gold rim; soldiers in their country's color, with steel helmets, pikes and shields and a square banner,
 //!   on a steel rim.
+//! - **Archers** are militia that have been trained at an archery range: figures in green hoods and tunics with a bow in one hand and
+//!   a quiver of feathered arrows on the back, on a green rim, with a pennant. An archery range is a thatched shed with a row of
+//!   round targets on hay bales down the range, behind a low rail to shoot from.
+//! - **Cavalry** are militia that have been trained at a stable: up to three horsemen, each a rider in steel with a lance on a bay,
+//!   dark or grey horse with a saddle cloth of the country's color, on a copper rim, with a pennant. A stable is a long barn with a
+//!   red roof beside a fenced paddock with a horse in it.
 //! - **Warships** are hulls with sails, in a gold ring on the water: a small one has one mast and a striped sail, and a large one is
 //!   longer and has three masts and a row of gun ports.
 //!
@@ -30,6 +36,10 @@ use crate::model::{shade, Finish, Model};
 pub enum Look {
     /// A militia of `figures` figures (1 to 5), which are soldiers if it is `trained`.
     Militia { figures: usize, trained: bool },
+    /// A militia of `figures` figures (1 to 5) that has been trained as archers.
+    Archers { figures: usize },
+    /// A militia of `figures` horsemen (1 to 3) that has been trained as cavalry.
+    Cavalry { figures: usize },
     /// A warship, small or large.
     Ship { large: bool },
     Woodcutter,
@@ -43,6 +53,8 @@ pub enum Look {
     /// A shipyard, small or large.
     Shipyard { large: bool },
     Barracks,
+    ArcheryRange,
+    Stable,
 }
 
 impl Look {
@@ -50,12 +62,14 @@ impl Look {
     /// of a building's plot.
     pub fn reach(self) -> f32 {
         match self {
-            Look::Militia { .. } => UNIT,
+            Look::Militia { .. } | Look::Archers { .. } | Look::Cavalry { .. } => UNIT,
             Look::Ship { large } => if large { 1.3 } else { 1.0 },
             Look::Woodcutter | Look::Stonecutter => 1.0,
             Look::Sawmill | Look::Quarry | Look::IronMine | Look::CopperMine | Look::SulphurPit | Look::OilWell => 1.25,
             Look::Shipyard { large } => if large { 1.6 } else { 1.25 },
             Look::Barracks => 1.35,
+            Look::ArcheryRange => 1.3,
+            Look::Stable => 1.4,
         }
     }
 
@@ -63,6 +77,8 @@ impl Look {
     pub fn height(self) -> f32 {
         match self {
             Look::Militia { trained, .. } => UNIT * if trained { 1.75 } else { 1.6 },
+            Look::Archers { .. } => UNIT * 1.6,
+            Look::Cavalry { .. } => UNIT * 1.7,
             Look::Ship { large } => if large { 1.95 } else { 1.45 },
             Look::Woodcutter => 1.22,
             Look::Sawmill => 1.25,
@@ -74,6 +90,8 @@ impl Look {
             Look::OilWell => 2.2,
             Look::Shipyard { large } => if large { 1.85 } else { 1.75 },
             Look::Barracks => 1.85,
+            Look::ArcheryRange => 1.62,
+            Look::Stable => 1.7,
         }
     }
 }
@@ -93,6 +111,8 @@ pub struct Moment {
 pub fn build(m: &mut Model, look: Look, country: Color, moment: Moment) {
     match look {
         Look::Militia { figures, trained } => m.scaled(Vec3::ZERO, UNIT, |m| militia(m, figures, trained, country, moment.time)),
+        Look::Archers { figures } => m.scaled(Vec3::ZERO, UNIT, |m| archers(m, figures, country, moment.time)),
+        Look::Cavalry { figures } => m.scaled(Vec3::ZERO, UNIT, |m| cavalry(m, figures, country, moment.time)),
         Look::Ship { large } => ship(m, large, country, moment.time),
         Look::Woodcutter => woodcutter(m, country),
         Look::Sawmill => sawmill(m, country, moment),
@@ -104,6 +124,8 @@ pub fn build(m: &mut Model, look: Look, country: Color, moment: Moment) {
         Look::OilWell => oil_well(m, country, moment),
         Look::Shipyard { large } => shipyard(m, large, country),
         Look::Barracks => barracks(m, country, moment.time),
+        Look::ArcheryRange => archery_range(m, country, moment.time),
+        Look::Stable => stable(m, country, moment.time),
     }
 }
 
@@ -122,6 +144,28 @@ pub fn build_simple(m: &mut Model, look: Look, country: Color) {
             let top = if trained { 1.5 } else { 1.38 };
             m.rod(v(-0.62, floor, -0.5), v(-0.62, floor + top, -0.5), 0.03, WOOD_DARK);
             m.cuboid(v(-0.62, floor + top - 0.14, -0.5 + 0.2), v(0.02, 0.26, 0.4), country, Finish::Matte);
+        }),
+        Look::Archers { figures } => m.scaled(Vec3::ZERO, UNIT, |m| {
+            let floor = unit_base(m, PINE, country);
+            for (x, z) in formation(figures) {
+                let foot = v(x * 1.1, floor, z * 1.1);
+                m.column(foot, 0.2, 0.12, 0.85, 6, ARCHER_GREEN, Finish::Matte);
+                m.ball(foot + Vec3::Y * 1.0, v(0.16, 0.16, 0.16), 6, shade(PINE, 1.15), Finish::Matte);
+                m.rod(foot + v(0.3, 0.2, -0.15), foot + v(0.3, 1.0, -0.15), 0.03, WOOD_DARK);
+            }
+            m.rod(v(-0.62, floor, -0.5), v(-0.62, floor + 1.38, -0.5), 0.03, WOOD_DARK);
+            m.cuboid(v(-0.62, floor + 1.24, -0.5 + 0.2), v(0.02, 0.26, 0.4), country, Finish::Matte);
+        }),
+        Look::Cavalry { figures } => m.scaled(Vec3::ZERO, UNIT, |m| {
+            let floor = unit_base(m, CAVALRY_RIM, country);
+            for (k, (x, z)) in formation(figures).iter().enumerate() {
+                let foot = v(x * 1.1, floor, z * 1.1);
+                m.ball(foot + v(0.0, 0.42, 0.0), v(0.5, 0.2, 0.18), 6, HORSE_COATS[k % HORSE_COATS.len()], Finish::Matte);
+                m.column(foot + v(0.0, 0.5, 0.0), 0.16, 0.1, 0.55, 6, country, Finish::Matte);
+                m.ball(foot + v(0.0, 1.14, 0.0), v(0.14, 0.14, 0.14), 6, shade(country, 1.25), Finish::Matte);
+            }
+            m.rod(v(-0.62, floor, -0.5), v(-0.62, floor + 1.5, -0.5), 0.03, WOOD_DARK);
+            m.cuboid(v(-0.62, floor + 1.36, -0.5 + 0.2), v(0.02, 0.26, 0.4), country, Finish::Matte);
         }),
         Look::Ship { large } => {
             let ring = if large { 1.3 } else { 1.0 };
@@ -202,6 +246,26 @@ pub fn build_simple(m: &mut Model, look: Look, country: Color) {
                 m.column(v(x, f + 0.75, z), 0.22, 0.0, 0.3, 6, country, Finish::Gloss);
             }
         }
+        Look::Stable => {
+            let half = Look::Stable.reach();
+            let f = plot(m, half, DIRT, country);
+            m.block(v(-0.7, f, 0.0), v(0.55, 0.4, 1.4), WOOD);
+            m.block(v(-0.7, f + 0.4, 0.0), v(0.7, 0.14, 1.5), ROOF_RED);
+            m.ball(v(0.45, f + 0.3, 0.0), v(0.3, 0.14, 0.12), 6, HORSE_COATS[0], Finish::Matte);
+            m.rod(v(0.45, f + 0.3, 0.0), v(0.8, f + 0.6, 0.0), 0.05, HORSE_COATS[0]);
+            m.rod(v(-0.2, f, 0.0), v(-0.2, f + 1.1, 0.0), 0.03, WOOD_DARK);
+        }
+        Look::ArcheryRange => {
+            let half = Look::ArcheryRange.reach();
+            let f = plot(m, half, GRASS, country);
+            m.block(v(-half * 0.55, f, 0.0), v(0.5, 0.34, 1.1), WOOD);
+            m.block(v(-half * 0.55, f + 0.34, 0.0), v(0.62, 0.12, 1.24), country);
+            for z in [-0.55, 0.0, 0.55] {
+                m.rod(v(0.8, f, z), v(0.8, f + 0.3, z), 0.03, WOOD_DARK);
+                m.ball(v(0.78, f + 0.42, z), v(0.03, 0.2, 0.2), 8, ROOF_RED, Finish::Matte);
+            }
+            m.rod(v(-0.1, f + 0.9, 0.0), v(-0.1, f + 1.4, 0.0), 0.03, WOOD_DARK);
+        }
     }
 }
 
@@ -227,6 +291,10 @@ const LEATHER: Color = c(0.40, 0.26, 0.14);
 const STRAW: Color = c(0.86, 0.74, 0.40);
 const TUNICS: [Color; 3] = [c(0.50, 0.34, 0.20), c(0.62, 0.50, 0.28), c(0.40, 0.42, 0.30)];
 const BREECHES: Color = c(0.30, 0.24, 0.18);
+const ARCHER_GREEN: Color = c(0.26, 0.40, 0.22);
+/// The copper of the rim of cavalry's base, and the coats a horse can have: bay, dark brown and grey.
+const CAVALRY_RIM: Color = c(0.72, 0.40, 0.24);
+const HORSE_COATS: [Color; 3] = [c(0.48, 0.29, 0.16), c(0.20, 0.16, 0.14), c(0.74, 0.72, 0.66)];
 
 const BARK: Color = c(0.36, 0.24, 0.15);
 const WOOD: Color = c(0.52, 0.36, 0.21);
@@ -381,6 +449,8 @@ struct Kit {
     /// The height of the top of the spear or pike, and the shield on the other arm, if there is one.
     reach: f32,
     shield: Option<Color>,
+    /// Whether it carries a bow, and a quiver on its back, and not a spear.
+    bow: bool,
 }
 
 /// A figure standing at `foot`, facing `face` (0 is the front of the model, +x), dressed and armed as `kit` says.
@@ -414,11 +484,23 @@ fn person(m: &mut Model, foot: Vec3, face: f32, kit: Kit) {
             m.oriented_box(at(-0.01, 0.665, 0.0), turn, v(0.14, 0.05, 0.026), crest, Finish::Matte);
         }
     }
-    // The spear or pike in the right hand, with a steel point.
-    let shaft = at(0.09, 0.02, 0.14);
-    let tip = at(0.09, kit.reach, 0.14);
-    m.frustum(shaft, tip, 0.013, 0.011, 5, 0.0, WOOD, Finish::Matte);
-    m.frustum(tip, tip + Vec3::Y * 0.11, 0.03, 0.0, 6, 0.0, STEEL, Finish::Metal);
+    if kit.bow {
+        // A bow held out in front by the left hand, bending forward in the middle, with its string, and a quiver of arrows on the back.
+        let limb = |t: f32| at(0.15 + 0.07 * (1.0 - t * t), 0.34 + 0.3 * t, -0.11);
+        for k in 0..4 {
+            let (a, b) = (limb(k as f32 / 2.0 - 1.0), limb((k + 1) as f32 / 2.0 - 1.0));
+            m.rod(a, b, 0.014, WOOD_DARK);
+        }
+        m.rod(limb(-1.0), limb(1.0), 0.005, CLOTH);
+        m.frustum(at(-0.09, 0.18, 0.06), at(-0.14, 0.5, 0.03), 0.04, 0.046, 6, 0.0, LEATHER, Finish::Matte);
+        m.ball(at(-0.14, 0.53, 0.03), Vec3::splat(0.032), 5, CLOTH, Finish::Matte);
+    } else {
+        // The spear or pike in the right hand, with a steel point.
+        let shaft = at(0.09, 0.02, 0.14);
+        let tip = at(0.09, kit.reach, 0.14);
+        m.frustum(shaft, tip, 0.013, 0.011, 5, 0.0, WOOD, Finish::Matte);
+        m.frustum(tip, tip + Vec3::Y * 0.11, 0.03, 0.0, 6, 0.0, STEEL, Finish::Metal);
+    }
     if let Some(color) = kit.shield {
         m.oriented_box(at(0.145, 0.33, -0.11), turn, v(0.02, 0.3, 0.23), STEEL, Finish::Metal);
         m.oriented_box(at(0.158, 0.33, -0.11), turn, v(0.012, 0.26, 0.19), color, Finish::Gloss);
@@ -444,16 +526,70 @@ fn militia(m: &mut Model, figures: usize, trained: bool, country: Color, time: f
     let floor = unit_base(m, if trained { STEEL } else { GOLD }, country);
     for (k, (x, z)) in formation(figures).iter().enumerate() {
         let kit = if trained {
-            Kit { tunic: country, armor: true, legs: c(0.24, 0.24, 0.26), hat: Hat::Helmet(shade(country, 1.25)), reach: 1.04, shield: Some(country) }
+            Kit { tunic: country, armor: true, legs: c(0.24, 0.24, 0.26), hat: Hat::Helmet(shade(country, 1.25)), reach: 1.04, shield: Some(country), bow: false }
         } else {
             let hat = if k % 3 == 1 { Hat::Cap(shade(country, 0.85)) } else { Hat::Straw };
-            Kit { tunic: TUNICS[k % TUNICS.len()], armor: false, legs: BREECHES, hat, reach: 0.92, shield: None }
+            Kit { tunic: TUNICS[k % TUNICS.len()], armor: false, legs: BREECHES, hat, reach: 0.92, shield: None, bow: false }
         };
         // Each a little turned from the next, so they don't stand like posts.
         let face = ((k * 7) % 5) as f32 * 0.08 - 0.16;
         m.scaled(v(x * 1.1, floor, z * 1.1), FIGURE, |m| person(m, Vec3::ZERO, face, kit));
     }
     flag(m, v(-0.62, floor, -0.5), if trained { 1.5 } else { 1.38 }, country, time, trained, 1.0);
+}
+
+/// A militia trained as archers, of `figures` figures: in green, with a hood, a bow and a quiver, on a green rim.
+fn archers(m: &mut Model, figures: usize, country: Color, time: f32) {
+    let floor = unit_base(m, PINE, country);
+    for k in 0..formation(figures).len() {
+        let (x, z) = formation(figures)[k];
+        let kit = Kit { tunic: ARCHER_GREEN, armor: false, legs: BREECHES, hat: Hat::Cap(shade(PINE, 1.15)), reach: 0.0, shield: None, bow: true };
+        let face = ((k * 7) % 5) as f32 * 0.08 - 0.16;
+        m.scaled(v(x * 1.1, floor, z * 1.1), FIGURE, |m| person(m, Vec3::ZERO, face, kit));
+    }
+    flag(m, v(-0.62, floor, -0.5), 1.38, country, time, false, 1.0);
+}
+
+/// A horse standing at `foot`, facing `face` (0 is +x), of coat `coat`, with a saddle cloth of `cloth`, as big as a horse is against a
+/// man on foot (about 0.5 high at the back and 0.6 long).
+fn horse(m: &mut Model, foot: Vec3, face: f32, coat: Color, cloth: Color) {
+    let turn = Mat3::from_rotation_y(face);
+    let at = |x: f32, y: f32, z: f32| foot + turn * v(x, y, z);
+    let dark = shade(coat, 0.55);
+    // The body and the rump, the chest, and the neck going up to the head, with its snout, ears and mane.
+    m.ball(at(0.0, 0.36, 0.0), v(0.3, 0.14, 0.12), 12, coat, Finish::Matte);
+    m.ball(at(-0.14, 0.38, 0.0), v(0.17, 0.15, 0.125), 10, coat, Finish::Matte);
+    m.ball(at(0.2, 0.39, 0.0), v(0.14, 0.15, 0.11), 10, coat, Finish::Matte);
+    m.frustum(at(0.24, 0.42, 0.0), at(0.4, 0.68, 0.0), 0.07, 0.045, 8, 0.0, coat, Finish::Matte);
+    m.ball(at(0.46, 0.7, 0.0), v(0.085, 0.052, 0.042), 8, coat, Finish::Matte);
+    m.frustum(at(0.49, 0.69, 0.0), at(0.58, 0.62, 0.0), 0.04, 0.028, 6, 0.0, shade(coat, 0.85), Finish::Matte);
+    for side in [-1.0, 1.0] {
+        m.frustum(at(0.4, 0.74, 0.03 * side), at(0.4, 0.8, 0.035 * side), 0.016, 0.0, 4, 0.0, coat, Finish::Matte);
+    }
+    m.rod(at(0.4, 0.74, 0.0), at(0.27, 0.54, 0.0), 0.026, dark);
+    // The legs, with hooves, and the tail.
+    for (x, side) in [(0.21, -1.0), (0.21, 1.0), (-0.24, -1.0), (-0.24, 1.0)] {
+        m.frustum(at(x, 0.3, 0.075 * side), at(x, 0.04, 0.075 * side), 0.036, 0.022, 6, 0.0, coat, Finish::Matte);
+        m.frustum(at(x, 0.04, 0.075 * side), at(x, 0.0, 0.075 * side), 0.03, 0.034, 6, 0.0, dark, Finish::Matte);
+    }
+    m.frustum(at(-0.3, 0.42, 0.0), at(-0.42, 0.14, 0.0), 0.03, 0.014, 5, 0.0, dark, Finish::Matte);
+    // The saddle cloth, in the color of the country.
+    m.oriented_box(at(0.0, 0.5, 0.0), turn, v(0.26, 0.03, 0.27), cloth, Finish::Gloss);
+}
+
+/// A militia trained as cavalry, of `figures` horsemen: each a rider in steel with a lance on a horse, on a copper rim, with a pennant.
+fn cavalry(m: &mut Model, figures: usize, country: Color, time: f32) {
+    let floor = unit_base(m, CAVALRY_RIM, country);
+    for k in 0..formation(figures).len() {
+        let (x, z) = formation(figures)[k];
+        let face = ((k * 7) % 5) as f32 * 0.08 - 0.16;
+        let kit = Kit { tunic: country, armor: true, legs: c(0.24, 0.24, 0.26), hat: Hat::Helmet(shade(country, 1.25)), reach: 1.0, shield: None, bow: false };
+        m.scaled(v(x * 1.1, floor, z * 1.1), 0.95, |m| {
+            horse(m, Vec3::ZERO, face, HORSE_COATS[k % HORSE_COATS.len()], country);
+            person(m, Mat3::from_rotation_y(face) * v(-0.02, 0.43, 0.0), face, kit);
+        });
+    }
+    flag(m, v(-0.62, floor, -0.5), 1.5, country, time, false, 1.0);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -1085,15 +1221,82 @@ fn barracks(m: &mut Model, country: Color, time: f32) {
     flag(m, v(0.32, f, -0.38), 1.55, country, time, true, 1.25);
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------
+// Stables.
+
+fn stable(m: &mut Model, country: Color, time: f32) {
+    let half = Look::Stable.reach();
+    let f = plot(m, half, DIRT, country);
+    // The long barn at the back, with a red roof, a hayloft door and the doors of the stalls on its front.
+    house(m, v(-0.72, f, 0.0), v(0.55, 0.42, 1.5), FRAC_PI_2, WOOD, ROOF_RED, 0.34);
+    m.cuboid(v(-0.43, f + 0.55, 0.0), v(0.02, 0.2, 0.24), WOOD_DARK, Finish::Matte);
+    for z in [-0.5, -0.17, 0.17, 0.5] {
+        m.cuboid(v(-0.435, f + 0.17, z), v(0.02, 0.3, 0.2), WOOD_DARK, Finish::Matte);
+    }
+    // The paddock in front: a fence of posts and two rails round it, open at the barn, and a horse in it.
+    let (x0, x1, z0) = (-0.3, 1.0, 0.85);
+    for (a, b) in [(v(x0, 0.0, -z0), v(x1, 0.0, -z0)), (v(x0, 0.0, z0), v(x1, 0.0, z0)), (v(x1, 0.0, -z0), v(x1, 0.0, z0))] {
+        let steps = (a.distance(b) / 0.3).ceil() as usize;
+        for k in 0..=steps {
+            let p = a.lerp(b, k as f32 / steps as f32);
+            m.rod(v(p.x, f, p.z), v(p.x, f + 0.2, p.z), 0.018, WOOD);
+        }
+        for height in [0.09, 0.17] {
+            m.rod(v(a.x, f + height, a.z), v(b.x, f + height, b.z), 0.012, WOOD);
+        }
+    }
+    horse(m, v(0.35, f, 0.2), 0.5, HORSE_COATS[0], country);
+    horse(m, v(0.6, f, -0.4), -0.6, HORSE_COATS[2], country);
+    // A hay bale and a trough, and the banner of the country.
+    m.block(v(-0.05, f, -0.65), v(0.22, 0.2, 0.34), THATCH);
+    m.block(v(0.8, f, 0.62), v(0.4, 0.1, 0.14), WOOD_DARK);
+    flag(m, v(-0.5, f + 0.5, -0.9), 0.9, country, time, true, 1.0);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Archery ranges.
+
+fn archery_range(m: &mut Model, country: Color, time: f32) {
+    let half = Look::ArcheryRange.reach();
+    let f = plot(m, half, GRASS, country);
+    // The shed at the back, with a thatched roof, open to the range, and a rack of bows.
+    house(m, v(-0.72, f, 0.0), v(0.42, 0.34, 1.1), FRAC_PI_2, WOOD, THATCH, 0.34);
+    for z in [-0.12, 0.0, 0.12] {
+        m.rod(v(-0.44, f + 0.1, z), v(-0.44, f + 0.34, z + 0.05), 0.012, WOOD_DARK);
+    }
+    // The low rail to shoot from.
+    for z in [-0.8, -0.4, 0.0, 0.4, 0.8] {
+        m.rod(v(-0.2, f, z), v(-0.2, f + 0.16, z), 0.016, WOOD);
+    }
+    m.rod(v(-0.2, f + 0.15, -0.8), v(-0.2, f + 0.15, 0.8), 0.014, WOOD);
+    // The targets down the range, each a round board of rings on a post, in front of a hay bale, with an arrow or two in it.
+    for (k, z) in [-0.58, 0.0, 0.58].into_iter().enumerate() {
+        m.block(v(0.98, f, z), v(0.22, 0.2, 0.42), THATCH);
+        m.rod(v(0.84, f, z), v(0.84, f + 0.32, z), 0.022, WOOD_DARK);
+        m.ball(v(0.84, f + 0.44, z), v(0.03, 0.2, 0.2), 14, CLOTH, Finish::Matte);
+        m.ball(v(0.823, f + 0.44, z), v(0.03, 0.14, 0.14), 14, ROOF_RED, Finish::Matte);
+        m.ball(v(0.806, f + 0.44, z), v(0.03, 0.08, 0.08), 12, CLOTH, Finish::Matte);
+        m.ball(v(0.789, f + 0.44, z), v(0.03, 0.04, 0.04), 10, GOLD, Finish::Metal);
+        let aim = if k == 1 { 0.05 } else { -0.06 };
+        m.rod(v(0.55, f + 0.5 + aim, z + 0.02), v(0.82, f + 0.44 + aim * 0.4, z + 0.02), 0.008, WOOD);
+    }
+    // The banner of the country over the shed.
+    flag(m, v(-0.5, f + 0.2, -0.7), 1.15, country, time, true, 1.0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const COUNTRY: Color = Color::new(0.2, 0.4, 0.9, 1.0);
-    const ALL: [Look; 16] = [
+    const ALL: [Look; 22] = [
         Look::Militia { figures: 1, trained: false },
         Look::Militia { figures: 5, trained: false },
         Look::Militia { figures: 3, trained: true },
+        Look::Archers { figures: 1 },
+        Look::Archers { figures: 5 },
+        Look::Cavalry { figures: 1 },
+        Look::Cavalry { figures: 3 },
         Look::Ship { large: false },
         Look::Ship { large: true },
         Look::Woodcutter,
@@ -1107,6 +1310,8 @@ mod tests {
         Look::Shipyard { large: false },
         Look::Shipyard { large: true },
         Look::Barracks,
+        Look::ArcheryRange,
+        Look::Stable,
     ];
 
     fn built(look: Look) -> Model {
@@ -1164,6 +1369,24 @@ mod tests {
         assert!(count(1, false) < count(2, false) && count(2, false) < count(5, false));
         assert_ne!(count(3, false), count(3, true));
         assert_eq!(formation(9).len(), 5);
+    }
+
+    #[test]
+    fn cavalry_are_horsemen_that_are_bigger_than_a_band_on_foot() {
+        let count = |figures| built(Look::Cavalry { figures }).len();
+        assert!(count(1) < count(2) && count(2) < count(3));
+        assert!(count(3) > built(Look::Militia { figures: 3, trained: true }).len(), "a horse is more to build than a man");
+        assert!(Look::Cavalry { figures: 3 }.height() > Look::Archers { figures: 3 }.height());
+        assert!(Look::Stable.reach() > Look::Barracks.reach() * 0.9 && Look::Stable.reach() > Look::ArcheryRange.reach());
+    }
+
+    #[test]
+    fn archers_are_a_band_of_their_own_with_more_figures_for_more_members() {
+        let count = |figures| built(Look::Archers { figures }).len();
+        assert!(count(1) < count(3) && count(3) < count(5));
+        assert_ne!(count(3), built(Look::Militia { figures: 3, trained: true }).len());
+        assert_ne!(count(3), built(Look::Militia { figures: 3, trained: false }).len());
+        assert!(Look::ArcheryRange.reach() < Look::Barracks.reach(), "a smaller building than a barracks");
     }
 
     #[test]

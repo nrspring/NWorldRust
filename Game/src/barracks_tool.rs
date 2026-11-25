@@ -1,5 +1,5 @@
-//! The barracks tool: a row in the Buildings menu that turns it on, and then the player clicks dry ground, and a barracks is built
-//! there for the country being played, which pays for it.
+//! The barracks tools (one for a barracks and one for an archery range): a row in the Buildings menu that turns it on, and then the
+//! player clicks dry ground, and one is built there for the country being played, which pays for it.
 //!
 //! A marker follows the mouse over the map: green where a barracks could go, red where it can't, with the reason in the prompt.
 
@@ -7,7 +7,7 @@ use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 use nworld_view::{mouse_ray, pick_terrain};
 
-use crate::barracks::{site_region, Barracks};
+use crate::barracks::{site_region, Barracks, BarracksKind};
 use crate::barracks_view;
 use crate::costs::{self, Buildable};
 use crate::day::DaySave;
@@ -23,6 +23,8 @@ const HOLD: f32 = 1.5;
 
 #[derive(Default)]
 pub struct BarracksTool {
+    /// Which kind of building it builds.
+    kind: BarracksKind,
     active: bool,
     /// Why the last barracks couldn't be built.
     notice: Option<String>,
@@ -33,12 +35,21 @@ pub struct BarracksTool {
 }
 
 impl BarracksTool {
+    pub fn new(kind: BarracksKind) -> Self {
+        Self { kind, ..Self::default() }
+    }
+
+    /// The kind of building it builds.
+    pub fn kind(&self) -> BarracksKind {
+        self.kind
+    }
+
     pub fn is_active(&self) -> bool {
         self.active
     }
 
     pub fn deactivate(&mut self) {
-        *self = Self::default();
+        *self = Self::new(self.kind);
     }
 
     /// What Esc does: turns the tool off.
@@ -93,7 +104,7 @@ impl BarracksTool {
             };
             draw_sphere(lifted, size, None, color);
             // And the barracks itself, in outline.
-            barracks_view::preview(scene.world, *at, scene.eye.position, scene.time, color);
+            barracks_view::preview(scene.world, self.kind, *at, scene.eye.position, scene.time, color);
         }
 
         if !clicked {
@@ -113,17 +124,18 @@ impl BarracksTool {
     /// menu's panel is, for the tip to go above. When `problem` is something the tool can't be used, the row is dimmed, and the
     /// whole reason shows when the mouse is over it.
     pub fn show_row(&mut self, style: &Style, rect: Rect, menu: Rect, problem: Option<&str>) {
-        let row = toolbar::draw_row(style, rect, Buildable::Barracks.label(), Buildable::Barracks.cost(), self.active, problem.is_some(), |icon, color| crate::barracks::draw_icon(icon, 1.0, color, style::GLASS));
+        let (buildable, kind) = (Buildable::Barracks(self.kind), self.kind);
+        let row = toolbar::draw_row(style, rect, buildable.label(), buildable.cost(), self.active, problem.is_some(), |icon, color| crate::barracks::draw_icon(kind, icon, 1.0, color, style::GLASS));
         if row.pressed {
             if self.active {
                 self.deactivate();
             } else {
-                *self = Self { active: true, ..Self::default() };
+                *self = Self { active: true, ..Self::new(self.kind) };
             }
         }
         if row.hovered {
             // What it is and costs and does, and first of all why it can't be used, if it can't.
-            let mut lines = Buildable::Barracks.button_lines();
+            let mut lines = buildable.button_lines();
             if let Some(problem) = problem {
                 lines.insert(0, (problem.to_owned(), style::ERROR));
             }
@@ -141,14 +153,15 @@ impl BarracksTool {
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 112.0, width, 112.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
-        style.text_mid("Build a barracks", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+        let buildable = Buildable::Barracks(self.kind);
+        style.text_mid(&format!("Build {}", self.kind.a_noun()), panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
         match (&self.notice, &self.hover_problem) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(problem)) => style.text_mid(problem, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, None) => style.text_mid("Click dry ground in a region you own.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
-        style.text_mid(&Buildable::Barracks.output(), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
-        style.text_mid(&format!("Costs {}. {}.", Buildable::Barracks.cost_text(), Buildable::Barracks.has_text(day)), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&buildable.output(), panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text_mid(&format!("Costs {}. {}.", buildable.cost_text(), buildable.has_text(day)), panel.x + 20.0, panel.y + 92.0, 12, Weight::Regular, style::TEXT_MUTED);
     }
 }
 
@@ -160,7 +173,7 @@ pub fn tooltip(style: &Style, day: &DaySave, barracks: &Barracks) {
     let rows = [("Country", day.country_name(barracks.country).to_owned()), ("Region", region), ("Training", status)];
     let label_w = rows.iter().map(|(label, _)| style.measure(label, 13, Weight::Regular).width).fold(0.0, f32::max);
     let value_w = rows.iter().map(|(_, value)| style.measure(value, 14, Weight::Semibold).width).fold(0.0, f32::max);
-    let title = "Barracks";
+    let title = barracks.kind.label();
     let title_w = style.measure(title, 17, Weight::Semibold).width;
     let width = title_w.max(label_w + 18.0 + value_w) + 32.0;
     let height = 16.0 + 24.0 + 12.0 + rows.len() as f32 * 22.0 + 6.0;
@@ -184,7 +197,7 @@ mod tests {
 
     #[test]
     fn the_tool_is_off_until_turned_on_and_esc_turns_it_off() {
-        let mut tool = BarracksTool::default();
+        let mut tool = BarracksTool::new(BarracksKind::ArcheryRange);
         assert!(!tool.is_active());
         tool.active = true;
         tool.fail("no".to_owned());
@@ -193,6 +206,7 @@ mod tests {
         assert!(tool.notice.is_none());
         tool.escape();
         assert!(!tool.is_active());
+        assert_eq!(tool.kind(), BarracksKind::ArcheryRange, "turning it off keeps what it builds");
     }
 
     #[test]

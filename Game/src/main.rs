@@ -121,6 +121,7 @@ use gatherer_tool::GathererTool;
 use ship_popup::ShipPopup;
 use upkeep_popup::UpkeepPopup;
 use barracks_popup::BarracksPopup;
+use barracks::BarracksKind;
 use barracks_tool::BarracksTool;
 use shipyard::ShipyardKind;
 use shipyard_popup::ShipyardPopup;
@@ -312,7 +313,7 @@ async fn main() {
     // The tool for each kind of gatherer, in the order of the kinds.
     let mut gatherer_tools = GathererKind::ALL.map(GathererTool::new);
     let mut shipyard_tools = ShipyardKind::BUILDABLE.map(ShipyardTool::new);
-    let mut barracks_tool = BarracksTool::default();
+    let mut barracks_tools = BarracksKind::ALL.map(BarracksTool::new);
     let mut barracks_popup = BarracksPopup::default();
     let mut bridges = BridgeRenderer::default();
     // The popup that asks whether to end the day.
@@ -421,8 +422,8 @@ async fn main() {
                 tool.escape();
             } else if let Some(tool) = shipyard_tools.iter_mut().find(|tool| tool.is_active()) {
                 tool.escape();
-            } else if barracks_tool.is_active() {
-                barracks_tool.escape();
+            } else if let Some(tool) = barracks_tools.iter_mut().find(|tool| tool.is_active()) {
+                tool.escape();
             } else {
                 break;
             }
@@ -449,7 +450,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || idle_units_ui.has_mouse(mouse) || country_dropdown.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || barracks_tool.has_mouse(mouse) || ((selected_militia.is_some() || selected_ship.is_some()) && movement_view::panel_rect().contains(mouse));
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || idle_units_ui.has_mouse(mouse) || country_dropdown.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || barracks_tools.iter().any(|tool| tool.has_mouse(mouse)) || ((selected_militia.is_some() || selected_ship.is_some()) && movement_view::panel_rect().contains(mouse));
         if modal {
             camera.skip_frame();
         } else {
@@ -512,11 +513,13 @@ async fn main() {
                 tool.deactivate();
             }
         }
-        if day.barracks_problem().is_some() {
-            barracks_tool.deactivate();
+        for tool in &mut barracks_tools {
+            if day.barracks_problem(tool.kind()).is_some() {
+                tool.deactivate();
+            }
         }
         // Whether one of the tools is on, and so the map is not for anything else.
-        let tool_on = path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() || gatherer_tools.iter().any(|tool| tool.is_active()) || shipyard_tools.iter().any(|tool| tool.is_active()) || barracks_tool.is_active();
+        let tool_on = path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active() || destroy_tool.is_active() || gatherer_tools.iter().any(|tool| tool.is_active()) || shipyard_tools.iter().any(|tool| tool.is_active()) || barracks_tools.iter().any(|tool| tool.is_active());
         // A new city that can no longer be paid for, or settled from the city it was to be, is given up.
         if settling_from.is_some_and(|from| day.settle_problem(from).is_some()) {
             settling_from = None;
@@ -673,18 +676,21 @@ async fn main() {
                     }
                 }
             }
-        } else if !modal && barracks_tool.is_active() {
-            // With the barracks tool on, a click is for building one where the mouse is.
+        } else if !modal && barracks_tools.iter().any(|tool| tool.is_active()) {
+            // With a barracks tool on, a click is for building one of its kind where the mouse is.
             let scene = Scene { world: &world, regions: &region_map, eye: &eye, mouse, over_map: !over_interface, time };
-            if let Some((at, region)) = barracks_tool.update(&scene, &day, clicked) {
-                // Only keep the barracks if it is saved too.
-                let mut updated = day.clone();
-                match updated.build_barracks(at.x, at.y, region).and_then(|()| autosave.save_now(&saves, &updated)) {
-                    Ok(()) => {
-                        day = updated;
-                        barracks_tool.built();
+            if let Some(tool) = barracks_tools.iter_mut().find(|tool| tool.is_active()) {
+                let kind = tool.kind();
+                if let Some((at, region)) = tool.update(&scene, &day, clicked) {
+                    // Only keep the barracks if it is saved too.
+                    let mut updated = day.clone();
+                    match updated.build_barracks(kind, at.x, at.y, region).and_then(|()| autosave.save_now(&saves, &updated)) {
+                        Ok(()) => {
+                            day = updated;
+                            tool.built();
+                        }
+                        Err(message) => tool.fail(message),
                     }
-                    Err(message) => barracks_tool.fail(message),
                 }
             }
         } else if !modal && destroy_tool.is_active() {
@@ -997,7 +1003,7 @@ async fn main() {
             }
             if let Some(militia) = selected_militia.and_then(|id| day.militia(id)) {
                 let id = militia.id;
-                match movement_view::panel(&style, militia.title(), militia.points, move_error.as_deref()) {
+                match movement_view::panel(&style, militia.title(), militia.points, militia.daily_points(), move_error.as_deref()) {
                     Some(PanelAction::Details) => militia_popup.open(id),
                     Some(PanelAction::Deselect) => {
                         selected_militia = None;
@@ -1008,7 +1014,7 @@ async fn main() {
             }
             if let Some(ship) = selected_ship.and_then(|id| day.ship(id)) {
                 let id = ship.id;
-                match movement_view::panel(&style, ship.title(), ship.points, move_error.as_deref()) {
+                match movement_view::panel(&style, ship.title(), ship.points, movement::DAILY_POINTS, move_error.as_deref()) {
                     Some(PanelAction::Details) => ship_popup.open(id),
                     Some(PanelAction::Deselect) => {
                         selected_ship = None;
@@ -1048,11 +1054,11 @@ async fn main() {
             let mut was_on = vec![path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
             was_on.extend(gatherer_tools.iter().map(|tool| tool.is_active()));
             was_on.extend(shipyard_tools.iter().map(|tool| tool.is_active()));
-            was_on.push(barracks_tool.is_active());
+            was_on.extend(barracks_tools.iter().map(|tool| tool.is_active()));
             let destroy_button = destroy_tool.show_button(&style, footer, overlays_ui.button().x - 8.0);
             // The Travel and Buildings buttons are lit while a tool in them is on, and the open one has its tools in a
             // panel above it.
-            let lit = [path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active(), gatherer_tools.iter().any(|tool| tool.is_active()) || shipyard_tools.iter().any(|tool| tool.is_active()) || barracks_tool.is_active()];
+            let lit = [path_tool.is_active() || road_tool.is_active() || bridge_tool.is_active(), gatherer_tools.iter().any(|tool| tool.is_active()) || shipyard_tools.iter().any(|tool| tool.is_active()) || barracks_tools.iter().any(|tool| tool.is_active())];
             match toolbar.show(&style, footer, destroy_button.x - 8.0, lit) {
                 Some((Menu::Travel, panel)) => {
                     path_tool.show_row(&style, toolbar::row_rect(panel, 0), panel, path_problem.as_ref(), no_regions);
@@ -1068,15 +1074,17 @@ async fn main() {
                         let problem = day.shipyard_problem(tool.kind());
                         tool.show_row(&style, toolbar::row_rect(panel, GathererKind::ALL.len() + n), panel, problem.as_deref());
                     }
-                    let problem = day.barracks_problem();
-                    barracks_tool.show_row(&style, toolbar::row_rect(panel, GathererKind::ALL.len() + ShipyardKind::BUILDABLE.len()), panel, problem.as_deref());
+                    for (n, tool) in barracks_tools.iter_mut().enumerate() {
+                        let problem = day.barracks_problem(tool.kind());
+                        tool.show_row(&style, toolbar::row_rect(panel, GathererKind::ALL.len() + ShipyardKind::BUILDABLE.len() + n), panel, problem.as_deref());
+                    }
                 }
                 None => {}
             }
             let mut now_on = vec![path_tool.is_active(), road_tool.is_active(), bridge_tool.is_active(), destroy_tool.is_active()];
             now_on.extend(gatherer_tools.iter().map(|tool| tool.is_active()));
             now_on.extend(shipyard_tools.iter().map(|tool| tool.is_active()));
-            now_on.push(barracks_tool.is_active());
+            now_on.extend(barracks_tools.iter().map(|tool| tool.is_active()));
             // Turning a tool on or off puts the menu away, so that the map is clear for it.
             if now_on != was_on {
                 toolbar.close();
@@ -1106,9 +1114,11 @@ async fn main() {
                         tool.deactivate();
                     }
                 }
-                let at = 4 + GathererKind::ALL.len() + ShipyardKind::BUILDABLE.len();
-                if was_on[at] && now_on[at] {
-                    barracks_tool.deactivate();
+                for (n, tool) in barracks_tools.iter_mut().enumerate() {
+                    let at = 4 + GathererKind::ALL.len() + ShipyardKind::BUILDABLE.len() + n;
+                    if was_on[at] && now_on[at] {
+                        tool.deactivate();
+                    }
                 }
             }
             path_tool.show_prompt(&style, &day);
@@ -1121,7 +1131,9 @@ async fn main() {
             for tool in &mut shipyard_tools {
                 tool.show_prompt(&style, &day);
             }
-            barracks_tool.show_prompt(&style, &day);
+            for tool in &mut barracks_tools {
+                tool.show_prompt(&style, &day);
+            }
             if overlays_ui.is_open() && !overlays_was_open {
                 options_ui.close();
                 toolbar.close();

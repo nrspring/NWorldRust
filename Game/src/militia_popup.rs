@@ -12,7 +12,6 @@ use crate::format::{money, thousands};
 use crate::ids::{CountryId, MilitiaId};
 use crate::militia::{self, Militia};
 use crate::options;
-use crate::movement::DAILY_POINTS;
 
 const CARD_WIDTH: f32 = 380.0;
 const PADDING: f32 = 24.0;
@@ -228,10 +227,10 @@ impl MilitiaPopup {
             let x = row.right() - style.measure(value, 14, Weight::Semibold).width;
             style.text_mid(value, x, row.center().y, 14, Weight::Semibold, style::TEXT);
         };
-        value_row(if unit.trained { "Soldiers" } else { "Members" }, &thousands(unit.members), members_row);
+        value_row(unit.people_label(), &thousands(unit.members), members_row);
         value_row("Raised", &unit.raised.to_string(), raised_row);
         value_row("Upkeep", &format!("{} coins a day", money(unit.upkeep())), upkeep_row);
-        value_row("Movement", &format!("{} of {} points left", unit.points, DAILY_POINTS), moves_row);
+        value_row("Movement", &format!("{} of {} points left", unit.points, unit.daily_points()), moves_row);
 
         // A button that ends its moves for the day, in the movement row, while it has any left.
         let end_label = "End moves";

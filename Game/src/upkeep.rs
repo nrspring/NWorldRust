@@ -68,7 +68,7 @@ pub fn payables(day: &DaySave, country: CountryId) -> Vec<Payable> {
     let mut militia: Vec<_> = day.militias.iter().filter(|m| m.country == country).collect();
     militia.sort_by_key(|m| std::cmp::Reverse(m.members));
     let ships = ships.into_iter().map(|s| Payable { unit: Unit::Ship(s.id), name: s.title().to_owned(), size: s.kind.label().to_owned(), upkeep: s.kind.upkeep(), picked: s.pay_first });
-    let militia = militia.into_iter().map(|m| Payable { unit: Unit::Militia(m.id), name: m.title().to_owned(), size: format!("{} {}", crate::format::thousands(m.members), if m.trained { "soldiers" } else { "members" }), upkeep: m.upkeep(), picked: m.pay_first });
+    let militia = militia.into_iter().map(|m| Payable { unit: Unit::Militia(m.id), name: m.title().to_owned(), size: format!("{} {}", crate::format::thousands(m.members), m.people_label().to_lowercase()), upkeep: m.upkeep(), picked: m.pay_first });
     ships.chain(militia).collect()
 }
 

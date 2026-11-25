@@ -6,8 +6,9 @@ use macroquad::prelude::*;
 use nworld_map::world::World;
 use nworld_view::style::{self, Style, Weight};
 
-use crate::barracks::{rest_days, training_coins, training_iron, Barracks, MEMBERS_PER_REST_DAY, TRAINING_COINS, TRAINING_IRON};
+use crate::barracks::{rest_days, Barracks, MEMBERS_PER_REST_DAY};
 use crate::day::DaySave;
+use crate::country::resource_name;
 use crate::format::{money, thousands, thousands_u64};
 use crate::ids::{BarracksId, MilitiaId};
 use crate::militia::Militia;
@@ -115,10 +116,10 @@ impl BarracksPopup {
         // The title, beside a little fort.
         let badge = Rect::new(card.x + PADDING, card.y + PADDING, 40.0, 40.0);
         style::rounded_rect(badge, 10.0, style::ACCENT_SOFT);
-        crate::barracks::draw_icon(badge.center(), 1.5, style::ACCENT_HOVER, style::ACCENT_SOFT);
+        crate::barracks::draw_icon(yard.kind, badge.center(), 1.5, style::ACCENT_HOVER, style::ACCENT_SOFT);
         let text_x = badge.right() + 14.0;
-        style.text("Barracks", text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
-        style.text("Trains militia into soldiers", text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
+        style.text(yard.kind.label(), text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
+        style.text(&format!("Trains militia into {}", yard.kind.trains_into()), text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
 
         // What there is to know, a row each.
         let inner_x = card.x + PADDING;
@@ -166,7 +167,7 @@ impl BarracksPopup {
                 style::rounded_rect(rect, 6.0, style::HOVER);
             }
             let color = if problem.is_none() { style::TEXT } else { style::TEXT_MUTED };
-            let cost = format!("{} coins, {} iron", money(training_coins(unit.members)), thousands_u64(training_iron(unit.members)));
+            let cost = format!("{} coins, {} {}", money(yard.kind.training_coins(unit.members)), thousands_u64(yard.kind.training_materials(unit.members)), resource_name(yard.kind.training_resource()));
             let cost_x = rect.right() - 10.0 - style.measure(&cost, 12, Weight::Regular).width;
             style.text_mid(&cost, cost_x, rect.center().y + 8.0, 12, Weight::Regular, style::TEXT_MUTED);
             let members = format!("{} members", thousands(unit.members));
@@ -196,9 +197,15 @@ impl BarracksPopup {
         }
 
         // What it costs, and how long it rests after.
+        let upkeep = yard.kind.class().upkeep_per_member();
         let note = format!(
-            "Each member costs {TRAINING_COINS} coins and {TRAINING_IRON} iron. The barracks then rests a day for every {MEMBERS_PER_REST_DAY} it trained (1 to {}). Soldiers cost 3 coins a day each to keep. To train only some, split the militia first.",
-            rest_days(crate::militia::MAX_MEMBERS)
+            "Each member costs {} coins and {} {}. The {} then rests a day for every {MEMBERS_PER_REST_DAY} it trained (1 to {}). {} cost {upkeep} coins a day each to keep. To train only some, split the militia first.",
+            yard.kind.training_coins_each(),
+            yard.kind.training_each(),
+            resource_name(yard.kind.training_resource()),
+            yard.kind.noun(),
+            rest_days(crate::militia::MAX_MEMBERS),
+            crate::format::capitalized(yard.kind.trains_into())
         );
         let note_rect = Rect::new(inner_x, list.bottom() + 6.0, inner_w, NOTE_HEIGHT);
         for (n, line) in crate::hud::wrap(style, &note, 11, inner_w).iter().take(3).enumerate() {
@@ -242,7 +249,7 @@ mod tests {
         }
         day.found_city("Port Aldor", 0.0, 0.0, HERE).unwrap();
         day.cities[0].population = 5_000;
-        day.build_barracks(100.0, 0.0, HERE).unwrap();
+        day.build_barracks(crate::barracks::BarracksKind::Barracks, 100.0, 0.0, HERE).unwrap();
         day.raise_militia(day.cities[0].id, 100, vec2(40.0, 0.0)).unwrap();
         day
     }

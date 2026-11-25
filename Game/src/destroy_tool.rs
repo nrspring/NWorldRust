@@ -215,7 +215,7 @@ impl DestroyTool {
         draw_line(icon.x - 5.0, icon.y + 5.0, icon.x + 5.0, icon.y - 5.0, 2.0, color);
         style.text_mid(label, button.x + 12.0 + 14.0 + 8.0, button.center().y, 13, Weight::Semibold, color);
         if hovered {
-            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge, gatherer, shipyard or barracks for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
+            costs::draw_tip(style, button, &[("Destroy: free.".to_owned(), style::TEXT), ("Removes a path, road, bridge, gatherer, shipyard, barracks or archery range for good. Nothing is paid back.".to_owned(), style::TEXT_MUTED)]);
         }
         button
     }
@@ -235,7 +235,7 @@ impl DestroyTool {
                 Target::Built(thing) => (thing.name(), if matches!(thing, Thing::Bridge(_)) { " The paths and roads from its ends go too." } else { "" }),
                 Target::Gatherer(id) => (day.gatherer(id).map_or("gatherer", |g| g.kind.noun()), ""),
                 Target::Shipyard(id) => (day.shipyard(id).map_or("shipyard", |s| s.kind.noun()), ""),
-                Target::Barracks(_) => ("barracks", ""),
+                Target::Barracks(id) => (day.find_barracks(id).map_or("barracks", |b| b.kind.noun()), ""),
             };
             style.text_mid(&format!("Destroy this {name}?"), panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
             style.text_mid(&format!("It is gone for good, and nothing is paid back.{more}"), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR);
@@ -256,7 +256,7 @@ impl DestroyTool {
         let panel = Rect::new((screen_width() - width) * 0.5, screen_height() - hud::FOOTER_HEIGHT - 16.0 - 88.0, width, 88.0);
         self.prompt = panel;
         style::card(panel, 12.0, style::GLASS);
-        style.text_mid("Destroy a path, a road, a bridge, a gatherer, a shipyard or a barracks", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
+        style.text_mid("Destroy a path, road, bridge, gatherer, shipyard, barracks or archery range", panel.x + 20.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
         match (&self.notice, self.hovered) {
             (Some(notice), _) => style.text_mid(notice, panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(Target::Built(thing))) => {
@@ -266,7 +266,7 @@ impl DestroyTool {
             }
             (None, Some(Target::Gatherer(id))) => style.text_mid(&format!("Click to destroy this {}.", day.gatherer(id).map_or("gatherer", |g| g.kind.noun())), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, Some(Target::Shipyard(id))) => style.text_mid(&format!("Click to destroy this {}.", day.shipyard(id).map_or("shipyard", |s| s.kind.noun())), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
-            (None, Some(Target::Barracks(_))) => style.text_mid("Click to destroy this barracks.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
+            (None, Some(Target::Barracks(id))) => style.text_mid(&format!("Click to destroy this {}.", day.find_barracks(id).map_or("barracks", |b| b.kind.noun())), panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::ERROR),
             (None, None) => style.text_mid("Point at one and click it. Esc stops.", panel.x + 20.0, panel.y + 46.0, 13, Weight::Regular, style::TEXT_MUTED),
         };
         style.text_mid("Destroying is free, and nothing is paid back.", panel.x + 20.0, panel.y + 70.0, 12, Weight::Regular, style::TEXT_MUTED);

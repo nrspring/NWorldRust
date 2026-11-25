@@ -12,7 +12,7 @@ use crate::day::DaySave;
 use crate::hud;
 use crate::failure::Thing;
 use crate::ids::{Guid, MilitiaId, ShipId};
-use crate::movement::{self, Network, Reach, DAILY_POINTS};
+use crate::movement::{self, Network, Reach};
 use crate::movement_mesh;
 use crate::path::{Kind, PathPiece};
 use crate::path_view::PathRenderer;
@@ -116,14 +116,14 @@ pub fn panel_rect() -> Rect {
     Rect::new((screen_width() - PANEL_SIZE.x) * 0.5, screen_height() - hud::FOOTER_HEIGHT - PANEL_MARGIN - PANEL_SIZE.y, PANEL_SIZE.x, PANEL_SIZE.y)
 }
 
-/// Draws the panel for the selected militia or ship called `title`, which has `points` movement points left, and says what the player
-/// clicked on it, if anything.
-pub fn panel(style: &Style, title: &str, points: u32, error: Option<&str>) -> Option<PanelAction> {
+/// Draws the panel for the selected militia or ship called `title`, which has `points` movement points left of the `full` it gets each
+/// day, and says what the player clicked on it, if anything.
+pub fn panel(style: &Style, title: &str, points: u32, full: u32, error: Option<&str>) -> Option<PanelAction> {
     let panel = panel_rect();
     let mouse = Vec2::from(mouse_position());
     style::card(panel, 12.0, style::GLASS);
     style.text_mid(title, panel.x + 18.0, panel.y + 22.0, 16, Weight::Semibold, style::TEXT);
-    let status = format!("{points} of {DAILY_POINTS} movement points left");
+    let status = format!("{points} of {full} movement points left");
     let color = if points == 0 { style::ERROR } else { style::TEXT_MUTED };
     style.text_mid(&status, panel.x + 18.0, panel.y + 46.0, 13, Weight::Regular, color);
     let hint = match (error, points) {
