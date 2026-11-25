@@ -86,6 +86,13 @@ impl MapView {
         self.terrain.set_region_tints(render::region_tints_texture(world, colors));
     }
 
+    /// Makes these regions glow round their borders, each in its color (red, green and blue), pulsing slowly, until it is called again.
+    /// None at all stops it. Uploads the whole map's worth of regions, so call it when they change, not every frame.
+    pub fn set_glowing_regions(&mut self, world: &World, regions: &[(RegionId, [u8; 3])]) {
+        let glow = (!regions.is_empty()).then(|| render::region_tints_texture(world, regions));
+        self.terrain.set_region_glow(glow);
+    }
+
     /// Shows the colors given by [`set_region_colors`](Self::set_region_colors), whether or not the lines of
     /// the regions are shown, or hides them. They show to begin with.
     pub fn set_show_region_colors(&mut self, show: bool) {

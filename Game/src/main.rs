@@ -40,6 +40,7 @@ mod city_pick;
 mod city_view;
 mod color_picker;
 mod country;
+mod country_dropdown;
 mod country_menu;
 mod day;
 mod failure;
@@ -80,6 +81,7 @@ mod saves;
 mod test_support;
 mod text;
 mod unit_bubbles;
+mod unit_regions;
 mod walk;
 mod title_type;
 mod toolbar;
@@ -103,6 +105,7 @@ use camera::GameCamera;
 use city_popup::CityPopup;
 use city_view::CityRenderer;
 use day::DaySave;
+use country_dropdown::{CountryDropdown, Pick};
 use country_menu::CountryMenu;
 use treasury::Treasury;
 use options::{Options, OptionsUi};
@@ -315,6 +318,7 @@ async fn main() {
     // The popup that asks whether to end the day.
     let mut advance_popup = AdvancePopup::default();
     let mut country_menu = CountryMenu::default();
+    let mut country_dropdown = CountryDropdown::default();
     // The popup for the city that was clicked.
     let mut city_popup = CityPopup::default();
     // The popup for the gatherer that was clicked.
@@ -338,6 +342,10 @@ async fn main() {
     let mut walks = Walks::default();
     // The owned regions the map is showing, as (region, color), to know when they change.
     let mut shown_owners: Vec<(u16, Rgb)> = Vec::new();
+    // The regions glowing now, which is the ones with units in them while the mouse is on Units in the footer (as of the last frame),
+    // and which is only uploaded when it changes.
+    let mut glowing: Vec<(u16, [u8; 3])> = Vec::new();
+    let mut label_hovered: Option<hud::FooterLabel> = None;
     let mut autosave = Autosave::new(&day, get_time());
     // What the routes of the gatherers were last worked out from.
     let mut route_watch = connection::RouteWatch::default();
@@ -373,6 +381,8 @@ async fn main() {
                 upkeep_popup.close();
             } else if country_menu.is_open() {
                 country_menu.escape();
+            } else if country_dropdown.is_open() {
+                country_dropdown.close();
             } else if options_ui.is_open() || overlays_ui.is_open() || toolbar.is_open() {
                 options_ui.close();
                 overlays_ui.close();
@@ -439,7 +449,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || idle_units_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || barracks_tool.has_mouse(mouse) || ((selected_militia.is_some() || selected_ship.is_some()) && movement_view::panel_rect().contains(mouse));
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || idle_units_ui.has_mouse(mouse) || country_dropdown.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || barracks_tool.has_mouse(mouse) || ((selected_militia.is_some() || selected_ship.is_some()) && movement_view::panel_rect().contains(mouse));
         if modal {
             camera.skip_frame();
         } else {
@@ -458,6 +468,22 @@ async fn main() {
             let colors: Vec<(RegionId, [u8; 3])> = owned.iter().filter_map(|(region, c)| Some((RegionId::from_raw(*region)?, [c.r, c.g, c.b]))).collect();
             view.set_region_colors(&world, &colors);
             shown_owners = owned;
+        }
+        let glow: Vec<(RegionId, [u8; 3])> = match label_hovered {
+            Some(hud::FooterLabel::Units) => {
+                // The regions where a unit still has moves left glow another color from those where all have used theirs.
+                let moving = unit_regions::with_units_that_can_move(&world, &day, unit_regions::Whose::Mine);
+                let color = |region: &RegionId| if moving.contains(region) { hud::MOVES_GLOW } else { hud::FooterLabel::Units.glow() };
+                unit_regions::with_units(&world, &day, unit_regions::Whose::Mine).iter().map(|r| (*r, color(r))).collect()
+            }
+            Some(label @ hud::FooterLabel::Enemy) => unit_regions::with_units(&world, &day, unit_regions::Whose::Enemy).into_iter().map(|r| (r, label.glow())).collect(),
+            Some(label @ hud::FooterLabel::Alerts) => alerts::regions(&day, &day_failures, &region_map, &world).into_iter().map(|r| (r, label.glow())).collect(),
+            None => Vec::new(),
+        };
+        let shown: Vec<(u16, [u8; 3])> = glow.iter().map(|(r, c)| (r.raw(), *c)).collect();
+        if shown != glowing {
+            view.set_glowing_regions(&world, &glow);
+            glowing = shown;
         }
         view.draw(&world, &eye, time);
 
@@ -843,8 +869,15 @@ async fn main() {
         let header = hud::header(&style, &day, !modal, camera.yaw());
         if !modal && is_mouse_button_pressed(MouseButton::Left) {
             if header.country.is_some_and(|b| b.contains(mouse)) {
+                // The country is a drop-down, to switch to another.
                 options_ui.close();
                 overlays_ui.close();
+                country_dropdown.toggle();
+            } else if header.edit.is_some_and(|b| b.contains(mouse)) {
+                // The pencil beside it edits the country.
+                options_ui.close();
+                overlays_ui.close();
+                country_dropdown.close();
                 country_menu.open_info(&day);
             } else if header.money.is_some_and(|b| b.contains(mouse)) {
                 options_ui.close();
@@ -860,7 +893,12 @@ async fn main() {
                 advance_popup.open(day.date);
             }
         }
-        let footer = hud::footer(&style, !modal, hud::BUTTONS_ROOM);
+        // The country in the header is a drop-down to switch to another country, which is not there behind a popup.
+        if modal {
+            country_dropdown.close();
+        }
+        let footer = hud::footer(&style);
+        label_hovered = hud::footer_labels(&style, footer, !modal);
         autosave.update(&saves, &day, get_time());
         if let Some(message) = autosave.error() {
             hud::save_failed(&style, message);
@@ -873,7 +911,7 @@ async fn main() {
                 noting = Some(Popup::note());
             }
             // A unit in the list of those with moves left is selected, and the camera goes to it.
-            if let Some(unit) = idle_units_ui.show(&style, &day) {
+            if let Some(unit) = idle_units_ui.show(&style, &day, country_dropdown.has_mouse(mouse)) {
                 options_ui.close();
                 overlays_ui.close();
                 move_error = None;
@@ -936,6 +974,23 @@ async fn main() {
                         }
                     }
                 }
+            }
+            // The drop-down of countries is over the panels at the top left.
+            match country_dropdown.show(&style, &day, header.country) {
+                Some(Pick::Country(id)) => {
+                    // Only keep the change if it is saved too.
+                    let mut updated = day.clone();
+                    match updated.select_country(id).and_then(|()| autosave.save_now(&saves, &updated)) {
+                        Ok(()) => day = updated,
+                        Err(message) => {
+                            // It is shown in the full list, which is where the player can see why.
+                            country_menu.open_at(&day, Some(id));
+                            country_menu.fail(message);
+                        }
+                    }
+                }
+                Some(Pick::Manage) => country_menu.open_at(&day, day.player_country().map(|c| c.id)),
+                None => {}
             }
             if placing {
                 hud::placing_prompt(&style, settling_from.and_then(|from| day.city(from)).map(|city| city.name.as_str()), problem.as_deref());

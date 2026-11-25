@@ -77,6 +77,8 @@ struct TerrainUniforms {
     /// The number of the region to light up, as its low and high bytes from 0 to 1; negative for
     /// none.
     region_highlight: Vec2,
+    /// 1 to make the regions in the `region_glow` texture glow round their borders, 0 for none.
+    region_glow_on: f32,
 }
 
 fn terrain_uniform_layout() -> UniformBlockLayout {
@@ -98,6 +100,7 @@ fn terrain_uniform_layout() -> UniformBlockLayout {
             U::new("topo", Float1),
             U::new("region_overlay", Float1),
             U::new("region_highlight", Float2),
+            U::new("region_glow_on", Float1),
         ],
     }
 }
@@ -128,6 +131,8 @@ pub struct TerrainRenderer {
     region_tints: Texture2D,
     /// A texture with no tints in it, for when they are hidden.
     no_tints: Texture2D,
+    /// The regions to make glow round their borders, which is none until [`Self::set_region_glow`].
+    region_glow: Option<Texture2D>,
     tints_visible: bool,
 }
 
@@ -142,7 +147,7 @@ impl TerrainRenderer {
                 },
                 ShaderMeta {
                     uniforms: terrain_uniform_layout(),
-                    images: vec!["surface".to_owned(), "noise".to_owned(), "resources".to_owned(), "resources2".to_owned(), "regions".to_owned(), "region_tints".to_owned()],
+                    images: vec!["surface".to_owned(), "noise".to_owned(), "resources".to_owned(), "resources2".to_owned(), "regions".to_owned(), "region_tints".to_owned(), "region_glow".to_owned()],
                 },
             )
             .expect("terrain shader failed to compile");
@@ -166,6 +171,7 @@ impl TerrainRenderer {
             noise: noise_texture(),
             no_tints: empty(),
             region_tints: empty(),
+            region_glow: None,
             tints_visible: true,
         }
     }
@@ -174,6 +180,12 @@ impl TerrainRenderer {
     /// drawn as lines (the tint is added to the lines and the ground inside them).
     pub fn set_region_tints(&mut self, texture: Texture2D) {
         self.region_tints = texture;
+    }
+
+    /// Makes the regions that have a color in `texture` (made by [`region_tints_texture`]) glow round their borders, each in its own
+    /// color, pulsing slowly, or stops any glowing with `None`.
+    pub fn set_region_glow(&mut self, texture: Option<Texture2D>) {
+        self.region_glow = texture;
     }
 
     /// Whether the tints show at all. They are kept while hidden.
@@ -217,6 +229,7 @@ impl TerrainRenderer {
                 RegionOverlay::Colors => 3.0,
             },
             region_highlight: region_highlight.map_or(vec2(-1.0, -1.0), |id| vec2((id & 0xFF) as f32, (id >> 8) as f32) / 255.0),
+            region_glow_on: if self.region_glow.is_some() { 1.0 } else { 0.0 },
         };
 
         let (width, height) = miniquad::window::screen_size();
@@ -231,6 +244,7 @@ impl TerrainRenderer {
             resources[1].raw_miniquad_id(),
             regions.raw_miniquad_id(),
             if self.tints_visible { &self.region_tints } else { &self.no_tints }.raw_miniquad_id(),
+            self.region_glow.as_ref().unwrap_or(&self.no_tints).raw_miniquad_id(),
         ];
         for block in blocks {
             ctx.apply_bindings(&miniquad::Bindings {
@@ -658,6 +672,8 @@ uniform sampler2D regions;
 // The color to tint each sample's region with, in red, green and blue, and 1 in alpha where there is one.
 // Drawn over the terrain while `region_overlay` is 2 or 3.
 uniform sampler2D region_tints;
+// Where there is a color, the region glows round its border in that color while `region_glow_on` is 1.
+uniform sampler2D region_glow;
 // Repeating random values, for noise.
 uniform sampler2D noise;
 const float NOISE_SIZE = 512.0;
@@ -668,6 +684,7 @@ uniform float pixel_cells;
 uniform float topo;
 uniform float region_overlay;
 uniform vec2 region_highlight;
+uniform float region_glow_on;
 
 "#,
     sky_glsl!(),
@@ -1021,6 +1038,44 @@ void main() {
                 col = edge ? vec3(1.0, 0.80, 0.15) : mix(col, vec3(1.0, 0.90, 0.45), 0.42);
             }
         }
+    }
+
+    // The regions that glow: a bright band either side of their borders that is about as wide on screen at any distance, a little fainter
+    // the farther it is from the border, with the whole of it pulsing slowly, and a faint wash inside.
+    if (region_glow_on > 0.5) {
+        vec2 uv = v_world.xz * surface_scale + surface_offset;
+        vec4 here = texture2D(region_glow, uv);
+        float inside = here.a;
+        float reach = max(1.0, dist * pixel_cells * 4.0 * 0.6);
+        float near = 0.0;
+        // The band takes the color of the glowing region nearest to the point (its own, or that of the glowing one across the border).
+        vec3 band = here.rgb;
+        for (int k = 1; k <= 4; k++) {
+            float r = reach * float(k) * 1.4;
+            vec2 across = vec2(r, 0.0) * surface_scale;
+            vec2 along = vec2(0.0, r) * surface_scale;
+            vec4 e = texture2D(region_glow, uv + across);
+            vec4 w = texture2D(region_glow, uv - across);
+            vec4 s = texture2D(region_glow, uv + along);
+            vec4 n = texture2D(region_glow, uv - along);
+            vec4 one = vec4(1.0);
+            // A border is where the color changes, so two glowing regions of different colors have one between them too.
+            float crossing = dot(abs(e - here), one) + dot(abs(w - here), one) + dot(abs(s - here), one) + dot(abs(n - here), one);
+            if (crossing > 0.5) {
+                if (near == 0.0) {
+                    vec4 lit = here;
+                    if (e.a > lit.a) { lit = e; }
+                    if (w.a > lit.a) { lit = w; }
+                    if (s.a > lit.a) { lit = s; }
+                    if (n.a > lit.a) { lit = n; }
+                    band = lit.rgb;
+                }
+                near = max(near, 1.0 - float(k - 1) * 0.22);
+            }
+        }
+        float pulse = 0.72 + 0.28 * sin(time * 3.0);
+        col = mix(col, here.rgb, inside * 0.10 * pulse);
+        col = mix(col, band, near * near * 0.85 * pulse) + band * near * 0.30 * pulse;
     }
 
     float fog = pow(smoothstep(fog_range.x, fog_range.y, dist), 0.6);

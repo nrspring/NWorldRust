@@ -1,7 +1,8 @@
-//! The countries menu. Clicking the country in the header shows what the country has (its money, cities, people
-//! and stock of resources) with a button for the list of countries, where the player can choose the country to
-//! play, edit a country's name, change its color, delete one that has no cities, or add a new country. Each of
-//! those asks in a popup of its own, and comes back to the list when it is done.
+//! The countries menu. Clicking the pencil beside the country in the header shows what the country has (its money, cities, people
+//! and stock of resources), with a way to rename it or change its color, and a button for the list of countries, where the player can
+//! choose the country to play, edit a country's name, change its color, delete one that has no cities, or add a new country. Each of
+//! those asks in a popup of its own, and comes back to where it was opened from when it is done. (The country in the header itself is a
+//! drop-down for switching, see [`crate::country_dropdown`].)
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -85,6 +86,9 @@ pub struct CountryMenu {
     scroll: usize,
     /// Why the last choice couldn't be done, while the list is showing.
     error: Option<String>,
+    /// The country whose card the player came from to rename it or change its color, which comes back when that is done, and not
+    /// the list.
+    from_card: Option<CountryId>,
 }
 
 impl CountryMenu {
@@ -104,6 +108,7 @@ impl CountryMenu {
             self.screen = Screen::Info(country.id);
             self.fresh = true;
             self.error = None;
+            self.from_card = None;
             self.opened_at = now;
         }
     }
@@ -120,7 +125,19 @@ impl CountryMenu {
         self.opened_at = get_time();
     }
 
+    /// Back from a popup: to the card of the country it was opened from, if it was, and otherwise to the list.
+    fn back(&mut self) {
+        match self.from_card {
+            Some(id) => {
+                self.screen = Screen::Info(id);
+                self.fresh = true;
+            }
+            None => self.show_list(self.highlight),
+        }
+    }
+
     fn show_list(&mut self, highlight: usize) {
+        self.from_card = None;
         self.screen = Screen::List;
         self.fresh = true;
         self.error = None;
@@ -131,7 +148,7 @@ impl CountryMenu {
     /// What Esc does: back from a popup to the list, and from the list to the game.
     pub fn escape(&mut self) {
         match self.screen {
-            Screen::Adding(_) | Screen::Renaming(..) | Screen::Coloring(_) | Screen::Deleting(_) => self.show_list(self.highlight),
+            Screen::Adding(_) | Screen::Renaming(..) | Screen::Coloring(_) | Screen::Deleting(_) => self.back(),
             Screen::Info(_) | Screen::List | Screen::Closed => self.screen = Screen::Closed,
         }
     }
@@ -141,7 +158,7 @@ impl CountryMenu {
         match &mut self.screen {
             Screen::Adding(popup) | Screen::Renaming(_, popup) => popup.fail(message),
             Screen::Coloring(_) | Screen::Deleting(_) => {
-                self.show_list(self.highlight);
+                self.back();
                 self.error = Some(message);
             }
             _ => self.error = Some(message),
@@ -157,7 +174,10 @@ impl CountryMenu {
             Choice::Delete(_) if day.countries.is_empty() => self.screen = Screen::Closed,
             Choice::Delete(_) => self.show_list(self.highlight.min(day.countries.len() - 1)),
             Choice::Add(_) => self.show_list(day.countries.len().saturating_sub(1)),
-            Choice::Rename(id, _) | Choice::Recolor(id, _) => self.show_list(day.countries.iter().position(|c| c.id == *id).unwrap_or(0)),
+            Choice::Rename(id, _) | Choice::Recolor(id, _) => {
+                self.highlight = day.countries.iter().position(|c| c.id == *id).unwrap_or(0);
+                self.back();
+            }
         }
     }
 
@@ -174,7 +194,7 @@ impl CountryMenu {
             Screen::Coloring(picker) => match picker.show(style) {
                 Some(Outcome::Save(color)) => Some(Choice::Recolor(picker.country(), color)),
                 Some(Outcome::Cancel) => {
-                    self.show_list(self.highlight);
+                    self.back();
                     None
                 }
                 None => None,
@@ -225,10 +245,16 @@ impl CountryMenu {
         style::rounded_rect(badge, 10.0, style::ACCENT_SOFT);
         popup::draw_icon(Icon::Flag, badge);
         let text_x = badge.right() + 14.0;
-        let swatch = Rect::new(card.right() - PADDING - 16.0, card.y + PADDING + 5.0, 16.0, 16.0);
+        // The color, which opens the color picker, and a chip that renames the country.
+        let swatch = Rect::new(card.right() - PADDING - 18.0, card.y + PADDING + 3.0, 18.0, 18.0);
+        let over_swatch = swatch.contains(mouse);
         style::rounded_rect(swatch, 4.0, country.color.color());
-        style::rounded_rect_lines(swatch, 4.0, 1.0, style::BORDER_STRONG);
-        let name = fit(style, &country.name, 20, Weight::Semibold, swatch.x - 12.0 - text_x);
+        style::rounded_rect_lines(swatch, 4.0, if over_swatch { 2.0 } else { 1.0 }, if over_swatch { WHITE } else { style::BORDER_STRONG });
+        let rename = Rect::new(swatch.x - 8.0 - 56.0, card.y + PADDING + 0.0, 56.0, 24.0);
+        let over_rename = rename.contains(mouse);
+        style::rounded_rect(rename, 6.0, if over_rename { style::BORDER_STRONG } else { style::HOVER });
+        style.text_centered("Rename", rename, 12, Weight::Semibold, if over_rename { style::TEXT } else { style::TEXT_MUTED });
+        let name = fit(style, &country.name, 20, Weight::Semibold, rename.x - 12.0 - text_x);
         style.text(&name, text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
         style.text("The country you play", text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
 
@@ -277,6 +303,12 @@ impl CountryMenu {
 
         if clicked && over_switch {
             self.switch_country(day, id);
+        } else if clicked && over_rename {
+            self.from_card = Some(id);
+            self.screen = Screen::Renaming(id, Popup::rename_country(&country.name));
+        } else if clicked && over_swatch {
+            self.from_card = Some(id);
+            self.screen = Screen::Coloring(ColorPicker::new(id, &country.name, country.color));
         } else if clicked && (over_close || !card.contains(mouse)) {
             self.screen = Screen::Closed;
         }
@@ -566,6 +598,38 @@ mod tests {
         assert!(!menu.is_open());
         menu.open_info_at(&DaySave::new(crate::calendar::Date::FIRST, "Assets/map.nworld"), 0.0);
         assert!(!menu.is_open(), "there is no country to tell about");
+    }
+
+    #[test]
+    fn renaming_or_coloring_from_the_card_of_a_country_comes_back_to_it_and_from_the_list_comes_back_to_the_list() {
+        let mut day = day();
+        let brevon = day.countries[1].id;
+        let mut menu = CountryMenu::default();
+
+        // From the card: when it is done, or given up, the card is back. (A popup that asks for something needs the game's window, so
+        // the screens here are ones that don't.)
+        menu.from_card = Some(brevon);
+        menu.screen = Screen::Deleting(brevon);
+        let choice = Choice::Rename(brevon, "New Brevon".to_owned());
+        choice.apply(&mut day).unwrap();
+        menu.done(&choice, &day);
+        assert!(matches!(menu.screen, Screen::Info(id) if id == brevon));
+        menu.from_card = Some(brevon);
+        menu.screen = Screen::Deleting(brevon);
+        menu.escape();
+        assert!(matches!(menu.screen, Screen::Info(id) if id == brevon), "Esc goes back to the card");
+
+        // From the list, it is the list.
+        menu.screen = Screen::Deleting(brevon);
+        menu.from_card = None;
+        menu.escape();
+        assert!(matches!(menu.screen, Screen::List));
+        assert_eq!(menu.from_card, None);
+
+        // Going on to the list from the card forgets where it came from.
+        menu.from_card = Some(brevon);
+        menu.switch_country(&day, brevon);
+        assert_eq!(menu.from_card, None);
     }
 
     #[test]

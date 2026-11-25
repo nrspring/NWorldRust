@@ -8,6 +8,7 @@
 
 use macroquad::prelude::*;
 use nworld_map::region_map::RegionMap;
+use nworld_map::regions::RegionId;
 use nworld_map::world::World;
 use nworld_view::style::{self, Style, Weight};
 
@@ -159,6 +160,22 @@ impl Alert {
         };
         path_view::piece_ends(map, &day.bridges, piece).map(|(from, to)| ((from + to) * 0.5, MARK_HOLD))
     }
+}
+
+/// The regions that have an alert about something in them, each once, in order of their numbers: where something failed, a city or
+/// militia is under siege, or a gatherer is cut off. An alert that is not about a place (a country with no cities) is in none. The map
+/// makes them glow while the player holds the mouse over "Alerts" in the footer.
+pub fn regions(day: &DaySave, failures: &[Thing], map: &RegionMap, world: &World) -> Vec<RegionId> {
+    let mut regions: Vec<RegionId> = Alert::current(day, failures)
+        .iter()
+        .filter_map(|alert| match alert.target() {
+            AlertTarget::Region(number) => RegionId::from_raw(number),
+            _ => alert.place(day, map).and_then(|(at, _)| world.region_at(at.x, at.y)),
+        })
+        .collect();
+    regions.sort_by_key(|r| r.raw());
+    regions.dedup();
+    regions
 }
 
 /// How high above the ground to hold the warning icon over a gatherer of `kind`: above the top of its flag pole, which is
@@ -404,6 +421,30 @@ mod tests {
         assert_eq!(alerts[0].place(&day, &RegionMap::default()), None, "it is not at a place on the map");
         day.cities[0].population = 100;
         assert!(Alert::current(&day, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_regions_with_alerts_are_those_a_city_or_militia_under_siege_stands_in_and_not_a_country_with_no_cities() {
+        let world = crate::test_support::regioned_continent();
+        let map = RegionMap::build(&world);
+        let spots = crate::test_support::land_spots(&world, 8);
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let aldoria = day.countries[0].id;
+        day.add_money(aldoria, 1_000_000).unwrap();
+        assert!(regions(&day, &[], &map, &world).is_empty(), "Brevon has no cities, but that is not a place");
+        // (Aldoria has no cities yet either: neither country is anywhere.)
+        day.found_city("Port Aldor", spots[0].x, spots[0].y, None).unwrap();
+        day.cities[0].population = 2_000;
+        assert!(regions(&day, &[], &map, &world).is_empty(), "a city that is not under siege has none");
+        day.cities[0].under_siege = true;
+        assert_eq!(regions(&day, &[], &map, &world), [world.region_at(spots[0].x, spots[0].y).unwrap()]);
+        // A militia under siege in the same region adds nothing.
+        day.raise_militia(day.cities[0].id, 50, spots[0]).unwrap();
+        let id = day.militias[0].id;
+        day.set_militia_under_siege(id, true).unwrap();
+        assert_eq!(regions(&day, &[], &map, &world).len(), 1);
     }
 
     #[test]

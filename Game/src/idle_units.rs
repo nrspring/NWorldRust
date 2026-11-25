@@ -68,10 +68,11 @@ impl IdleUnitsUi {
     }
 
     /// Draws it, and opens or closes it when the player clicks it. Returns the unit the player clicked, if they clicked one. When there
-    /// are more units than fit, the mouse wheel over the panel scrolls through them.
-    pub fn show(&mut self, style: &Style, day: &DaySave) -> Option<Unit> {
-        let mouse = Vec2::from(mouse_position());
-        let clicked = is_mouse_button_pressed(MouseButton::Left);
+    /// are more units than fit, the mouse wheel over the panel scrolls through them. `covered` says that something is drawn over the
+    /// mouse's place, which then isn't for this.
+    pub fn show(&mut self, style: &Style, day: &DaySave, covered: bool) -> Option<Unit> {
+        let mouse = if covered { vec2(f32::MIN, f32::MIN) } else { Vec2::from(mouse_position()) };
+        let clicked = is_mouse_button_pressed(MouseButton::Left) && !covered;
         let entries = current(day);
         let origin = vec2(MARGIN, hud::HEADER_HEIGHT + MARGIN);
         let color = if entries.is_empty() { style::TEXT_MUTED } else { style::ACCENT };

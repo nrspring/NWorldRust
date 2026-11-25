@@ -1,5 +1,4 @@
-//! What the game draws over the map: the header (the country and the day), the footer (the frame rate
-//! and the key help) and the day's newsreel. The alerts panel under the newsreel is in `alerts`.
+//! What the game draws over the map: the header (the country and the day), the footer (the frame rate) and the day's newsreel. The alerts panel under the newsreel is in `alerts`.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -16,23 +15,10 @@ use crate::format::{money, thousands, thousands_u64};
 const MARGIN: f32 = 16.0;
 const NEWSREEL_WIDTH: f32 = 280.0;
 
-const HELP: &[(&str, &str)] = &[
-    ("W A S D", "pan"),
-    ("Q E", "turn"),
-    ("N", "north up"),
-    ("Wheel", "zoom"),
-    ("Right-drag", "look"),
-    ("Left-drag", "grab"),
-    ("Shift", "fast"),
-    ("Esc", "quit"),
-];
-
 /// How tall the footer is.
 pub const FOOTER_HEIGHT: f32 = 48.0;
 /// Distance of what is in the footer from its left edge. The options button keeps the same from the right.
 pub const FOOTER_PADDING: f32 = 12.0;
-/// Room kept at the right end of the footer for its buttons: Travel, Buildings, Destroy, Overlays and options.
-pub const BUTTONS_ROOM: f32 = 560.0;
 
 /// The size of the text in the header and the footer.
 const BAR_TEXT_SIZE: u16 = 13;
@@ -46,8 +32,10 @@ pub fn header_rect() -> Rect {
 
 /// The buttons of the header, where they are.
 pub struct HeaderButtons {
-    /// The player's country, for the countries menu, once there is one.
+    /// The player's country, for the drop-down to switch to another, once there is one.
     pub country: Option<Rect>,
+    /// The small pencil beside it, for editing the country, once there is one.
+    pub edit: Option<Rect>,
     /// The day, for ending it.
     pub day: Rect,
     /// The player's country's money, for its treasury, once there is a country.
@@ -69,6 +57,7 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
     let y = bar.center().y;
     let mut x = bar.x + FOOTER_PADDING;
     let mut button = None;
+    let mut edit_button = None;
     let mut money_button = None;
     if let Some(country) = day.player_country() {
         let name_width = style.measure(&country.name, BAR_TEXT_SIZE, Weight::Semibold).width;
@@ -81,10 +70,18 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
         // A small arrow, to say there is more to choose.
         let arrow = pill.right() - 13.0;
         draw_triangle(vec2(arrow - 4.0, y - 1.5), vec2(arrow + 4.0, y - 1.5), vec2(arrow, y + 2.5), style::TEXT_MUTED);
+        // A small pencil beside it, to edit the country.
+        let edit = Rect::new(pill.right() + 2.0, y - 13.0, 26.0, 26.0);
+        let edit_hovered = interactive && edit.contains(Vec2::from(mouse_position()));
+        if edit_hovered {
+            style::rounded_rect(edit, 8.0, style::HOVER);
+        }
+        draw_pencil(edit.center(), if edit_hovered { style::TEXT } else { style::TEXT_MUTED });
         // A dot between the country and the day.
-        draw_circle(pill.right() + 8.0, y, 2.0, style::TEXT_MUTED);
-        x = pill.right() + 28.0;
+        draw_circle(edit.right() + 8.0, y, 2.0, style::TEXT_MUTED);
+        x = edit.right() + 28.0;
         button = Some(pill);
+        edit_button = Some(edit);
     }
     let day_text = format!("Day {}", day.date);
     let day_width = style.measure(&day_text, BAR_TEXT_SIZE, Weight::Regular).width;
@@ -116,7 +113,13 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
         draw_stock(style, &country.stock, coin_end + 22.0, y, compass.x - 16.0);
     }
     draw_compass(compass, yaw, interactive && compass.contains(Vec2::from(mouse_position())));
-    HeaderButtons { country: button, day: day_button, money: money_button, compass }
+    HeaderButtons { country: button, edit: edit_button, day: day_button, money: money_button, compass }
+}
+
+/// A small pencil, about 12 pixels across, centered on `c`.
+fn draw_pencil(c: Vec2, color: Color) {
+    draw_line(c.x - 3.0, c.y + 3.0, c.x + 4.0, c.y - 4.0, 3.6, color);
+    draw_triangle(vec2(c.x - 6.0, c.y + 6.0), vec2(c.x - 6.0, c.y + 1.5), vec2(c.x - 1.5, c.y + 6.0), color);
 }
 
 /// What `resource` is drawn as in the header: a dot of this color, like the resource looks on the map.
@@ -161,26 +164,82 @@ fn draw_compass(rect: Rect, yaw: f32, hovered: bool) {
     draw_triangle(c - north * 9.0, c + across * 3.5, c - across * 3.5, Color::new(0.80, 0.82, 0.88, 0.85));
 }
 
-/// The footer along the bottom of the window: the frame rate at the left and, when `keys` is set and
-/// there is room for them (the right `buttons_room` pixels are kept for the buttons), the keys in the middle.
+/// The footer along the bottom of the window: the frame rate at the left.
 /// The Travel, Buildings, destroy, overlays and options buttons go at the right, which `Toolbar` (for the first two),
 /// `DestroyTool`, `OverlaysUi` and `OptionsUi` draw.
 /// Returns where the footer is.
-pub fn footer(style: &Style, keys: bool, buttons_room: f32) -> Rect {
+pub fn footer(style: &Style) -> Rect {
     let bar = Rect::new(0.0, screen_height() - FOOTER_HEIGHT, screen_width(), FOOTER_HEIGHT);
     draw_rectangle(bar.x, bar.y, bar.w, bar.h, style::GLASS);
     draw_line(bar.x, bar.y, bar.right(), bar.y, 1.0, style::BORDER);
 
     let y = bar.center().y;
     let fps_x = bar.x + FOOTER_PADDING + 8.0;
-    style.text_mid(&format!("{} fps", get_fps()), fps_x, y, BAR_TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
-    // Room for four digits however many there are, so the keys beside it never move.
-    let fps_width = style.measure("8888 fps", BAR_TEXT_SIZE, Weight::Regular).width;
-
-    if keys {
-        help(style, bar, fps_x + fps_width + 24.0, bar.right() - buttons_room);
-    }
+    // The number is right-aligned in room for four digits, so the label after it never moves when it gains a digit.
+    let number = get_fps().to_string();
+    let room = style.measure("8888", BAR_TEXT_SIZE, Weight::Regular).width;
+    let number_width = style.measure(&number, BAR_TEXT_SIZE, Weight::Regular).width;
+    style.text_mid(&number, fps_x + room - number_width, y, BAR_TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
+    style.text_mid("fps", fps_x + room + 5.0, y, BAR_TEXT_SIZE, Weight::Regular, style::TEXT_MUTED);
     bar
+}
+
+/// The color a region glows under "Units" when a unit of the country in it still has moves left, green like the ring on its bubble.
+pub const MOVES_GLOW: [u8; 3] = [89, 255, 89];
+
+/// A label in the footer that does something while the mouse is on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FooterLabel {
+    /// Lights up the regions that have units of the country played in them.
+    Units,
+    /// Lights up the regions that have an alert about something in them.
+    Alerts,
+    /// Lights up the regions that have units of other countries in them.
+    Enemy,
+}
+
+impl FooterLabel {
+    /// Every label, in the order they are drawn, from the left.
+    const ALL: [FooterLabel; 3] = [FooterLabel::Units, FooterLabel::Alerts, FooterLabel::Enemy];
+
+    fn text(self) -> &'static str {
+        match self {
+            Self::Units => "Units",
+            Self::Alerts => "Alerts",
+            Self::Enemy => "Enemy",
+        }
+    }
+
+    /// The color the regions it lights up glow, red, green and blue. (Units that still have moves left glow [`MOVES_GLOW`] instead.)
+    pub fn glow(self) -> [u8; 3] {
+        match self {
+            Self::Units => [255, 102, 255],
+            Self::Alerts => [245, 176, 51],
+            Self::Enemy => [255, 71, 71],
+        }
+    }
+}
+
+/// Draws the labels in the footer `bar`, after the frame rate, and returns the one the mouse is on, if it is on one and `interactive`.
+pub fn footer_labels(style: &Style, bar: Rect, interactive: bool) -> Option<FooterLabel> {
+    let mouse = Vec2::from(mouse_position());
+    let y = bar.center().y;
+    // After the frame rate (see `footer`), with room between.
+    let fps = bar.x + FOOTER_PADDING + 8.0 + style.measure("8888", BAR_TEXT_SIZE, Weight::Regular).width + 5.0 + style.measure("fps", BAR_TEXT_SIZE, Weight::Regular).width;
+    let mut x = fps + 24.0;
+    let mut hovered = None;
+    for label in FooterLabel::ALL {
+        let width = style.measure(label.text(), BAR_TEXT_SIZE, Weight::Semibold).width;
+        let pill = Rect::new(x, y - 14.0, width + 20.0, 28.0);
+        let over = interactive && pill.contains(mouse);
+        if over {
+            style::rounded_rect(pill, 8.0, style::HOVER);
+            hovered = Some(label);
+        }
+        style.text_mid(label.text(), pill.x + 10.0, y, BAR_TEXT_SIZE, Weight::Semibold, if over { style::TEXT } else { style::TEXT_MUTED });
+        x = pill.right() + 6.0;
+    }
+    hovered
 }
 
 /// A warning at the top middle that the game couldn't be saved, and why.
@@ -287,26 +346,6 @@ pub fn placing_prompt(style: &Style, settling_from: Option<&str>, problem: Optio
             Weight::Regular,
             style::TEXT_MUTED,
         ),
-    }
-}
-
-/// The keys, in the middle of the `footer`, as long as they fit between `left` and `right`.
-fn help(style: &Style, footer: Rect, left: f32, right: f32) {
-    let item_gap = 18.0;
-    let measured: Vec<(f32, f32)> = HELP
-        .iter()
-        .map(|(key, what)| ((style.measure(key, 12, Weight::Semibold).width + 10.0).max(18.0), style.measure(what, 13, Weight::Regular).width))
-        .collect();
-    let total: f32 = measured.iter().map(|(k, w)| k + 6.0 + w).sum::<f32>() + item_gap * (HELP.len() - 1) as f32;
-    if total > right - left {
-        return;
-    }
-    // In the middle of the window if that is clear of the rest, and otherwise as near as it can be.
-    let mut x = ((footer.w - total) * 0.5).clamp(left, right - total);
-    for ((key, what), (key_w, what_w)) in HELP.iter().zip(&measured) {
-        style.keycap(key, x, footer.center().y);
-        style.text_mid(what, x + key_w + 6.0, footer.center().y, 13, Weight::Regular, style::TEXT_MUTED);
-        x += key_w + 6.0 + what_w + item_gap;
     }
 }
 
