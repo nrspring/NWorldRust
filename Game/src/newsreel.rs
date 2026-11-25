@@ -357,6 +357,15 @@ pub enum Event {
         #[serde(default)]
         region: Option<u16>,
     },
+    /// The subject is a person called `name`, who walked to the region numbered `region` (if the map has regions), spending `points`
+    /// movement points.
+    PersonMoved {
+        #[serde(default)]
+        name: String,
+        points: u32,
+        #[serde(default)]
+        region: Option<u16>,
+    },
     /// The subject is a ship called `name`, which was scrapped. It is gone, and what it cost is not given back.
     ShipScrapped { name: String },
     /// The subject is a barracks (or an archery range, as `kind` says), which the country `country` built, in the region numbered
@@ -626,6 +635,14 @@ impl News {
                 format!("{name} passes from {} to {}", day.country_name(from), day.country_name(to))
             }
             Event::MilitiaRenamed { ref from, ref to } => format!("{from} is renamed {to}"),
+            Event::PersonMoved { ref name, points, region } => {
+                let name = if name.is_empty() { "Someone" } else { name };
+                let spent = format!("{} movement {}", thousands(points), if points == 1 { "point" } else { "points" });
+                match region {
+                    Some(region) => format!("{name} travels to {}, spending {spent}", day.region_label(region)),
+                    None => format!("{name} travels, spending {spent}"),
+                }
+            }
             Event::MilitiaMoved { ref name, points, region } => {
                 let name = if name.is_empty() { "A militia" } else { name };
                 let spent = format!("{} movement {}", thousands(points), if points == 1 { "point" } else { "points" });

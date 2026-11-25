@@ -1,4 +1,4 @@
-//! The units panel: the militia and ships of the country being played that still have movement points left today, so that the player
+//! The units panel: the militia, ships and people of the country being played that still have movement points left today, so that the player
 //! can see at a glance which units they haven't dealt with yet. It sits at the top left, under the header, collapsed to an icon with a
 //! count on it until the player opens it. Clicking a unit in it selects the unit and takes the camera to it.
 //!
@@ -10,7 +10,7 @@ use nworld_view::style::{self, Style, Weight};
 
 use crate::day::DaySave;
 use crate::hud;
-use crate::ids::{MilitiaId, ShipId};
+use crate::ids::{MilitiaId, PersonId, ShipId};
 
 const MARGIN: f32 = 16.0;
 const PANEL_WIDTH: f32 = 280.0;
@@ -27,6 +27,7 @@ const LEAST_ROWS: usize = 3;
 pub enum Unit {
     Militia(MilitiaId),
     Ship(ShipId),
+    Person(PersonId),
 }
 
 /// A unit in the list, with what the list says of it.
@@ -40,15 +41,17 @@ pub struct Entry {
     pub points: u32,
 }
 
-/// The units of the country being played with movement points left, the militia first and then the ships, each in the order they
-/// were raised or built. There are none if no country is being played.
+/// The units of the country being played with movement points left, the militia first, then the ships, and then the people, each in the
+/// order they were raised, built or joined. There are none if no country is being played.
 pub fn current(day: &DaySave) -> Vec<Entry> {
     let Some(country) = day.player_country().map(|c| c.id) else {
         return Vec::new();
     };
     let militia = day.militias.iter().filter(|m| m.country == country && m.points > 0).map(|m| Entry { unit: Unit::Militia(m.id), name: m.title().to_owned(), kind: m.kind_label(), points: m.points });
     let ships = day.ships.iter().filter(|s| s.country == country && s.points > 0).map(|s| Entry { unit: Unit::Ship(s.id), name: s.title().to_owned(), kind: s.kind.label(), points: s.points });
-    militia.chain(ships).collect()
+    // The people on the map, who have the movement points the army has.
+    let people = day.people.iter().filter(|p| p.country == country && p.at.is_some() && p.points > 0).map(|p| Entry { unit: Unit::Person(p.id), name: p.name.clone(), kind: "Person", points: p.points });
+    militia.chain(ships).chain(people).collect()
 }
 
 /// The units panel.
@@ -233,6 +236,24 @@ mod tests {
         day.move_ship(ship, vec2(150.0, 0.0), 120, None).unwrap();
         assert_eq!(current(&day).iter().map(|e| (e.unit, e.points)).collect::<Vec<_>>(), [(Unit::Ship(ship), 80)]);
         day.rest_militia();
+        assert_eq!(current(&day).len(), 2);
+    }
+
+    #[test]
+    fn people_on_the_map_are_listed_last_while_they_have_points_left() {
+        let mut day = day();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        let person = day.people[0].id;
+        assert!(current(&day).is_empty(), "a person with no place on the map is not a unit to move");
+        day.people[0].at = Some((10.0, 0.0));
+        day.raise_militia(day.cities[0].id, 50, vec2(30.0, 0.0)).unwrap();
+        let militia = day.militias[0].id;
+        let listed = current(&day);
+        assert_eq!(listed.iter().map(|e| e.unit).collect::<Vec<_>>(), [Unit::Militia(militia), Unit::Person(person)]);
+        assert_eq!((listed[1].name.as_str(), listed[1].kind, listed[1].points), ("Mara Voss", "Person", 200));
+        day.end_person_moves(person).unwrap();
+        assert_eq!(current(&day).iter().map(|e| e.unit).collect::<Vec<_>>(), [Unit::Militia(militia)]);
+        day.rest_people();
         assert_eq!(current(&day).len(), 2);
     }
 

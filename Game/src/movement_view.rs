@@ -11,7 +11,7 @@ use crate::calendar::Date;
 use crate::day::DaySave;
 use crate::hud;
 use crate::failure::Thing;
-use crate::ids::{Guid, MilitiaId, ShipId};
+use crate::ids::{Guid, MilitiaId, PersonId, ShipId};
 use crate::movement::{self, Network, Reach};
 use crate::movement_mesh;
 use crate::path::{Kind, PathPiece};
@@ -56,12 +56,28 @@ impl MovementView {
             *self = Self::default();
             return;
         };
+        self.update_on_land(world, day, paths, roads, (militia.id.into(), vec2(militia.x, militia.z), militia.points));
+    }
+
+    /// Makes sure the overlay is for the person `selected`, which is nothing at all if it is `None`, or not in `day`, or not on the map. A
+    /// person goes where a militia goes.
+    pub fn update_person(&mut self, world: &World, day: &DaySave, paths: &PathRenderer, roads: &PathRenderer, selected: Option<PersonId>) {
+        let Some(person) = selected.and_then(|id| day.person(id)).filter(|p| p.at.is_some()) else {
+            *self = Self::default();
+            return;
+        };
+        let at = person.position().unwrap_or_default();
+        self.update_on_land(world, day, paths, roads, (person.id.into(), at, person.points));
+    }
+
+    /// Makes the overlay for the unit with this id, standing at this place with this many movement points, who walks over land.
+    fn update_on_land(&mut self, world: &World, day: &DaySave, paths: &PathRenderer, roads: &PathRenderer, (id, at, points): (Guid, Vec2, u32)) {
         let counts = [day.paths.len(), day.roads.len(), day.bridges.len(), day.bridge_links.len() + day.road_links.len(), day.failed.len(), 0];
-        let key = Key { id: militia.id.into(), at: (militia.x.to_bits(), militia.z.to_bits()), points: militia.points, date: day.date, counts };
+        let key = Key { id, at: (at.x.to_bits(), at.y.to_bits()), points, date: day.date, counts };
         if self.key.as_ref() == Some(&key) {
             return;
         }
-        let reach = movement::reach(world, &network_of(day, paths, roads), vec2(militia.x, militia.z), militia.points as f32);
+        let reach = movement::reach(world, &network_of(day, paths, roads), at, points as f32);
         self.meshes = movement_mesh::build(world, &reach);
         self.reach = Some(reach);
         self.key = Some(key);

@@ -45,6 +45,7 @@ pub const DAY_RULES: &[Rule] = &[
         apply: militia_siege,
     },
     Rule { description: "Each ship gets all of its movement points back: 200 a day. One at anchor gets none.", apply: ships_rest },
+    Rule { description: "Each person gets all of their movement points back: 200 a day, as the army does.", apply: people_rest },
     Rule {
         description: "Each country pays first for the militia picked to be paid, 1 coin a day for each member, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
         apply: militia_upkeep_first,
@@ -124,6 +125,10 @@ fn militia_upkeep(day: &mut DaySave) {
 }
 
 /// Each ship has all its movement points again.
+fn people_rest(day: &mut DaySave) {
+    day.rest_people();
+}
+
 fn ships_rest(day: &mut DaySave) {
     day.rest_ships();
 }

@@ -1,8 +1,11 @@
-//! People. Each belongs to a country.
+//! People. Each belongs to a country, and stands on the map. They have the movement points the army has, which they get back each day
+//! (see [`crate::movement`]), and walk where a militia can.
 
+use macroquad::math::{vec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{CountryId, PersonId, TitleTypeId};
+use crate::movement::DAILY_POINTS;
 use crate::text;
 
 /// The longest a person's name or title can be, in characters.
@@ -19,6 +22,24 @@ pub struct Person {
     pub title_type: TitleTypeId,
     /// The id of the country they belong to.
     pub country: CountryId,
+    /// Where they stand on the map, in world x and z. A person is put on the map beside the first city of their country, and has no
+    /// place until it has one. (One saved before people were on the map has none.)
+    #[serde(default)]
+    pub at: Option<(f32, f32)>,
+    /// The movement points they have left today, which they get all of back each day, like a militia does.
+    #[serde(default = "full_points")]
+    pub points: u32,
+}
+
+fn full_points() -> u32 {
+    DAILY_POINTS
+}
+
+impl Person {
+    /// Where they stand, if they have a place on the map.
+    pub fn position(&self) -> Option<Vec2> {
+        self.at.map(|(x, z)| vec2(x, z))
+    }
 }
 
 /// A person's name as typed, tidied up. An error says what is wrong with it.

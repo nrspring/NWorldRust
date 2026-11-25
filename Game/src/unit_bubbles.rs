@@ -13,7 +13,7 @@ use crate::movement::DAILY_POINTS;
 use crate::pieces::{self, Token};
 use crate::region_labels::to_screen;
 use crate::walk::Walks;
-use crate::{militia_view, ship_view};
+use crate::{militia_view, person_view, ship_view};
 
 /// How steeply the camera may look down and still show the bubbles: they are all there below the first pitch, fade out
 /// between the two, and are gone above the second, where the map is seen from straight above and a unit's base shows its
@@ -64,7 +64,7 @@ fn over(token: &Token) -> Vec3 {
     token.foot + Vec3::Y * (token.look.height() + CLEARANCE) * token.radius
 }
 
-/// The bubbles over the militia and the ships of `day` that can be seen from a camera at `eye`, where they are as they walk
+/// The bubbles over the militia, the ships and the people of `day` that can be seen from a camera at `eye`, where they are as they walk
 /// and sail.
 pub fn bubbles(world: &World, day: &DaySave, walks: &Walks, eye: Vec3) -> Vec<Bubble> {
     let country = |id| day.country(id).map_or(NO_COUNTRY, |c| c.color.color());
@@ -86,7 +86,11 @@ pub fn bubbles(world: &World, day: &DaySave, walks: &Walks, eye: Vec3) -> Vec<Bu
             under_siege: false,
         })
     });
-    militias.chain(ships).collect()
+    let people = day.people.iter().filter_map(|person| {
+        let at = person_view::position(walks, person).filter(|at| pieces::within_view(eye, at.x, at.y))?;
+        Some(Bubble { over: over(&person_view::token(world, at, None, eye)), country: country(person.country), moves: share(person.points, DAILY_POINTS), under_siege: false })
+    });
+    militias.chain(ships).chain(people).collect()
 }
 
 /// Draws the bubbles over the units of `day`, as `camera` sees them, which looks down at `pitch` radians. Nothing is drawn

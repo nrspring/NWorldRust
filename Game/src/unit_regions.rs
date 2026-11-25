@@ -16,7 +16,7 @@ pub enum Whose {
     Enemy,
 }
 
-/// The regions that have a militia or a ship of `whose` in them, each once, in order of their numbers. A unit that stands where there is
+/// The regions that have a militia, a ship or a person of `whose` in them, each once, in order of their numbers. A unit that stands where there is
 /// no region (on a map that isn't divided into them) is in none. There are none if no country is being played.
 pub fn with_units(world: &World, day: &DaySave, whose: Whose) -> Vec<RegionId> {
     regions_of(world, day, whose, false)
@@ -34,7 +34,8 @@ fn regions_of(world: &World, day: &DaySave, whose: Whose, moving_only: bool) -> 
     let theirs = |owner| (owner == country) == (whose == Whose::Mine);
     let militia = day.militias.iter().filter(|m| theirs(m.country) && (!moving_only || m.points > 0)).map(|m| (m.x, m.z));
     let ships = day.ships.iter().filter(|s| theirs(s.country) && (!moving_only || s.points > 0)).map(|s| (s.x, s.z));
-    let mut regions: Vec<RegionId> = militia.chain(ships).filter_map(|(x, z)| world.region_at(x, z)).collect();
+    let people = day.people.iter().filter(|p| theirs(p.country) && (!moving_only || p.points > 0)).filter_map(|p| p.at);
+    let mut regions: Vec<RegionId> = militia.chain(ships).chain(people).filter_map(|(x, z)| world.region_at(x, z)).collect();
     regions.sort_by_key(|r| r.raw());
     regions.dedup();
     regions
@@ -87,6 +88,27 @@ mod tests {
         }
         assert!(with_units(&world, &day, Whose::Mine).is_empty());
         assert_eq!(with_units(&world, &day, Whose::Enemy), before, "now they are the other country's");
+    }
+
+    #[test]
+    fn people_on_the_map_count_as_units_and_can_move_while_they_have_points() {
+        let world = test_support::regioned_continent();
+        let spot = test_support::land_spots(&world, 2)[0];
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        assert!(with_units(&world, &day, Whose::Mine).is_empty(), "no place on the map yet");
+        day.people[0].at = Some((spot.x, spot.y));
+        let here = world.region_at(spot.x, spot.y).unwrap();
+        assert_eq!(with_units(&world, &day, Whose::Mine), vec![here]);
+        assert_eq!(with_units_that_can_move(&world, &day, Whose::Mine), vec![here]);
+        day.people[0].points = 0;
+        assert_eq!(with_units(&world, &day, Whose::Mine), vec![here]);
+        assert!(with_units_that_can_move(&world, &day, Whose::Mine).is_empty());
+        day.people[0].country = day.countries[1].id;
+        assert!(with_units(&world, &day, Whose::Mine).is_empty());
+        assert_eq!(with_units(&world, &day, Whose::Enemy), vec![here]);
     }
 
     #[test]
