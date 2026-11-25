@@ -46,11 +46,11 @@ pub const DAY_RULES: &[Rule] = &[
     },
     Rule { description: "Each ship gets all of its movement points back: 200 a day. One at anchor gets none.", apply: ships_rest },
     Rule {
-        description: "Each country pays first for the militia marked to be paid first, 1 coin a day for each member, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
+        description: "Each country pays first for the militia picked to be paid, 1 coin a day for each member, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
         apply: militia_upkeep_first,
     },
     Rule {
-        description: "Each country then pays a day's upkeep for each of its ships marked to be paid first, the oldest first: 50 coins for a small warship and 250 for a large one. A ship it can't pay for is abandoned by its crew and is gone.",
+        description: "Each country then pays a day's upkeep for each of its ships picked to be paid, the oldest first: 50 coins for a small warship and 250 for a large one. A ship it can't pay for is abandoned by its crew and is gone.",
         apply: ships_upkeep_first,
     },
     Rule {
@@ -112,13 +112,13 @@ fn militia_siege(day: &mut DaySave) {
     day.shrink_besieged_militia(ids::random_unit);
 }
 
-/// Each country pays to keep the militia it marked to be paid first (see [`DaySave::pay_militia_round`]). This comes after the income,
+/// Each country pays to keep the militia it picked to be paid (see [`DaySave::pay_militia_round`]). This comes after the income,
 /// so that a country pays out of what it earned today.
 fn militia_upkeep_first(day: &mut DaySave) {
     day.pay_militia_round(Round::First);
 }
 
-/// Each country pays to keep the rest of its militia, out of what it has left after the units marked to be paid first.
+/// Each country pays to keep the rest of its militia, out of what it has left after the units picked to be paid.
 fn militia_upkeep(day: &mut DaySave) {
     day.pay_militia_round(Round::Rest);
 }
@@ -128,7 +128,7 @@ fn ships_rest(day: &mut DaySave) {
     day.rest_ships();
 }
 
-/// Each country pays to keep the ships it marked to be paid first (see [`DaySave::pay_ships_round`]), after the militia marked so.
+/// Each country pays to keep the ships it picked to be paid (see [`DaySave::pay_ships_round`]), after the militia picked.
 fn ships_upkeep_first(day: &mut DaySave) {
     day.pay_ships_round(Round::First);
 }

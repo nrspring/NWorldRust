@@ -38,7 +38,7 @@ mod people;
 mod regions;
 mod ships;
 
-/// Which of a country's units a payment of upkeep is for. A unit the player marked to be paid first (its `pay_first`) is paid for
+/// Which of a country's units a payment of upkeep is for. A unit the player picked to be paid (its `pay_first`) is paid for
 /// before the others, whatever kind it is, so the day's rules pay for `First` of each kind, and then `Rest` of each kind. `All` is
 /// both, the marked ones first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +49,7 @@ pub enum Round {
 }
 
 impl Round {
-    /// Whether a unit that is (or isn't) marked to be paid first is paid for in this round.
+    /// Whether a unit that is (or isn't) picked to be paid is paid for in this round.
     pub fn includes(self, pay_first: bool) -> bool {
         match self {
             Self::First => pay_first,

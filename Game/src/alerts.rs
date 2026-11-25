@@ -14,10 +14,12 @@ use nworld_view::style::{self, Style, Weight};
 use crate::bridge::End;
 use crate::day::DaySave;
 use crate::failure::Thing;
+use crate::format;
 use crate::hud;
 use crate::ids::{BridgeId, CityId, CountryId, GathererId, MilitiaId};
 use crate::path::PathPiece;
 use crate::pieces;
+use crate::upkeep;
 use crate::gatherer::GathererKind;
 use crate::{gatherer_view, path_view, region_labels};
 
@@ -52,6 +54,8 @@ pub enum Alert {
     CityUnderSiege(CityId),
     /// A militia that is under siege, and so is losing members.
     MilitiaUnderSiege(MilitiaId),
+    /// A country that can't afford the upkeep of all its units, and will lose some unless it picks which to pay for.
+    UpkeepShort(CountryId),
     /// A path, a road or a bridge that has failed.
     Failed(Thing),
     /// A gatherer that has no unbroken route to a city of its country, and so isn't operating.
@@ -63,6 +67,8 @@ pub enum Alert {
 pub enum AlertTarget {
     /// A country, in the countries menu.
     Country(CountryId),
+    /// A country's upkeep, in the list of its units to pick which to pay for.
+    Upkeep(CountryId),
     /// A gatherer, which the camera goes to.
     Gatherer(GathererId),
     /// A city, which the camera goes to.
@@ -77,12 +83,13 @@ pub enum AlertTarget {
 
 impl Alert {
     /// Every alert there is in `day`, in a steady order: the countries that have no cities, then the cities under siege,
-    /// then the militia under siege, then the gatherers that are cut off from a city, then what failed when the last day ended (`failures`, in the order it did), as long as
+    /// then the militia under siege, then the countries that can't pay their upkeep, then the gatherers that are cut off from a city, then what failed when the last day ended (`failures`, in the order it did), as long as
     /// it is still ruined.
     pub fn current(day: &DaySave, failures: &[Thing]) -> Vec<Alert> {
         let mut alerts: Vec<Alert> = day.countries.iter().filter(|c| !day.cities.iter().any(|city| city.country == c.id)).map(|c| Alert::CountryWithoutCities(c.id)).collect();
         alerts.extend(day.cities.iter().filter(|c| c.under_siege).map(|c| Alert::CityUnderSiege(c.id)));
         alerts.extend(day.militias.iter().filter(|m| m.under_siege).map(|m| Alert::MilitiaUnderSiege(m.id)));
+        alerts.extend(upkeep::short_countries(day).into_iter().map(Alert::UpkeepShort));
         // Whether a gatherer has a route is kept up to date on it (see `RouteWatch`), which is far cheaper than working the
         // routes out again, which this is asked for every frame.
         alerts.extend(day.gatherers.iter().filter(|g| !g.operating).map(|g| Alert::GathererCutOff(g.id)));
@@ -99,6 +106,7 @@ impl Alert {
     pub fn target(&self) -> AlertTarget {
         match self {
             Alert::CountryWithoutCities(id) => AlertTarget::Country(*id),
+            Alert::UpkeepShort(id) => AlertTarget::Upkeep(*id),
             Alert::GathererCutOff(id) => AlertTarget::Gatherer(*id),
             Alert::CityUnderSiege(id) => AlertTarget::City(*id),
             Alert::MilitiaUnderSiege(id) => AlertTarget::Militia(*id),
@@ -121,6 +129,10 @@ impl Alert {
                 Some(militia) => format!("{} ({}) is under siege and is losing members", militia.title(), day.country_name(militia.country)),
                 None => "A militia is under siege".to_owned(),
             },
+            Alert::UpkeepShort(id) => {
+                let outlook = upkeep::outlook(day, *id);
+                format!("{} can't pay to keep all its units: {} coins a day, and {} coins to pay it with. Click to pick which to pay for", day.country_name(*id), format::money(outlook.needed), format::money(outlook.available))
+            }
             Alert::Failed(thing) => format!("A {} has failed", thing.name()),
             Alert::GathererCutOff(id) => match day.gatherer(*id) {
                 Some(w) => format!("The {} in {} has no path, road or bridge to a city of {}", w.kind.noun(), day.region_label(w.region), day.country_name(w.country)),
@@ -134,7 +146,7 @@ impl Alert {
     /// A country with no cities is nowhere on the map, so that has none.
     pub fn place(&self, day: &DaySave, map: &RegionMap) -> Option<(Vec2, f32)> {
         let piece = match self {
-            Alert::CountryWithoutCities(_) => return None,
+            Alert::CountryWithoutCities(_) | Alert::UpkeepShort(_) => return None,
             Alert::CityUnderSiege(id) => return day.city(*id).map(|c| (vec2(c.x, c.z), CITY_MARK_HOLD)),
             Alert::MilitiaUnderSiege(id) => return day.militia(*id).map(|m| (vec2(m.x, m.z), MILITIA_MARK_HOLD)),
             Alert::GathererCutOff(id) => return day.gatherer(*id).map(|w| (vec2(w.x, w.z), gatherer_mark_hold(w.kind))),
@@ -368,6 +380,30 @@ mod tests {
 
     fn day() -> DaySave {
         DaySave::new(Date::FIRST, "Assets/map.nworld")
+    }
+
+    #[test]
+    fn a_country_that_cannot_pay_to_keep_all_its_units_is_an_alert_that_opens_the_list_of_its_units() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let aldoria = day.countries[0].id;
+        day.add_money(aldoria, 10_000).unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.cities[0].population = 1_000;
+        day.raise_militia(day.cities[0].id, 100, vec2(30.0, 0.0)).unwrap();
+        assert!(Alert::current(&day, &[]).is_empty(), "it can pay");
+
+        // With no money and 100 people it earns 100 coins, and the 100 members cost 100: just enough. Then one more member is too many.
+        let money = day.country(aldoria).unwrap().money;
+        day.add_money(aldoria, -money).unwrap();
+        day.cities[0].population = 99;
+        let alerts = Alert::current(&day, &[]);
+        assert_eq!(alerts, [Alert::UpkeepShort(aldoria)]);
+        assert_eq!(alerts[0].target(), AlertTarget::Upkeep(aldoria));
+        assert_eq!(alerts[0].text(&day), "Aldoria can't pay to keep all its units: 100 coins a day, and 99 coins to pay it with. Click to pick which to pay for");
+        assert_eq!(alerts[0].place(&day, &RegionMap::default()), None, "it is not at a place on the map");
+        day.cities[0].population = 100;
+        assert!(Alert::current(&day, &[]).is_empty());
     }
 
     #[test]

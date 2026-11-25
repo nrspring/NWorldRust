@@ -144,8 +144,9 @@ pub struct Ship {
     /// The movement points it has left today, which it gets all of back each day.
     #[serde(default = "full_points")]
     pub points: u32,
-    /// Whether the country pays to keep it before it pays for the units that aren't marked, so that when there is not enough
-    /// money it is the others that are lost. The player switches it on and off.
+    /// Whether the player picked it to be paid for, in the list that comes up when its country can't afford all its upkeep (see
+    /// [`crate::upkeep`]). The country pays for the units picked before the others, so when there is not enough money it is the others
+    /// that are lost.
     #[serde(default)]
     pub pay_first: bool,
     /// Whether it is at anchor: it stays where it is, and so gets no movement points back each day. The player switches it on and off.

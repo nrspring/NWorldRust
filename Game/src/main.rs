@@ -5,6 +5,8 @@
 mod advance_popup;
 mod alerts;
 mod idle_units;
+mod upkeep;
+mod upkeep_popup;
 mod autosave;
 mod bridge;
 mod bridge_tool;
@@ -114,6 +116,7 @@ use movement_view::{MovementView, PanelAction};
 use walk::Walks;
 use gatherer_tool::GathererTool;
 use ship_popup::ShipPopup;
+use upkeep_popup::UpkeepPopup;
 use barracks_popup::BarracksPopup;
 use barracks_tool::BarracksTool;
 use shipyard::ShipyardKind;
@@ -326,6 +329,7 @@ async fn main() {
     // The popup for the ship that was clicked, the popup for a new name for a ship, and the ship that was clicked, which shows where it
     // can go. (Only one militia or ship is selected at a time.)
     let mut ship_popup = ShipPopup::default();
+    let mut upkeep_popup = UpkeepPopup::default();
     let mut naming_ship: Option<(ids::ShipId, Popup)> = None;
     let mut selected_ship: Option<ids::ShipId> = None;
     let mut movement_view = MovementView::default();
@@ -365,6 +369,8 @@ async fn main() {
                 militia_popup.escape();
             } else if ship_popup.is_open() {
                 ship_popup.escape();
+            } else if upkeep_popup.is_open() {
+                upkeep_popup.close();
             } else if country_menu.is_open() {
                 country_menu.escape();
             } else if options_ui.is_open() || overlays_ui.is_open() || toolbar.is_open() {
@@ -426,7 +432,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || naming_ship.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || shipyard_popup.is_open() || barracks_popup.is_open() || militia_popup.is_open() || ship_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || naming_ship.is_some() || noting.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || shipyard_popup.is_open() || barracks_popup.is_open() || militia_popup.is_open() || ship_popup.is_open() || upkeep_popup.is_open() || advance_popup.is_open();
         if modal {
             toolbar.close();
         }
@@ -896,6 +902,11 @@ async fn main() {
                         overlays_ui.close();
                         country_menu.open_at(&day, Some(country));
                     }
+                    AlertTarget::Upkeep(country) => {
+                        options_ui.close();
+                        overlays_ui.close();
+                        upkeep_popup.open(country);
+                    }
                     AlertTarget::Gatherer(id) => {
                         if let Some(gatherer) = day.gatherer(id) {
                             camera.fly_to(vec2(gatherer.x, gatherer.z), REGION_VIEW_DISTANCE);
@@ -1175,7 +1186,7 @@ async fn main() {
             let mut updated = day.clone();
             let marching = change.militia().into_iter().find(|id| walks.is_walking(*id));
             let result = match marching {
-                Some(id) if !matches!(change, militia_popup::Change::Country(..) | militia_popup::Change::Siege(..) | militia_popup::Change::PayFirst(..) | militia_popup::Change::EndMoves(..) | militia_popup::Change::Garrison(..)) => Err(format!("{} is still marching.", day.militia(id).map_or("A militia", |m| m.title()))),
+                Some(id) if !matches!(change, militia_popup::Change::Country(..) | militia_popup::Change::Siege(..) | militia_popup::Change::EndMoves(..) | militia_popup::Change::Garrison(..)) => Err(format!("{} is still marching.", day.militia(id).map_or("A militia", |m| m.title()))),
                 _ => change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)),
             };
             match result {
@@ -1194,7 +1205,7 @@ async fn main() {
             // Only keep the change if it is saved too. A ship that is still sailing to where it was moved can't be scrapped until it
             // has got there.
             let mut updated = day.clone();
-            let sailing = walks.is_walking(change.ship()) && !matches!(change, ship_popup::Change::Country(..) | ship_popup::Change::PayFirst(..) | ship_popup::Change::EndMoves(..) | ship_popup::Change::Garrison(..));
+            let sailing = walks.is_walking(change.ship()) && !matches!(change, ship_popup::Change::Country(..) | ship_popup::Change::EndMoves(..) | ship_popup::Change::Garrison(..));
             let result = if sailing {
                 Err(format!("{} is still sailing.", day.ship(change.ship()).map_or("A ship", |s| s.title())))
             } else {
@@ -1208,6 +1219,15 @@ async fn main() {
                     day = updated;
                 }
                 Err(message) => ship_popup.fail(message),
+            }
+        }
+
+        if let Some(change) = upkeep_popup.show(&style, &day) {
+            // Only keep the change if it is saved too.
+            let mut updated = day.clone();
+            match change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)) {
+                Ok(()) => day = updated,
+                Err(message) => upkeep_popup.fail(message),
             }
         }
 

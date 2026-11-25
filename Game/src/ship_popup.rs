@@ -23,15 +23,13 @@ const MAX_LIST_ROWS: usize = 6;
 /// How long the popup takes to appear, in seconds.
 const FADE_IN: f64 = 0.22;
 /// How many rows the information has.
-const ROW_COUNT: usize = 9;
+const ROW_COUNT: usize = 8;
 
 /// What the player changed about the ship in the popup.
 #[derive(Debug, PartialEq)]
 pub enum Change {
     /// The ship now belongs to this country.
     Country(ShipId, CountryId),
-    /// The ship is now paid for before the country's other units (or not).
-    PayFirst(ShipId, bool),
     /// The ship has no movement points left today.
     EndMoves(ShipId),
     /// The ship is now at anchor (or not).
@@ -45,7 +43,6 @@ impl Change {
     pub fn apply(&self, day: &mut DaySave) -> Result<(), String> {
         match self {
             Self::Country(ship, country) => day.set_ship_country(*ship, *country),
-            Self::PayFirst(id, pay_first) => day.set_ship_pay_first(*id, *pay_first),
             Self::EndMoves(id) => day.end_ship_moves(*id),
             Self::Garrison(id, garrison) => day.set_ship_garrison(*id, *garrison),
             Self::Scrap(id) => day.scrap_ship(*id),
@@ -55,7 +52,7 @@ impl Change {
     /// The ship it is about, which can't be scrapped while it is sailing.
     pub fn ship(&self) -> ShipId {
         match self {
-            Self::Country(id, _) | Self::PayFirst(id, _) | Self::EndMoves(id) | Self::Garrison(id, _) | Self::Scrap(id) => *id,
+            Self::Country(id, _) | Self::EndMoves(id) | Self::Garrison(id, _) | Self::Scrap(id) => *id,
         }
     }
 }
@@ -145,8 +142,8 @@ impl ShipPopup {
         let inner_x = card.x + PADDING;
         let inner_w = card.w - PADDING * 2.0;
         let rows: Vec<Rect> = (0..ROW_COUNT).map(|k| Rect::new(inner_x, card.y + ROWS_TOP + ROW_HEIGHT * k as f32, inner_w, ROW_HEIGHT)).collect();
-        let [name_row, country_row, size_row, sails_row, built_row, upkeep_row, moves_row, pay_row, anchor_row] = [rows[0], rows[1], rows[2], rows[3], rows[4], rows[5], rows[6], rows[7], rows[8]];
-        for y in [name_row.y, country_row.y, size_row.y, sails_row.y, built_row.y, upkeep_row.y, moves_row.y, pay_row.y, anchor_row.y, anchor_row.bottom()] {
+        let [name_row, country_row, size_row, sails_row, built_row, upkeep_row, moves_row, anchor_row] = [rows[0], rows[1], rows[2], rows[3], rows[4], rows[5], rows[6], rows[7]];
+        for y in [name_row.y, country_row.y, size_row.y, sails_row.y, built_row.y, upkeep_row.y, moves_row.y, anchor_row.y, anchor_row.bottom()] {
             draw_line(inner_x, y, inner_x + inner_w, y, 1.0, style::BORDER);
         }
 
@@ -211,13 +208,6 @@ impl ShipPopup {
             change = Some(Change::EndMoves(unit.id));
         }
 
-        // Whether it is paid for first, which matters when the country has too little money for all its units.
-        let mut pay_first = unit.pay_first;
-        options::toggle(style, Rect::new(pay_row.x - 12.0, pay_row.y, pay_row.w + 24.0, pay_row.h), "Pay first", None, &mut pay_first, !self.choosing);
-        if pay_first != unit.pay_first {
-            change = Some(Change::PayFirst(unit.id, pay_first));
-        }
-
         // Whether it is at anchor, which stays put: it has no movement points today, and gets none on any day after.
         let mut garrison = unit.garrison;
         options::toggle(style, Rect::new(anchor_row.x - 12.0, anchor_row.y, anchor_row.w + 24.0, anchor_row.h), "At anchor", None, &mut garrison, !self.choosing);
@@ -226,7 +216,7 @@ impl ShipPopup {
         }
 
         if let Some(error) = &self.error {
-            style.text(error, inner_x, pay_row.bottom() + 24.0, 12, Weight::Regular, style::ERROR);
+            style.text(error, inner_x, anchor_row.bottom() + 24.0, 12, Weight::Regular, style::ERROR);
         }
 
         // The buttons at the bottom: one that scraps it, which has to be clicked twice to be sure, and one that closes it.

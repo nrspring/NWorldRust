@@ -150,7 +150,7 @@ impl DaySave {
         Ok(())
     }
 
-    /// Each country pays to keep its ships, the ones marked to be paid first and then the oldest first: 50 coins a day for a small one and
+    /// Each country pays to keep its ships, the ones picked to be paid and then the oldest first: 50 coins a day for a small one and
     /// 250 for a large one. A ship it can't pay for is abandoned by its crew, and is gone, so a country with no money keeps no ships, and
     /// one with money for some keeps those. The payment, and each ship that was lost, is in the newsreel.
     #[cfg(test)]
@@ -158,10 +158,10 @@ impl DaySave {
         self.pay_ships_round(Round::All);
     }
 
-    /// [`pay_ships`](Self::pay_ships) for the ships that `round` says: all of them, those marked to be paid first, or the rest. Whatever a
+    /// [`pay_ships`](Self::pay_ships) for the ships that `round` says: all of them, those picked to be paid, or the rest. Whatever a
     /// country has left after the first round is what it has for the rest.
     pub fn pay_ships_round(&mut self, round: Round) {
-        // All of them is the ones marked to be paid first and then the rest, out of the same money.
+        // All of them is the ones picked to be paid and then the rest, out of the same money.
         let rounds: &[Round] = if round == Round::All { &[Round::First, Round::Rest] } else { &[round] };
         for index in 0..self.countries.len() {
             let country = self.countries[index].id;
@@ -481,7 +481,7 @@ mod tests {
         assert_eq!(poor.ships.iter().map(|s| s.id).collect::<Vec<_>>(), [small]);
         assert_eq!(poor.country(aldoria).unwrap().money, 50);
 
-        // A ship marked to be paid first is kept before an older one: with 100 coins the small one, marked, is paid for and the large is lost.
+        // A ship picked to be paid is kept before an older one: with 100 coins the small one, marked, is paid for and the large is lost.
         let mut marked = today.clone();
         marked.set_ship_pay_first(small, true).unwrap();
         assert!(marked.set_ship_pay_first(ShipId::new(), true).is_err());

@@ -273,7 +273,7 @@ impl DaySave {
         Ok(())
     }
 
-    /// Each country pays 1 coin for each member of its militia, the ones marked to be paid first and then the oldest first. A member it
+    /// Each country pays 1 coin for each member of its militia, the ones picked to be paid and then the oldest first. A member it
     /// can't pay for deserts, and is gone: a country with no money keeps none, and one with money for some keeps that many. The payment,
     /// and each militia that lost members, is in the newsreel. A militia that has none left is gone.
     #[cfg(test)]
@@ -281,7 +281,7 @@ impl DaySave {
         self.pay_militia_round(Round::All);
     }
 
-    /// [`pay_militia`](Self::pay_militia) for the militia that `round` says: all of them, those marked to be paid first, or the rest.
+    /// [`pay_militia`](Self::pay_militia) for the militia that `round` says: all of them, those picked to be paid, or the rest.
     /// Whatever a country has left after the first round is what it has for the rest.
     pub fn pay_militia_round(&mut self, round: Round) {
         for index in 0..self.countries.len() {
