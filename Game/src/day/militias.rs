@@ -2,7 +2,7 @@
 
 use macroquad::math::{vec2, Vec2};
 
-use super::DaySave;
+use super::{DaySave, Round};
 use crate::format;
 use crate::ids::{CityId, CountryId, MilitiaId};
 use crate::militia::{self, Militia};
@@ -85,7 +85,7 @@ impl DaySave {
         }
         let id = MilitiaId::new();
         let name = militia::default_name(&name, id);
-        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS, under_siege: false, trained: false });
+        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS, under_siege: false, trained: false, pay_first: false, garrison: false });
         self.newsreel.push(News::about(id, Event::MilitiaRaised { name, country, city, members, cost: vec![Cost::coins(cost)] }));
         Ok(())
     }
@@ -156,6 +156,8 @@ impl DaySave {
         let (bigger, smaller) = if second.members > first.members { (second, first) } else { (first, second) };
         let (points, name, absorbed) = (first.points.min(second.points), bigger.name.clone(), smaller.title().to_owned());
         let besieged = first.under_siege || second.under_siege;
+        let pay_first = first.pay_first || second.pay_first;
+        let garrison = first.garrison || second.garrison;
         let kept_title = bigger.title().to_owned();
         self.militias.retain(|m| m.id != absorb);
         if let Some(unit) = self.militias.iter_mut().find(|m| m.id == keep) {
@@ -163,6 +165,8 @@ impl DaySave {
             unit.points = points;
             unit.name = name;
             unit.under_siege |= besieged;
+            unit.pay_first = pay_first;
+            unit.garrison = garrison;
         }
         self.newsreel.push(News::about(keep, Event::MilitiaMerged { name: kept_title, absorbed, members: members as u32 }));
         Ok(())
@@ -225,11 +229,29 @@ impl DaySave {
         }
     }
 
-    /// Gives every militia all its movement points again, for a new day.
+    /// Gives every militia all its movement points again, for a new day, except a garrison, which gets none.
     pub fn rest_militia(&mut self) {
         for militia in &mut self.militias {
-            militia.points = DAILY_POINTS;
+            militia.points = if militia.garrison { 0 } else { DAILY_POINTS };
         }
+    }
+
+    /// Takes away what is left of the movement points of the militia with this id today. It has all of them again on the next day
+    /// (unless it is a garrison). An error says why it can't be done.
+    pub fn end_militia_moves(&mut self, id: MilitiaId) -> Result<(), String> {
+        self.militias.iter_mut().find(|m| m.id == id).ok_or("There is no such militia.")?.points = 0;
+        Ok(())
+    }
+
+    /// Makes the militia with this id a garrison, or not. A garrison has no movement points left today, and none on any day after, until it
+    /// is not one. Ending it as one gives nothing back until the next day. An error says why it can't be done.
+    pub fn set_militia_garrison(&mut self, id: MilitiaId, garrison: bool) -> Result<(), String> {
+        let unit = self.militias.iter_mut().find(|m| m.id == id).ok_or("There is no such militia.")?;
+        unit.garrison = garrison;
+        if garrison {
+            unit.points = 0;
+        }
+        Ok(())
     }
 
     /// Makes the militia with this id belong to `country`, which pays to keep it from now on. This is reported in the
@@ -244,15 +266,31 @@ impl DaySave {
         Ok(())
     }
 
-    /// Each country pays 1 coin for each member of its militia, the oldest first. A member it can't pay for deserts, and
-    /// is gone: a country with no money keeps none, and one with money for some keeps that many. The payment, and each
-    /// militia that lost members, is in the newsreel. A militia that has none left is gone.
+    /// Switches on or off whether the militia with this id is paid for before the country's other units (see [`Militia::pay_first`]).
+    /// An error says why it can't be done.
+    pub fn set_militia_pay_first(&mut self, id: MilitiaId, pay_first: bool) -> Result<(), String> {
+        self.militias.iter_mut().find(|m| m.id == id).ok_or("There is no such militia.")?.pay_first = pay_first;
+        Ok(())
+    }
+
+    /// Each country pays 1 coin for each member of its militia, the ones marked to be paid first and then the oldest first. A member it
+    /// can't pay for deserts, and is gone: a country with no money keeps none, and one with money for some keeps that many. The payment,
+    /// and each militia that lost members, is in the newsreel. A militia that has none left is gone.
+    #[cfg(test)]
     pub fn pay_militia(&mut self) {
+        self.pay_militia_round(Round::All);
+    }
+
+    /// [`pay_militia`](Self::pay_militia) for the militia that `round` says: all of them, those marked to be paid first, or the rest.
+    /// Whatever a country has left after the first round is what it has for the rest.
+    pub fn pay_militia_round(&mut self, round: Round) {
         for index in 0..self.countries.len() {
             let country = self.countries[index].id;
             let mut affordable = self.countries[index].money.max(0) as u64;
             let (mut paid, mut deserted) = (0u64, Vec::new());
-            for militia in self.militias.iter_mut().filter(|m| m.country == country) {
+            let mut owed: Vec<&mut Militia> = self.militias.iter_mut().filter(|m| m.country == country && round.includes(m.pay_first)).collect();
+            owed.sort_by_key(|m| !m.pay_first);
+            for militia in owed {
                 let wanted = u64::from(militia.members);
                 let rate = militia.upkeep_per_member() as u64;
                 let pay = wanted.min(affordable / rate);
@@ -845,6 +883,78 @@ mod tests {
 
         day.pay_militia();
         assert_eq!(day.militias.iter().map(|m| (m.city, m.members)).collect::<Vec<_>>(), [(port, 100), (highmark, 30)]);
+    }
+
+    #[test]
+    fn a_militia_marked_to_be_paid_first_is_kept_before_an_older_one() {
+        let mut day = day_with_a_city();
+        let aldoria = day.countries[0].id;
+        day.found_city("Highmark", 500.0, 0.0, None).unwrap();
+        day.cities[1].population = 1_000;
+        let (port, highmark) = (day.cities[0].id, day.cities[1].id);
+        day.raise_militia(port, 100, CAMP).unwrap();
+        day.raise_militia(highmark, 100, CAMP).unwrap();
+        let newer = day.militias[1].id;
+        let money = day.country(aldoria).unwrap().money;
+        day.add_money(aldoria, 130 - money).unwrap();
+
+        day.set_militia_pay_first(newer, true).unwrap();
+        assert!(day.set_militia_pay_first(MilitiaId::new(), true).is_err());
+        let mut priority = day.clone();
+        priority.pay_militia();
+        assert_eq!(priority.militias.iter().map(|m| (m.city, m.members)).collect::<Vec<_>>(), [(port, 30), (highmark, 100)], "the marked one is paid whole, and the older gets the rest");
+        assert_eq!(priority.country(aldoria).unwrap().money, 0);
+
+        // The two rounds, which the day's rules run with the ships between, come to the same.
+        let mut rounds = day.clone();
+        rounds.pay_militia_round(Round::First);
+        assert_eq!(rounds.country(aldoria).unwrap().money, 30, "100 for the marked one");
+        assert_eq!(rounds.militias.iter().map(|m| m.members).collect::<Vec<_>>(), [100, 100], "the rest are not touched yet");
+        rounds.pay_militia_round(Round::Rest);
+        assert_eq!(rounds.militias, priority.militias);
+
+        // It is saved, carries forward, is lost with an old save, and a combined militia is marked if either was.
+        assert_eq!(serde_json::to_value(&day).unwrap()["militias"][1]["pay_first"], true);
+        assert!(day.following(Date { year: 1, month: 1, day: 2 }).militia(newer).unwrap().pay_first);
+        let mut old = serde_json::to_value(&day).unwrap();
+        old["militias"][1].as_object_mut().unwrap().remove("pay_first");
+        assert!(!serde_json::from_value::<DaySave>(old).unwrap().militias[1].pay_first);
+    }
+
+    #[test]
+    fn a_militia_can_end_its_moves_for_the_day_and_a_garrison_never_gets_them_back() {
+        let mut day = day_with_a_city();
+        let port = day.cities[0].id;
+        day.raise_militia(port, 50, CAMP).unwrap();
+        let id = day.militias[0].id;
+        assert_eq!(day.militias[0].points, DAILY_POINTS);
+
+        // Ending the moves takes them all, and the next day gives them all back.
+        day.end_militia_moves(id).unwrap();
+        assert_eq!(day.militia(id).unwrap().points, 0);
+        assert!(day.move_militia(id, vec2(60.0, 0.0), 1, None).is_err(), "it can't move");
+        day.rest_militia();
+        assert_eq!(day.militia(id).unwrap().points, DAILY_POINTS);
+        assert!(day.end_militia_moves(MilitiaId::new()).is_err());
+
+        // A garrison has none at once, and none on any later day, until it is one no more, and then it has them the next day.
+        day.set_militia_garrison(id, true).unwrap();
+        assert_eq!(day.militia(id).unwrap().points, 0);
+        day.rest_militia();
+        assert_eq!(day.militia(id).unwrap().points, 0);
+        day.set_militia_garrison(id, false).unwrap();
+        assert_eq!(day.militia(id).unwrap().points, 0, "switching it off gives nothing back today");
+        day.rest_militia();
+        assert_eq!(day.militia(id).unwrap().points, DAILY_POINTS);
+        assert!(day.set_militia_garrison(MilitiaId::new(), true).is_err());
+
+        // It is saved, and a save from before there were garrisons has none.
+        day.set_militia_garrison(id, true).unwrap();
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(json["militias"][0]["garrison"], true);
+        let mut old = json;
+        old["militias"][0].as_object_mut().unwrap().remove("garrison");
+        assert!(!serde_json::from_value::<DaySave>(old).unwrap().militias[0].garrison);
     }
 
     #[test]

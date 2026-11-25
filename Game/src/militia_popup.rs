@@ -30,7 +30,7 @@ const FADE_IN: f64 = 0.22;
 const SPLIT_HEIGHT: f32 = 36.0 + SLIDER_HEIGHT + 6.0 + BUTTON_HEIGHT;
 const SLIDER_HEIGHT: f32 = 30.0;
 /// How many rows the information has.
-const ROW_COUNT: usize = 8;
+const ROW_COUNT: usize = 10;
 
 /// What the player changed about the militia in the popup.
 #[derive(Debug, PartialEq)]
@@ -43,6 +43,12 @@ pub enum Change {
     Split { id: MilitiaId, members: u32, at: Vec2 },
     /// The militia is now under siege (or not).
     Siege(MilitiaId, bool),
+    /// The militia is now paid for before the country's other units (or not).
+    PayFirst(MilitiaId, bool),
+    /// The militia has no movement points left today.
+    EndMoves(MilitiaId),
+    /// The militia is now a garrison (or not).
+    Garrison(MilitiaId, bool),
     /// The militia is disbanded.
     Disband(MilitiaId),
 }
@@ -55,6 +61,9 @@ impl Change {
             Self::Merge { keep, absorb, regions } => day.merge_militia(*keep, *absorb, *regions),
             Self::Split { id, members, at } => day.split_militia(*id, *members, *at),
             Self::Siege(id, under_siege) => day.set_militia_under_siege(*id, *under_siege),
+            Self::PayFirst(id, pay_first) => day.set_militia_pay_first(*id, *pay_first),
+            Self::EndMoves(id) => day.end_militia_moves(*id),
+            Self::Garrison(id, garrison) => day.set_militia_garrison(*id, *garrison),
             Self::Disband(id) => day.disband_militia(*id),
         }
     }
@@ -62,7 +71,7 @@ impl Change {
     /// The militia it is about, which can't be changed while they are walking.
     pub fn militia(&self) -> Vec<MilitiaId> {
         match self {
-            Self::Country(id, _) | Self::Split { id, .. } | Self::Siege(id, _) | Self::Disband(id) => vec![*id],
+            Self::Country(id, _) | Self::Split { id, .. } | Self::Siege(id, _) | Self::PayFirst(id, _) | Self::EndMoves(id) | Self::Garrison(id, _) | Self::Disband(id) => vec![*id],
             Self::Merge { keep, absorb, .. } => vec![*keep, *absorb],
         }
     }
@@ -172,8 +181,8 @@ impl MilitiaPopup {
         let inner_x = card.x + PADDING;
         let inner_w = card.w - PADDING * 2.0;
         let rows: Vec<Rect> = (0..ROW_COUNT).map(|k| Rect::new(inner_x, card.y + ROWS_TOP + ROW_HEIGHT * k as f32, inner_w, ROW_HEIGHT)).collect();
-        let [name_row, country_row, members_row, raised_row, upkeep_row, moves_row, siege_row, combine_row] = [rows[0], rows[1], rows[2], rows[3], rows[4], rows[5], rows[6], rows[7]];
-        for y in [name_row.y, country_row.y, members_row.y, raised_row.y, upkeep_row.y, moves_row.y, siege_row.y, combine_row.y, combine_row.bottom()] {
+        let [name_row, country_row, members_row, raised_row, upkeep_row, moves_row, siege_row, pay_row, garrison_row, combine_row] = [rows[0], rows[1], rows[2], rows[3], rows[4], rows[5], rows[6], rows[7], rows[8], rows[9]];
+        for y in [name_row.y, country_row.y, members_row.y, raised_row.y, upkeep_row.y, moves_row.y, siege_row.y, pay_row.y, garrison_row.y, combine_row.y, combine_row.bottom()] {
             draw_line(inner_x, y, inner_x + inner_w, y, 1.0, style::BORDER);
         }
 
@@ -227,11 +236,37 @@ impl MilitiaPopup {
         value_row("Upkeep", &format!("{} coins a day", money(unit.upkeep())), upkeep_row);
         value_row("Movement", &format!("{} of {} points left", unit.points, DAILY_POINTS), moves_row);
 
+        // A button that ends its moves for the day, in the movement row, while it has any left.
+        let end_label = "End moves";
+        let end_rect = Rect::new(inner_x + 84.0, moves_row.y + 6.0, style.measure(end_label, 12, Weight::Semibold).width + 18.0, moves_row.h - 12.0);
+        let over_end = unit.points > 0 && !listing && end_rect.contains(mouse);
+        if unit.points > 0 {
+            style::rounded_rect(end_rect, 6.0, if over_end { style::BORDER_STRONG } else { style::HOVER });
+            style.text_centered(end_label, end_rect, 12, Weight::Semibold, style::TEXT);
+        }
+        if clicked && over_end {
+            change = Some(Change::EndMoves(unit.id));
+        }
+
         // The siege switch, which is for the lists to cover while one is open. A militia under siege loses members each day.
         let mut under_siege = unit.under_siege;
         options::toggle(style, Rect::new(siege_row.x - 12.0, siege_row.y, siege_row.w + 24.0, siege_row.h), "Under siege", None, &mut under_siege, !listing);
         if under_siege != unit.under_siege {
             change = Some(Change::Siege(unit.id, under_siege));
+        }
+
+        // Whether it is paid for first, which matters when the country has too little money for all its units.
+        let mut pay_first = unit.pay_first;
+        options::toggle(style, Rect::new(pay_row.x - 12.0, pay_row.y, pay_row.w + 24.0, pay_row.h), "Pay first", None, &mut pay_first, !listing);
+        if pay_first != unit.pay_first && change.is_none() {
+            change = Some(Change::PayFirst(unit.id, pay_first));
+        }
+
+        // Whether it is a garrison, which stays put: it has no movement points today, and gets none on any day after.
+        let mut garrison = unit.garrison;
+        options::toggle(style, Rect::new(garrison_row.x - 12.0, garrison_row.y, garrison_row.w + 24.0, garrison_row.h), "Garrison", None, &mut garrison, !listing);
+        if garrison != unit.garrison && change.is_none() {
+            change = Some(Change::Garrison(unit.id, garrison));
         }
 
         // Combining with another militia of the country that stands in the same region: a row that opens the list of them.

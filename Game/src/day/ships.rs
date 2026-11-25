@@ -2,7 +2,7 @@
 
 use macroquad::math::{vec2, Vec2};
 
-use super::DaySave;
+use super::{DaySave, Round};
 use crate::ids::{CountryId, ShipId, ShipyardId};
 use crate::movement::DAILY_POINTS;
 use crate::newsreel::{Event, News};
@@ -58,7 +58,7 @@ impl DaySave {
         }
         let id = ShipId::new();
         let name = ship::default_name(kind, id);
-        self.ships.push(Ship { id, name: name.clone(), kind, country, built: self.date, x: berth.x, z: berth.y, points: DAILY_POINTS });
+        self.ships.push(Ship { id, name: name.clone(), kind, country, built: self.date, x: berth.x, z: berth.y, points: DAILY_POINTS, pay_first: false, garrison: false });
         let ready = self.date.plus_days(rest);
         if let Some(shipyard) = self.shipyards.iter_mut().find(|s| s.id == yard) {
             shipyard.ready_on = Some(ready);
@@ -106,11 +106,29 @@ impl DaySave {
         Ok(())
     }
 
-    /// Gives every ship all its movement points again, for a new day.
+    /// Gives every ship all its movement points again, for a new day, except one at anchor, which gets none.
     pub fn rest_ships(&mut self) {
         for ship in &mut self.ships {
-            ship.points = DAILY_POINTS;
+            ship.points = if ship.garrison { 0 } else { DAILY_POINTS };
         }
+    }
+
+    /// Takes away what is left of the movement points of the ship with this id today. It has all of them again on the next day (unless it
+    /// is at anchor). An error says why it can't be done.
+    pub fn end_ship_moves(&mut self, id: ShipId) -> Result<(), String> {
+        self.ships.iter_mut().find(|s| s.id == id).ok_or("There is no such ship.")?.points = 0;
+        Ok(())
+    }
+
+    /// Puts the ship with this id at anchor, or not. One at anchor has no movement points left today, and none on any day after, until it
+    /// is not. An error says why it can't be done.
+    pub fn set_ship_garrison(&mut self, id: ShipId, garrison: bool) -> Result<(), String> {
+        let ship = self.ships.iter_mut().find(|s| s.id == id).ok_or("There is no such ship.")?;
+        ship.garrison = garrison;
+        if garrison {
+            ship.points = 0;
+        }
+        Ok(())
     }
 
     /// Makes the ship with this id belong to `country`, which pays to keep it from now on. This is reported in the newsreel unless it
@@ -125,28 +143,46 @@ impl DaySave {
         Ok(())
     }
 
-    /// Each country pays to keep its ships, the oldest first: 50 coins a day for a small one and 250 for a large one. A ship it can't
-    /// pay for is abandoned by its crew, and is gone, so a country with no money keeps no ships, and one with money for some keeps
-    /// those. The payment, and each ship that was lost, is in the newsreel.
+    /// Switches on or off whether the ship with this id is paid for before the country's other units (see [`Ship::pay_first`]). An
+    /// error says why it can't be done.
+    pub fn set_ship_pay_first(&mut self, id: ShipId, pay_first: bool) -> Result<(), String> {
+        self.ships.iter_mut().find(|s| s.id == id).ok_or("There is no such ship.")?.pay_first = pay_first;
+        Ok(())
+    }
+
+    /// Each country pays to keep its ships, the ones marked to be paid first and then the oldest first: 50 coins a day for a small one and
+    /// 250 for a large one. A ship it can't pay for is abandoned by its crew, and is gone, so a country with no money keeps no ships, and
+    /// one with money for some keeps those. The payment, and each ship that was lost, is in the newsreel.
+    #[cfg(test)]
     pub fn pay_ships(&mut self) {
+        self.pay_ships_round(Round::All);
+    }
+
+    /// [`pay_ships`](Self::pay_ships) for the ships that `round` says: all of them, those marked to be paid first, or the rest. Whatever a
+    /// country has left after the first round is what it has for the rest.
+    pub fn pay_ships_round(&mut self, round: Round) {
+        // All of them is the ones marked to be paid first and then the rest, out of the same money.
+        let rounds: &[Round] = if round == Round::All { &[Round::First, Round::Rest] } else { &[round] };
         for index in 0..self.countries.len() {
             let country = self.countries[index].id;
             let mut affordable = self.countries[index].money.max(0);
             let (mut paid, mut abandoned) = (0i64, Vec::new());
-            self.ships.retain(|ship| {
-                if ship.country != country {
-                    return true;
-                }
-                let upkeep = ship.kind.upkeep();
-                if upkeep <= affordable {
-                    affordable -= upkeep;
-                    paid += upkeep;
-                    true
-                } else {
-                    abandoned.push(News::about(ship.id, Event::ShipDeserted { name: ship.title().to_owned(), country }));
-                    false
-                }
-            });
+            for &round in rounds {
+                self.ships.retain(|ship| {
+                    if ship.country != country || !round.includes(ship.pay_first) {
+                        return true;
+                    }
+                    let upkeep = ship.kind.upkeep();
+                    if upkeep <= affordable {
+                        affordable -= upkeep;
+                        paid += upkeep;
+                        true
+                    } else {
+                        abandoned.push(News::about(ship.id, Event::ShipDeserted { name: ship.title().to_owned(), country }));
+                        false
+                    }
+                });
+            }
             if paid > 0 {
                 self.countries[index].money -= paid;
                 self.newsreel.push(News::about(country, Event::ShipPaid { amount: paid as u64 }));
@@ -332,6 +368,31 @@ mod tests {
     }
 
     #[test]
+    fn a_ship_can_end_its_moves_for_the_day_and_one_at_anchor_never_gets_them_back() {
+        let mut day = day_with_a_yard();
+        day.build_ship(day.shipyards[0].id, ShipKind::Small, vec2(40.0, 0.0)).unwrap();
+        let id = day.ships[0].id;
+        assert_eq!(day.ship(id).unwrap().points, DAILY_POINTS);
+
+        day.end_ship_moves(id).unwrap();
+        assert_eq!(day.ship(id).unwrap().points, 0);
+        assert!(day.move_ship(id, vec2(60.0, 0.0), 1, None).is_err(), "it can't move");
+        assert!(day.end_ship_moves(ShipId::new()).is_err());
+        day.rest_ships();
+        assert_eq!(day.ship(id).unwrap().points, DAILY_POINTS, "back the next day");
+
+        day.set_ship_garrison(id, true).unwrap();
+        assert_eq!(day.ship(id).unwrap().points, 0);
+        day.rest_ships();
+        assert_eq!(day.ship(id).unwrap().points, 0, "at anchor");
+        day.set_ship_garrison(id, false).unwrap();
+        assert_eq!(day.ship(id).unwrap().points, 0, "nothing back today");
+        day.rest_ships();
+        assert_eq!(day.ship(id).unwrap().points, DAILY_POINTS);
+        assert!(day.set_ship_garrison(ShipId::new(), true).is_err());
+    }
+
+    #[test]
     fn the_points_come_back_each_day_and_are_saved() {
         let mut day = day_with_a_yard();
         day.build_ship(day.shipyards[0].id, ShipKind::Small, BERTH).unwrap();
@@ -419,6 +480,18 @@ mod tests {
         poor.pay_ships();
         assert_eq!(poor.ships.iter().map(|s| s.id).collect::<Vec<_>>(), [small]);
         assert_eq!(poor.country(aldoria).unwrap().money, 50);
+
+        // A ship marked to be paid first is kept before an older one: with 100 coins the small one, marked, is paid for and the large is lost.
+        let mut marked = today.clone();
+        marked.set_ship_pay_first(small, true).unwrap();
+        assert!(marked.set_ship_pay_first(ShipId::new(), true).is_err());
+        marked.add_money(aldoria, -(money - 100)).unwrap();
+        marked.pay_ships_round(Round::First);
+        assert_eq!(marked.country(aldoria).unwrap().money, 50, "the marked one was paid for");
+        assert_eq!(marked.ships.len(), 2, "and the large one is not lost until the rest are paid for");
+        marked.pay_ships_round(Round::Rest);
+        assert_eq!(marked.ships.iter().map(|s| s.id).collect::<Vec<_>>(), [small]);
+        assert!(marked.ships[0].pay_first);
 
         // With none at all, none are kept, and a ship of a country that has no money doesn't make it owe.
         let mut none = today.clone();

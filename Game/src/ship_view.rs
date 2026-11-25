@@ -125,7 +125,7 @@ mod tests {
     use crate::test_support;
 
     fn ship(kind: ShipKind, at: Vec2) -> Ship {
-        Ship { id: ShipId::new(), name: "Test Ship".to_owned(), kind, country: CountryId::new(), built: Date::FIRST, x: at.x, z: at.y, points: 100 }
+        Ship { id: ShipId::new(), name: "Test Ship".to_owned(), kind, country: CountryId::new(), built: Date::FIRST, x: at.x, z: at.y, points: 100, pay_first: false, garrison: false }
     }
 
     fn eye_over(at: Vec2, world: &World, distance: f32) -> Vec3 {

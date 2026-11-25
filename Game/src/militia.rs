@@ -72,6 +72,13 @@ pub struct Militia {
     /// more to keep. A trained group can only be combined with another trained group. (One saved before there were barracks is not.)
     #[serde(default)]
     pub trained: bool,
+    /// Whether the country pays to keep it before it pays for the units that aren't marked, so that when there is not enough
+    /// money it is the others that go unpaid. The player switches it on and off.
+    #[serde(default)]
+    pub pay_first: bool,
+    /// Whether it is a garrison: it stays where it is, and so gets no movement points back each day. The player switches it on and off.
+    #[serde(default)]
+    pub garrison: bool,
 }
 
 fn full_points() -> u32 {

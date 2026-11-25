@@ -144,6 +144,13 @@ pub struct Ship {
     /// The movement points it has left today, which it gets all of back each day.
     #[serde(default = "full_points")]
     pub points: u32,
+    /// Whether the country pays to keep it before it pays for the units that aren't marked, so that when there is not enough
+    /// money it is the others that are lost. The player switches it on and off.
+    #[serde(default)]
+    pub pay_first: bool,
+    /// Whether it is at anchor: it stays where it is, and so gets no movement points back each day. The player switches it on and off.
+    #[serde(default)]
+    pub garrison: bool,
 }
 
 fn full_points() -> u32 {
@@ -228,7 +235,7 @@ mod tests {
         assert_eq!(clean_name("  Sea   Wolf ").unwrap(), "Sea Wolf");
         assert_eq!(clean_name(" ").unwrap_err(), "Enter a name for your ship.");
         assert!(clean_name(&"a".repeat(MAX_NAME_CHARS + 1)).is_err());
-        let nameless = Ship { id, name: String::new(), kind: ShipKind::Large, country: CountryId::new(), built: Date::FIRST, x: 0.0, z: 0.0, points: 0 };
+        let nameless = Ship { id, name: String::new(), kind: ShipKind::Large, country: CountryId::new(), built: Date::FIRST, x: 0.0, z: 0.0, points: 0, pay_first: false, garrison: false };
         assert_eq!(nameless.title(), "Large warship");
     }
 

@@ -114,7 +114,7 @@ mod tests {
     use crate::test_support;
 
     fn militia(members: u32, at: Vec2) -> Militia {
-        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false, trained: false }
+        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false, trained: false, pay_first: false, garrison: false }
     }
 
     fn eye_over(at: Vec2, world: &World, distance: f32) -> Vec3 {

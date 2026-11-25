@@ -4,6 +4,7 @@
 
 mod advance_popup;
 mod alerts;
+mod idle_units;
 mod autosave;
 mod bridge;
 mod bridge_tool;
@@ -94,6 +95,7 @@ use nworld_view::{mouse_ray, pick_terrain, MapView};
 
 use advance_popup::AdvancePopup;
 use alerts::{AlertTarget, AlertsUi};
+use idle_units::IdleUnitsUi;
 use autosave::Autosave;
 use camera::GameCamera;
 use city_popup::CityPopup;
@@ -291,6 +293,7 @@ async fn main() {
     // The Travel and Buildings menus of tools.
     let mut toolbar = Toolbar::default();
     let mut alerts_ui = AlertsUi::default();
+    let mut idle_units_ui = IdleUnitsUi::default();
     // What failed when the last day ended, which the alerts report. Not saved: a game opened again has none.
     let mut day_failures: Vec<failure::Thing> = Vec::new();
     let mut newsreel_panel = hud::NewsreelPanel::default();
@@ -430,7 +433,7 @@ async fn main() {
         // The mouse is over the interface, and so not for the map, when it is on the header or the
         // options (which has the footer).
         let mouse = Vec2::from(mouse_position());
-        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || barracks_tool.has_mouse(mouse) || ((selected_militia.is_some() || selected_ship.is_some()) && movement_view::panel_rect().contains(mouse));
+        let over_interface = hud::header_rect().contains(mouse) || options_ui.has_mouse(mouse) || overlays_ui.has_mouse(mouse) || toolbar.has_mouse(mouse) || alerts_ui.has_mouse(mouse) || idle_units_ui.has_mouse(mouse) || newsreel_panel.has_mouse(mouse) || path_tool.has_mouse(mouse) || road_tool.has_mouse(mouse) || bridge_tool.has_mouse(mouse) || destroy_tool.has_mouse(mouse) || gatherer_tools.iter().any(|tool| tool.has_mouse(mouse)) || shipyard_tools.iter().any(|tool| tool.has_mouse(mouse)) || barracks_tool.has_mouse(mouse) || ((selected_militia.is_some() || selected_ship.is_some()) && movement_view::panel_rect().contains(mouse));
         if modal {
             camera.skip_frame();
         } else {
@@ -863,6 +866,28 @@ async fn main() {
                 overlays_ui.close();
                 noting = Some(Popup::note());
             }
+            // A unit in the list of those with moves left is selected, and the camera goes to it.
+            if let Some(unit) = idle_units_ui.show(&style, &day) {
+                options_ui.close();
+                overlays_ui.close();
+                move_error = None;
+                match unit {
+                    idle_units::Unit::Militia(id) => {
+                        if let Some(militia) = day.militia(id) {
+                            selected_ship = None;
+                            selected_militia = Some(id);
+                            camera.fly_to(walks.position(militia), REGION_VIEW_DISTANCE);
+                        }
+                    }
+                    idle_units::Unit::Ship(id) => {
+                        if let Some(ship) = day.ship(id) {
+                            selected_militia = None;
+                            selected_ship = Some(id);
+                            camera.fly_to(walks.position_of(id, vec2(ship.x, ship.z)), REGION_VIEW_DISTANCE);
+                        }
+                    }
+                }
+            }
             // An alert shows what it is about: the countries menu at a country, or the region where something failed.
             if let Some(target) = alerts_ui.show(&style, &day, &day_failures, newsreel) {
                 match target {
@@ -1150,7 +1175,7 @@ async fn main() {
             let mut updated = day.clone();
             let marching = change.militia().into_iter().find(|id| walks.is_walking(*id));
             let result = match marching {
-                Some(id) if !matches!(change, militia_popup::Change::Country(..) | militia_popup::Change::Siege(..)) => Err(format!("{} is still marching.", day.militia(id).map_or("A militia", |m| m.title()))),
+                Some(id) if !matches!(change, militia_popup::Change::Country(..) | militia_popup::Change::Siege(..) | militia_popup::Change::PayFirst(..) | militia_popup::Change::EndMoves(..) | militia_popup::Change::Garrison(..)) => Err(format!("{} is still marching.", day.militia(id).map_or("A militia", |m| m.title()))),
                 _ => change.apply(&mut updated).and_then(|()| autosave.save_now(&saves, &updated)),
             };
             match result {
@@ -1169,7 +1194,7 @@ async fn main() {
             // Only keep the change if it is saved too. A ship that is still sailing to where it was moved can't be scrapped until it
             // has got there.
             let mut updated = day.clone();
-            let sailing = walks.is_walking(change.ship()) && !matches!(change, ship_popup::Change::Country(..));
+            let sailing = walks.is_walking(change.ship()) && !matches!(change, ship_popup::Change::Country(..) | ship_popup::Change::PayFirst(..) | ship_popup::Change::EndMoves(..) | ship_popup::Change::Garrison(..));
             let result = if sailing {
                 Err(format!("{} is still sailing.", day.ship(change.ship()).map_or("A ship", |s| s.title())))
             } else {

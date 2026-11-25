@@ -184,7 +184,7 @@ mod tests {
         let at = test_support::inland_spot(&world, 50.0);
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         let country = CountryId::new();
-        day.militias.push(Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country, city: CityId::new(), raised: Date::FIRST, members: 300, x: at.x, z: at.y, points: 0, under_siege: true, trained: false });
+        day.militias.push(Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country, city: CityId::new(), raised: Date::FIRST, members: 300, x: at.x, z: at.y, points: 0, under_siege: true, trained: false, pay_first: false, garrison: false });
         let eye = vec3(at.x + 200.0, world.surface_height(at.x, at.y) + 150.0, at.y);
         let bubbles = bubbles(&world, &day, &Walks::default(), eye);
         assert_eq!(bubbles.len(), 1);

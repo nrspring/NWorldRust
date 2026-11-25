@@ -6,7 +6,7 @@
 //! with a sentence saying what it does. The popup that asks about ending the day doesn't list them.
 
 use crate::city::{MAX_POPULATION, MIN_POPULATION};
-use crate::day::DaySave;
+use crate::day::{DaySave, Round};
 use crate::ids;
 use crate::newsreel::{Event, News};
 use crate::gatherer::GathererKind;
@@ -39,18 +39,26 @@ pub const DAY_RULES: &[Rule] = &[
         apply: failures,
     },
     Rule { description: "Each woodcutter, sawmill, stonecutter or quarry that has a path, road or bridge route to a city of its country provides its wood or stone to the country each day: 100 from a woodcutter or stonecutter, and 1,000 from a sawmill or quarry.", apply: gather },
-    Rule { description: "Each militia gets all of its movement points back: 200 a day.", apply: militia_rest },
+    Rule { description: "Each militia gets all of its movement points back: 200 a day. A garrison gets none.", apply: militia_rest },
     Rule {
         description: "A militia under siege loses 5 to 10 percent of its members, each by a random amount, rounded up so that it loses at least one, and is never left with fewer than 1.",
         apply: militia_siege,
     },
+    Rule { description: "Each ship gets all of its movement points back: 200 a day. One at anchor gets none.", apply: ships_rest },
     Rule {
-        description: "Each country pays 1 coin a day for each member of its militia, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
+        description: "Each country pays first for the militia marked to be paid first, 1 coin a day for each member, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
+        apply: militia_upkeep_first,
+    },
+    Rule {
+        description: "Each country then pays a day's upkeep for each of its ships marked to be paid first, the oldest first: 50 coins for a small warship and 250 for a large one. A ship it can't pay for is abandoned by its crew and is gone.",
+        apply: ships_upkeep_first,
+    },
+    Rule {
+        description: "Each country pays 1 coin a day for each member of the rest of its militia, the oldest first, with what it has left. A member it can't pay for deserts, and does not go back to a city.",
         apply: militia_upkeep,
     },
-    Rule { description: "Each ship gets all of its movement points back: 200 a day.", apply: ships_rest },
     Rule {
-        description: "Each country pays a day's upkeep for each of its ships, the oldest first: 50 coins for a small warship and 250 for a large one. A ship it can't pay for is abandoned by its crew and is gone.",
+        description: "Each country pays a day's upkeep for the rest of its ships, the oldest first, with what it has left. A ship it can't pay for is abandoned by its crew and is gone.",
         apply: ships_upkeep,
     },
 ];
@@ -104,10 +112,15 @@ fn militia_siege(day: &mut DaySave) {
     day.shrink_besieged_militia(ids::random_unit);
 }
 
-/// Each country pays to keep its militia (see [`DaySave::pay_militia`]). This comes last, after the income, so that a
-/// country pays out of what it earned today.
+/// Each country pays to keep the militia it marked to be paid first (see [`DaySave::pay_militia_round`]). This comes after the income,
+/// so that a country pays out of what it earned today.
+fn militia_upkeep_first(day: &mut DaySave) {
+    day.pay_militia_round(Round::First);
+}
+
+/// Each country pays to keep the rest of its militia, out of what it has left after the units marked to be paid first.
 fn militia_upkeep(day: &mut DaySave) {
-    day.pay_militia();
+    day.pay_militia_round(Round::Rest);
 }
 
 /// Each ship has all its movement points again.
@@ -115,9 +128,14 @@ fn ships_rest(day: &mut DaySave) {
     day.rest_ships();
 }
 
-/// Each country pays to keep its ships (see [`DaySave::pay_ships`]), after the militia.
+/// Each country pays to keep the ships it marked to be paid first (see [`DaySave::pay_ships_round`]), after the militia marked so.
+fn ships_upkeep_first(day: &mut DaySave) {
+    day.pay_ships_round(Round::First);
+}
+
+/// Each country pays to keep the rest of its ships, last of all.
 fn ships_upkeep(day: &mut DaySave) {
-    day.pay_ships();
+    day.pay_ships_round(Round::Rest);
 }
 
 /// Each path, road and bridge that hasn't failed already has a chance of failing: `PATH_FAILURE`, 0.1% and 0.05%. What fails is
@@ -576,7 +594,7 @@ mod tests {
     #[test]
     fn the_ships_get_their_points_back_and_are_paid_for_each_day_and_the_unpaid_are_abandoned() {
         let rest_at = DAY_RULES.iter().position(|r| r.description.contains("Each ship gets all of its movement points back")).unwrap();
-        let ships_at = DAY_RULES.iter().position(|r| r.description.contains("upkeep for each of its ships")).unwrap();
+        let ships_at = DAY_RULES.iter().position(|r| r.description.contains("for the rest of its ships")).unwrap();
         assert!(rest_at < ships_at);
 
         let mut day = day();
@@ -610,6 +628,44 @@ mod tests {
     }
 
     #[test]
+    fn a_ship_marked_to_be_paid_first_is_kept_before_militia_that_are_not_when_there_is_too_little_money() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        let aldoria = day.countries[0].id;
+        day.add_money(aldoria, 30_000).unwrap();
+        for resource in nworld_map::world::Resource::ALL {
+            day.add_resource(aldoria, resource, 2_000).unwrap();
+        }
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.cities[0].population = 2_000;
+        day.raise_militia(day.cities[0].id, 100, macroquad::math::vec2(40.0, 0.0)).unwrap();
+        day.build_shipyard_claiming(crate::shipyard::ShipyardKind::Small, 0.0, 0.0, Some(0x4005)).unwrap();
+        let yard = day.shipyards[0].id;
+        day.build_ship(yard, crate::ship::ShipKind::Small, macroquad::math::vec2(60.0, 0.0)).unwrap();
+        let (militia, ship) = (day.militias[0].id, day.ships[0].id);
+        let money = day.country(aldoria).unwrap().money;
+        day.add_money(aldoria, 70 - money).unwrap();
+
+        let pay = |day: &mut DaySave| {
+            militia_upkeep_first(day);
+            ships_upkeep_first(day);
+            militia_upkeep(day);
+            ships_upkeep(day);
+        };
+
+        // Nothing marked: the militia are paid for first, so 70 coins keep 70 members and the ship, which costs 50, is lost.
+        let mut unmarked = day.clone();
+        pay(&mut unmarked);
+        assert_eq!((unmarked.militia(militia).unwrap().members, unmarked.ships.len()), (70, 0));
+
+        // The ship marked: it is paid for, 50 coins, and the militia get the 20 that are left.
+        day.set_ship_pay_first(ship, true).unwrap();
+        pay(&mut day);
+        assert_eq!((day.militia(militia).unwrap().members, day.ships.len()), (20, 1));
+        assert_eq!(day.country(aldoria).unwrap().money, 0);
+    }
+
+    #[test]
     fn the_wood_comes_after_the_failures_in_the_rules_and_a_day_with_no_gatherers_gathers_none() {
         let wood_at = DAY_RULES.iter().position(|r| r.description.contains("provides its wood or stone")).unwrap();
         let failures_at = DAY_RULES.iter().position(|r| r.description.contains("chance of failing")).unwrap();
@@ -623,8 +679,8 @@ mod tests {
 
     #[test]
     fn the_militia_are_paid_for_after_the_income_and_before_the_ships_out_of_what_the_country_earned_that_day() {
-        let paid_at = DAY_RULES.iter().position(|r| r.description.contains("member of its militia")).unwrap();
-        let ships_at = DAY_RULES.iter().position(|r| r.description.contains("upkeep for each of its ships")).unwrap();
+        let paid_at = DAY_RULES.iter().position(|r| r.description.contains("the rest of its militia")).unwrap();
+        let ships_at = DAY_RULES.iter().position(|r| r.description.contains("for the rest of its ships")).unwrap();
         assert_eq!(ships_at, DAY_RULES.len() - 1, "the ships are paid for last");
         assert!(paid_at < ships_at);
 
