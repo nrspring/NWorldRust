@@ -1,11 +1,16 @@
-//! Finding the city under the mouse. Each city is taken as an upright cylinder around its buildings,
-//! and the ray from the camera through the mouse is tested against it.
+//! Finding the city under the mouse. Each building is taken as an upright cylinder, a little wider than it is so that the streets
+//! between buildings count too, and the ray from the camera through the mouse is tested against them: a city is only where its
+//! buildings are, which on a coast or at the edge of its region is not all round its middle. A cylinder round them all is tried
+//! first, to pass over the cities the ray is nowhere near.
 
 use macroquad::prelude::*;
 
 use crate::city_layout::Building;
 
-/// The space a city takes up: an upright cylinder, centred on the city, from the lowest ground
+/// How far past its walls a building counts, in meters, which closes up the streets between neighbours.
+const STREET: f32 = 1.5;
+
+/// A space taken up: an upright cylinder. For a whole city it is centred on the city, from the lowest ground
 /// under its buildings to the top of its highest.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
@@ -25,6 +30,19 @@ pub fn bounds(centre: Vec2, buildings: &[Building]) -> Option<Bounds> {
     let low = buildings.iter().map(|b| b.base).fold(f32::MAX, f32::min);
     let high = buildings.iter().map(|b| b.top + b.roof.rise()).fold(f32::MIN, f32::max);
     Some(Bounds { centre, radius, low, high })
+}
+
+/// The space each of `buildings` takes up, with the street round it.
+pub fn each(buildings: &[Building]) -> Vec<Bounds> {
+    buildings.iter().map(|b| Bounds { centre: vec2(b.x, b.z), radius: b.width.max(b.depth) * 0.5 + STREET, low: b.base, high: b.top + b.roof.rise() }).collect()
+}
+
+/// How far along the ray it first enters one of the `buildings` of a city whose whole space is `all`, each made `slop` meters bigger
+/// all round, or `None` if it meets none of them.
+pub fn hit_city(origin: Vec3, dir: Vec3, all: &Bounds, buildings: &[Bounds], slop: f32) -> Option<f32> {
+    // (A building reaches as far past `all` as its street does.)
+    hit(origin, dir, all, slop + STREET)?;
+    buildings.iter().filter_map(|building| hit(origin, dir, building, slop)).min_by(f32::total_cmp)
 }
 
 /// How far along the ray from `origin` in the direction `dir` (a unit vector) it first enters `bounds`
@@ -91,6 +109,24 @@ mod tests {
         // The farthest building is 18 m out, and its walls reach 2 m past its middle.
         assert!((b.radius - 20.0).abs() < 1e-4, "{}", b.radius);
         assert_eq!(bounds(Vec2::ZERO, &[]), None);
+    }
+
+    #[test]
+    fn only_the_buildings_and_the_streets_round_them_are_the_city() {
+        let buildings = [tower(0.0, 0.0), tower(18.0, 0.0), tower(24.0, 0.0)];
+        let (all, each) = (bounds(Vec2::ZERO, &buildings).unwrap(), each(&buildings));
+        let down = |x: f32, z: f32, slop: f32| hit_city(vec3(x, 200.0, z), vec3(0.0, -1.0, 0.0), &all, &each, slop);
+        assert!(down(0.0, 0.0, 0.0).is_some() && down(18.0, 0.0, 0.0).is_some());
+        // The street between two neighbours is part of it.
+        assert!(down(21.0, 0.0, 0.0).is_some());
+        // Open ground inside the circle that goes round them all is not: between the far ones, and on the side with none.
+        assert!(hit(vec3(9.0, 200.0, 0.0), vec3(0.0, -1.0, 0.0), &all, 0.0).is_some());
+        assert_eq!(down(9.0, 0.0, 0.0), None);
+        assert_eq!(down(-20.0, 0.0, 0.0), None);
+        assert_eq!(down(0.0, 20.0, 0.0), None);
+        // The street round the farthest reaches a little past that circle, and counts.
+        assert!(down(27.0, 0.0, 0.0).is_some());
+        assert!(down(9.0, 0.0, 6.0).is_some(), "from far off, a near miss is a hit");
     }
 
     #[test]

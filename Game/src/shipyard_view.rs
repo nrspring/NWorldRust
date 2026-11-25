@@ -22,7 +22,7 @@ pub fn look(kind: ShipyardKind) -> Look {
     Look::Shipyard { large: kind == ShipyardKind::Large }
 }
 
-fn token(world: &World, kind: ShipyardKind, x: f32, z: f32, eye: Vec3) -> Token {
+pub fn token(world: &World, kind: ShipyardKind, x: f32, z: f32, eye: Vec3) -> Token {
     Token::at(world, look(kind), x, z, eye)
 }
 

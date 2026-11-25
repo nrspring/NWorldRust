@@ -6,10 +6,13 @@ use nworld_view::style::{self, Style, Weight};
 use nworld_map::world::Resource;
 
 use crate::city::City;
+use crate::country_menu::fit;
 use crate::country::{resource_name, Stock};
 use crate::resource_hover::Deposit;
 use crate::day::DaySave;
 use crate::format::{money, thousands, thousands_u64};
+use crate::ids::PersonId;
+use crate::people_dropdown;
 
 /// Distance of the panels from the edges of the window.
 const MARGIN: f32 = 16.0;
@@ -22,6 +25,8 @@ pub const FOOTER_PADDING: f32 = 12.0;
 
 /// The size of the text in the header and the footer.
 const BAR_TEXT_SIZE: u16 = 13;
+/// The widest the name of a person is shown in the header before it is cut short.
+const PERSON_WIDTH: f32 = 150.0;
 /// How tall the header is.
 pub const HEADER_HEIGHT: f32 = 48.0;
 
@@ -36,6 +41,8 @@ pub struct HeaderButtons {
     pub country: Option<Rect>,
     /// The small pencil beside it, for editing the country, once there is one.
     pub edit: Option<Rect>,
+    /// The person picked, for the drop-down of the people of the country, once there is a country.
+    pub person: Option<Rect>,
     /// The day, for ending it.
     pub day: Rect,
     /// The player's country's money, for its treasury, once there is a country.
@@ -45,11 +52,11 @@ pub struct HeaderButtons {
 }
 
 /// The header along the top of the window: the player's country, once there is one, which is a button
-/// for the countries menu, and the day, which is a button for ending it (each lit when the mouse is over
+/// for the countries menu, the person of it who is `selected`, which is a button for the list of its people, and the day, which is a button for ending it (each lit when the mouse is over
 /// it, if `interactive`), and the money of the country. At the right is a compass, whose needle points to north as
 /// the camera (looking in the direction `yaw`) sees it, which is a button for turning the map north up. Returns
 /// where the buttons are.
-pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> HeaderButtons {
+pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32, selected: Option<PersonId>) -> HeaderButtons {
     let bar = header_rect();
     draw_rectangle(bar.x, bar.y, bar.w, bar.h, style::GLASS);
     draw_line(bar.x, bar.bottom(), bar.right(), bar.bottom(), 1.0, style::BORDER);
@@ -58,6 +65,7 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
     let mut x = bar.x + FOOTER_PADDING;
     let mut button = None;
     let mut edit_button = None;
+    let mut person_button = None;
     let mut money_button = None;
     if let Some(country) = day.player_country() {
         let name_width = style.measure(&country.name, BAR_TEXT_SIZE, Weight::Semibold).width;
@@ -77,10 +85,25 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
             style::rounded_rect(edit, 8.0, style::HOVER);
         }
         draw_pencil(edit.center(), if edit_hovered { style::TEXT } else { style::TEXT_MUTED });
-        // A dot between the country and the day.
+        // A dot, and then the person of the country who is picked, which is a drop-down of its people.
         draw_circle(edit.right() + 8.0, y, 2.0, style::TEXT_MUTED);
-        x = edit.right() + 28.0;
+        let picked = people_dropdown::shown(day, selected).is_some();
+        let weight = if picked { Weight::Semibold } else { Weight::Regular };
+        let name = fit(style, people_dropdown::label(day, selected), BAR_TEXT_SIZE, weight, PERSON_WIDTH);
+        let person = Rect::new(edit.right() + 18.0, y - 14.0, style.measure(&name, BAR_TEXT_SIZE, weight).width + 52.0, 28.0);
+        if interactive && person.contains(Vec2::from(mouse_position())) {
+            style::rounded_rect(person, 8.0, style::HOVER);
+        }
+        let color = if picked { style::TEXT } else { style::TEXT_MUTED };
+        draw_person(vec2(person.x + 16.0, y), color);
+        style.text_mid(&name, person.x + 28.0, y, BAR_TEXT_SIZE, weight, color);
+        let arrow = person.right() - 13.0;
+        draw_triangle(vec2(arrow - 4.0, y - 1.5), vec2(arrow + 4.0, y - 1.5), vec2(arrow, y + 2.5), style::TEXT_MUTED);
+        // A dot between the person and the day.
+        draw_circle(person.right() + 8.0, y, 2.0, style::TEXT_MUTED);
+        x = person.right() + 28.0;
         button = Some(pill);
+        person_button = Some(person);
         edit_button = Some(edit);
     }
     let day_text = format!("Day {}", day.date);
@@ -113,7 +136,13 @@ pub fn header(style: &Style, day: &DaySave, interactive: bool, yaw: f32) -> Head
         draw_stock(style, &country.stock, coin_end + 22.0, y, compass.x - 16.0);
     }
     draw_compass(compass, yaw, interactive && compass.contains(Vec2::from(mouse_position())));
-    HeaderButtons { country: button, edit: edit_button, day: day_button, money: money_button, compass }
+    HeaderButtons { country: button, edit: edit_button, person: person_button, day: day_button, money: money_button, compass }
+}
+
+/// A small head and shoulders, about 12 pixels tall, centered on `c`.
+fn draw_person(c: Vec2, color: Color) {
+    draw_circle(c.x, c.y - 3.0, 3.2, color);
+    style::rounded_rect(Rect::new(c.x - 5.5, c.y + 1.0, 11.0, 5.5), 2.7, color);
 }
 
 /// A small pencil, about 12 pixels across, centered on `c`.
@@ -329,24 +358,26 @@ pub fn resource_tooltip(style: &Style, deposit: Deposit) {
 /// The prompt for placing a city, above the footer: the first city, or a new one settled with people from the city called
 /// `settling_from`. `problem` says why the city can't go where the mouse is, if it can't.
 pub fn placing_prompt(style: &Style, settling_from: Option<&str>, problem: Option<&str>) {
+    let title = settling_from.map_or_else(|| "Found your first city".to_owned(), |from| format!("Settle a new city from {from}"));
+    let hint = match settling_from {
+        Some(_) => format!("Click on dry land to place it. It takes {} people. Esc to cancel.", crate::city::SETTLERS),
+        None => format!("Click on dry land to place it. It starts with {} people.", crate::city::INITIAL_POPULATION),
+    };
+    prompt(style, &title, &hint, problem);
+}
+
+/// The prompt while the person called `name` is being put on the map, saying why they can't go under the mouse, if they can't.
+pub fn person_prompt(style: &Style, name: &str, problem: Option<&str>) {
+    prompt(style, &format!("Place {name} on the map"), "Click on dry land to put them there. Esc to do it later.", problem);
+}
+
+/// A card above the footer saying what is being placed: `title`, and under it `hint`, or `problem` in its stead if there is one.
+fn prompt(style: &Style, title: &str, hint: &str, problem: Option<&str>) {
     let panel = Rect::new((screen_width() - 460.0) * 0.5, screen_height() - FOOTER_HEIGHT - MARGIN - 72.0, 460.0, 72.0);
     style::card(panel, 12.0, style::GLASS);
-    let title = settling_from.map_or_else(|| "Found your first city".to_owned(), |from| format!("Settle a new city from {from}"));
-    style.text_mid(&title, panel.x + 20.0, panel.y + 24.0, 16, Weight::Semibold, style::TEXT);
-    match problem {
-        Some(problem) => style.text_mid(problem, panel.x + 20.0, panel.y + 48.0, 14, Weight::Regular, style::ERROR),
-        None => style.text_mid(
-            &match settling_from {
-                Some(_) => format!("Click on dry land to place it. It takes {} people. Esc to cancel.", crate::city::SETTLERS),
-                None => format!("Click on dry land to place it. It starts with {} people.", crate::city::INITIAL_POPULATION),
-            },
-            panel.x + 20.0,
-            panel.y + 48.0,
-            14,
-            Weight::Regular,
-            style::TEXT_MUTED,
-        ),
-    }
+    style.text_mid(title, panel.x + 20.0, panel.y + 24.0, 16, Weight::Semibold, style::TEXT);
+    let (text, color) = problem.map_or((hint, style::TEXT_MUTED), |problem| (problem, style::ERROR));
+    style.text_mid(text, panel.x + 20.0, panel.y + 48.0, 14, Weight::Regular, color);
 }
 
 /// The day's newsreel, at the top right, with the newest news on top. It is as tall as its news, up to a limit (about a fifth of the

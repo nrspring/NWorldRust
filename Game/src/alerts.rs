@@ -17,7 +17,7 @@ use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::format;
 use crate::hud;
-use crate::ids::{BridgeId, CityId, CountryId, GathererId, MilitiaId};
+use crate::ids::{BridgeId, CityId, CountryId, GathererId, MilitiaId, PersonId};
 use crate::path::PathPiece;
 use crate::pieces;
 use crate::upkeep;
@@ -51,6 +51,8 @@ const LEAST_MARK: f32 = 0.4;
 pub enum Alert {
     /// A country that has no cities.
     CountryWithoutCities(CountryId),
+    /// A person who has not been put on the map.
+    PersonUnplaced(PersonId),
     /// A city that is under siege, and so is losing people.
     CityUnderSiege(CityId),
     /// A militia that is under siege, and so is losing members.
@@ -68,6 +70,8 @@ pub enum Alert {
 pub enum AlertTarget {
     /// A country, in the countries menu.
     Country(CountryId),
+    /// A person to put on the map, with a click.
+    PlacePerson(PersonId),
     /// A country's upkeep, in the list of its units to pick which to pay for.
     Upkeep(CountryId),
     /// A gatherer, which the camera goes to.
@@ -83,11 +87,13 @@ pub enum AlertTarget {
 }
 
 impl Alert {
-    /// Every alert there is in `day`, in a steady order: the countries that have no cities, then the cities under siege,
+    /// Every alert there is in `day`, in a steady order: the countries that have no cities, then the people who are not on the map,
+    /// then the cities under siege,
     /// then the militia under siege, then the countries that can't pay their upkeep, then the gatherers that are cut off from a city, then what failed when the last day ended (`failures`, in the order it did), as long as
     /// it is still ruined.
     pub fn current(day: &DaySave, failures: &[Thing]) -> Vec<Alert> {
         let mut alerts: Vec<Alert> = day.countries.iter().filter(|c| !day.cities.iter().any(|city| city.country == c.id)).map(|c| Alert::CountryWithoutCities(c.id)).collect();
+        alerts.extend(day.people.iter().filter(|p| p.at.is_none()).map(|p| Alert::PersonUnplaced(p.id)));
         alerts.extend(day.cities.iter().filter(|c| c.under_siege).map(|c| Alert::CityUnderSiege(c.id)));
         alerts.extend(day.militias.iter().filter(|m| m.under_siege).map(|m| Alert::MilitiaUnderSiege(m.id)));
         alerts.extend(upkeep::short_countries(day).into_iter().map(Alert::UpkeepShort));
@@ -107,6 +113,7 @@ impl Alert {
     pub fn target(&self) -> AlertTarget {
         match self {
             Alert::CountryWithoutCities(id) => AlertTarget::Country(*id),
+            Alert::PersonUnplaced(id) => AlertTarget::PlacePerson(*id),
             Alert::UpkeepShort(id) => AlertTarget::Upkeep(*id),
             Alert::GathererCutOff(id) => AlertTarget::Gatherer(*id),
             Alert::CityUnderSiege(id) => AlertTarget::City(*id),
@@ -122,6 +129,10 @@ impl Alert {
     pub fn text(&self, day: &DaySave) -> String {
         match self {
             Alert::CountryWithoutCities(id) => format!("{} has no cities", day.country_name(*id)),
+            Alert::PersonUnplaced(id) => match day.person(*id) {
+                Some(person) => format!("{} ({}) is not on the map. Click to place them", person.name, day.country_name(person.country)),
+                None => "A person is not on the map".to_owned(),
+            },
             Alert::CityUnderSiege(id) => match day.city(*id) {
                 Some(city) => format!("{} ({}) is under siege and is losing people", city.name, day.country_name(city.country)),
                 None => "A city is under siege".to_owned(),
@@ -144,10 +155,10 @@ impl Alert {
 
     /// Where the thing the alert is about is on the map, in world x and z, and how high above the ground to hold the
     /// icon, in meters: the middle of a failed path, road or bridge, a city or militia under siege, or a gatherer, which is held high to clear it.
-    /// A country with no cities is nowhere on the map, so that has none.
+    /// A country with no cities and a person who is not on the map are nowhere on it, so they have none.
     pub fn place(&self, day: &DaySave, map: &RegionMap) -> Option<(Vec2, f32)> {
         let piece = match self {
-            Alert::CountryWithoutCities(_) | Alert::UpkeepShort(_) => return None,
+            Alert::CountryWithoutCities(_) | Alert::PersonUnplaced(_) | Alert::UpkeepShort(_) => return None,
             Alert::CityUnderSiege(id) => return day.city(*id).map(|c| (vec2(c.x, c.z), CITY_MARK_HOLD)),
             Alert::MilitiaUnderSiege(id) => return day.militia(*id).map(|m| (vec2(m.x, m.z), MILITIA_MARK_HOLD)),
             Alert::GathererCutOff(id) => return day.gatherer(*id).map(|w| (vec2(w.x, w.z), gatherer_mark_hold(w.kind))),
@@ -564,6 +575,22 @@ mod tests {
         day.set_militia_under_siege(guard, true).unwrap();
         day.disband_militia(guard).unwrap();
         assert_eq!(Alert::current(&day, &[]).len(), 2);
+    }
+
+    #[test]
+    fn a_person_who_is_not_on_the_map_is_an_alert_for_placing_them_until_they_are_placed() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        let id = day.people[0].id;
+        let alerts = Alert::current(&day, &[]);
+        assert_eq!(alerts, [Alert::PersonUnplaced(id)]);
+        assert_eq!(alerts[0].target(), AlertTarget::PlacePerson(id));
+        assert_eq!(alerts[0].text(&day), "Mara Voss (Aldoria) is not on the map. Click to place them");
+        assert_eq!(alerts[0].place(&day, &RegionMap::default()), None);
+        day.place_person(id, vec2(600.0, 0.0), None).unwrap();
+        assert!(Alert::current(&day, &[]).is_empty());
     }
 
     #[test]

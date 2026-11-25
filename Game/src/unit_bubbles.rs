@@ -87,7 +87,7 @@ pub fn bubbles(world: &World, day: &DaySave, walks: &Walks, eye: Vec3) -> Vec<Bu
         })
     });
     let people = day.people.iter().filter_map(|person| {
-        let at = person_view::position(walks, person).filter(|at| pieces::within_view(eye, at.x, at.y))?;
+        let at = person_view::shown_at(world, day, walks, person, eye).filter(|at| pieces::within_view(eye, at.x, at.y))?;
         Some(Bubble { over: over(&person_view::token(world, at, None, eye)), country: country(person.country), moves: share(person.points, DAILY_POINTS), under_siege: false })
     });
     militias.chain(ships).chain(people).collect()

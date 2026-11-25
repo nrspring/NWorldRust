@@ -16,12 +16,14 @@ pub struct Options {
     /// Show the names of the named places (the rivers and the lakes), and click one to name it. Set in the overlays
     /// menu.
     pub show_named_places: bool,
+    /// Show the buildings of the cities. Turned off in the overlays menu to see what is in them.
+    pub show_cities: bool,
 }
 
 impl Default for Options {
-    /// How the game starts: with the regions showing, and the countries' areas.
+    /// How the game starts: with the regions showing, and the countries' areas, and the cities.
     fn default() -> Self {
-        Self { show_regions: true, show_country_areas: true, show_region_names: false, show_named_places: false }
+        Self { show_regions: true, show_country_areas: true, show_region_names: false, show_named_places: false, show_cities: true }
     }
 }
 
@@ -147,6 +149,7 @@ mod tests {
 
     #[test]
     fn the_regions_and_the_countries_areas_show_when_the_game_starts() {
+        assert!(Options::default().show_cities);
         assert!(Options::default().show_regions);
         assert!(Options::default().show_country_areas);
         assert!(!Options::default().show_region_names && !Options::default().show_named_places, "the names start off: there are none to show");

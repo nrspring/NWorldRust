@@ -44,7 +44,7 @@ pub fn height(kind: GathererKind) -> f32 {
     look(kind).height() * HOLD_RADIUS
 }
 
-fn token(world: &World, kind: GathererKind, x: f32, z: f32, eye: Vec3) -> Token {
+pub fn token(world: &World, kind: GathererKind, x: f32, z: f32, eye: Vec3) -> Token {
     Token::at(world, look(kind), x, z, eye)
 }
 

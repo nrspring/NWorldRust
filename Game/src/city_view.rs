@@ -205,15 +205,17 @@ void main() {
 }
 "#;
 
-/// How much bigger than a city, as a share of how far away it is, it counts as being under the mouse.
-/// A far city is a few pixels across, and would be hard to point at otherwise.
-const HOVER_SLOP: f32 = 0.012;
+/// How much bigger than a building, as a share of how far away it is, it counts as being under the mouse.
+/// A far city is a few pixels across, and would be hard to point at otherwise, though much more than this
+/// makes the open ground round a city part of it.
+const HOVER_SLOP: f32 = 0.004;
 
 /// What is drawn of one city: its meshes, the size they were made for as its bits, and the space it takes.
 struct Shape {
     size: u32,
     meshes: Vec<Mesh>,
     bounds: Option<Bounds>,
+    buildings: Vec<Bounds>,
 }
 
 /// The shape of `city` on `world`.
@@ -222,6 +224,7 @@ fn shape(city: &City, world: &World) -> Shape {
     Shape {
         size: city.size().to_bits(),
         bounds: city_pick::bounds(vec2(city.x, city.z), &buildings),
+        buildings: city_pick::each(&buildings),
         meshes: city_mesh::build(&buildings).into_iter().map(|g| Mesh { vertices: g.vertices, indices: g.indices, texture: None }).collect(),
     }
 }
@@ -299,10 +302,11 @@ impl CityRenderer {
         cities
             .iter()
             .filter_map(|city| {
-                let bounds = self.shapes.get(&city.id)?.bounds?;
+                let shape = self.shapes.get(&city.id)?;
+                let bounds = shape.bounds?;
                 let middle = vec3(city.x, (bounds.low + bounds.high) * 0.5, city.z);
                 let slop = ray.0.distance(middle) * HOVER_SLOP;
-                city_pick::hit(ray.0, ray.1, &bounds, slop).map(|distance| (distance, city.id))
+                city_pick::hit_city(ray.0, ray.1, &bounds, &shape.buildings, slop).map(|distance| (distance, city.id))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, id)| id)

@@ -25,7 +25,7 @@ fn look(kind: BarracksKind) -> Look {
     }
 }
 
-fn token(world: &World, kind: BarracksKind, x: f32, z: f32, eye: Vec3) -> Token {
+pub fn token(world: &World, kind: BarracksKind, x: f32, z: f32, eye: Vec3) -> Token {
     Token::at(world, look(kind), x, z, eye)
 }
 

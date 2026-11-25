@@ -1,7 +1,9 @@
-//! People. Each belongs to a country, and stands on the map. They have the movement points the army has, which they get back each day
+//! People. Each belongs to a country, and stands on the map where the player puts them. They have the movement points the army has, which they get back each day
 //! (see [`crate::movement`]), and walk where a militia can.
 
 use macroquad::math::{vec2, Vec2};
+use nworld_map::regions::MOUNTAIN_HEIGHT;
+use nworld_map::world::{WaterClass, World};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{CountryId, PersonId, TitleTypeId};
@@ -22,8 +24,8 @@ pub struct Person {
     pub title_type: TitleTypeId,
     /// The id of the country they belong to.
     pub country: CountryId,
-    /// Where they stand on the map, in world x and z. A person is put on the map beside the first city of their country, and has no
-    /// place until it has one. (One saved before people were on the map has none.)
+    /// Where they stand on the map, in world x and z. The player puts a new person on the map, and they have no place until then.
+    /// (Nor has one saved before people were on the map.)
     #[serde(default)]
     pub at: Option<(f32, f32)>,
     /// The movement points they have left today, which they get all of back each day, like a militia does.
@@ -42,6 +44,20 @@ impl Person {
     }
 }
 
+/// Why the ground at (`x`, `z`) is no place to put a person, or `None` if it is: they go on dry land, below the high mountains.
+pub fn ground_problem(world: &World, x: f32, z: f32) -> Option<&'static str> {
+    let half = world.half_extents();
+    if x.abs() > half.x || z.abs() > half.y {
+        Some("That is off the map.")
+    } else if world.water_class(x, z) != WaterClass::Dry {
+        Some("People can only be placed on dry land.")
+    } else if world.surface_height(x, z) >= MOUNTAIN_HEIGHT {
+        Some("That is too high in the mountains to place them.")
+    } else {
+        None
+    }
+}
+
 /// A person's name as typed, tidied up. An error says what is wrong with it.
 pub fn clean_name(typed: &str) -> Result<String, String> {
     text::clean(typed, MAX_NAME_CHARS, "the person's name")
@@ -55,6 +71,14 @@ pub fn clean_title(typed: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_person_can_be_put_on_dry_land_on_the_map_and_not_off_it() {
+        let world = crate::test_support::small_continent();
+        let at = crate::test_support::inland_spot(&world, 40.0);
+        assert_eq!(ground_problem(&world, at.x, at.y), None);
+        assert_eq!(ground_problem(&world, world.half_extents().x + 10.0, 0.0), Some("That is off the map."));
+    }
 
     #[test]
     fn names_and_titles_are_tidied() {

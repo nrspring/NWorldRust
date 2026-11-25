@@ -3,7 +3,7 @@
 use macroquad::math::Vec2;
 
 use super::DaySave;
-use crate::city::City;
+use crate::city_layout;
 use crate::ids::{PersonId, TitleTypeId};
 use crate::movement::DAILY_POINTS;
 use crate::newsreel::{Event, News};
@@ -44,38 +44,31 @@ impl DaySave {
         Ok(())
     }
 
-    /// The first city of the country with this id, which is where its people are put on the map.
-    fn first_city_of(&self, country: crate::ids::CountryId) -> Option<&City> {
-        self.cities.iter().find(|c| c.country == country)
+    /// Why the person with this id can't be put on the map at `at`, in the map region numbered `region` (if the map has regions), or
+    /// `None` if they can. They can't be put in another country's region, or inside a city, where they could not be seen. Whether the
+    /// ground itself will do is for the caller to say (see [`crate::person::ground_problem`]).
+    pub fn person_spot_problem(&self, id: PersonId, at: Vec2, region: Option<u16>) -> Option<String> {
+        let Some(person) = self.person(id) else { return Some("There is no such person.".to_owned()) };
+        if person.at.is_some() {
+            return Some(format!("{} is on the map already.", person.name));
+        }
+        if !at.x.is_finite() || !at.y.is_finite() {
+            return Some("That is not a place on the map.".to_owned());
+        }
+        self.city_region_problem(person.country, region).or_else(|| {
+            let city = self.cities.iter().find(|c| Vec2::new(c.x, c.z).distance(at) < city_layout::radius(c))?;
+            Some(format!("That is inside {}: place them beside it.", city.name))
+        })
     }
 
-    /// Where each person who has no place on the map yet would be put, if their country has a city to put them by: beside its first city,
-    /// at the place `spot` finds for the city given the places already taken near it (those of its militia, and of people put there
-    /// before). Nobody is put anywhere by this: see [`Self::place_people`].
-    pub fn people_to_place(&self, spot: &dyn Fn(&City, &[Vec2]) -> Option<Vec2>) -> Vec<(PersonId, Vec2)> {
-        let mut found: Vec<(PersonId, Vec2)> = Vec::new();
-        for person in self.people.iter().filter(|p| p.at.is_none()) {
-            let Some(city) = self.first_city_of(person.country) else { continue };
-            let mut taken: Vec<Vec2> = self.militias.iter().filter(|m| m.city == city.id).map(|m| Vec2::new(m.x, m.z)).collect();
-            taken.extend(self.people.iter().filter(|p| p.country == person.country).filter_map(Person::position));
-            taken.extend(found.iter().filter(|(id, _)| self.person(*id).is_some_and(|p| p.country == person.country)).map(|(_, at)| *at));
-            if let Some(at) = spot(city, &taken) {
-                found.push((person.id, at));
-            }
+    /// Puts the person with this id, who has no place yet, on the map at `at`, in the map region numbered `region`, which costs them
+    /// nothing. An error says why it can't be done (see [`Self::person_spot_problem`]).
+    pub fn place_person(&mut self, id: PersonId, at: Vec2, region: Option<u16>) -> Result<(), String> {
+        if let Some(problem) = self.person_spot_problem(id, at, region) {
+            return Err(problem);
         }
-        found
-    }
-
-    /// Puts each of `places` (see [`Self::people_to_place`]) on the map, which costs them nothing. Returns how many were put there.
-    pub fn place_people(&mut self, places: &[(PersonId, Vec2)]) -> usize {
-        let mut placed = 0;
-        for (id, at) in places {
-            if let Some(person) = self.people.iter_mut().find(|p| p.id == *id && p.at.is_none() && at.x.is_finite() && at.y.is_finite()) {
-                person.at = Some((at.x, at.y));
-                placed += 1;
-            }
-        }
-        placed
+        self.people.iter_mut().find(|p| p.id == id).ok_or("There is no such person.")?.at = Some((at.x, at.y));
+        Ok(())
     }
 
     /// Moves the person with this id to `to`, which costs them `cost` of their movement points: that, and whether the ground between is
@@ -154,33 +147,30 @@ mod tests {
     }
 
     #[test]
-    fn a_person_has_no_place_until_their_country_has_a_city_and_is_then_put_beside_its_first() {
+    fn a_person_has_no_place_until_they_are_put_on_the_map_which_is_done_once() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
         day.found_country("Brevon").unwrap();
         day.found_person("Mara Voss", "President", "Head of State").unwrap();
-        let spot = |city: &City, taken: &[Vec2]| Some(Vec2::new(city.x + 30.0 + taken.len() as f32 * 25.0, city.z));
+        let id = day.people[0].id;
         assert!(day.people[0].at.is_none() && day.people[0].points == DAILY_POINTS);
-        assert!(day.people_to_place(&spot).is_empty(), "no city yet");
 
-        day.found_city("Port Aldor", 100.0, 0.0, None).unwrap();
-        day.found_city("Second City", 400.0, 0.0, None).unwrap();
-        let places = day.people_to_place(&spot);
-        assert_eq!(places, vec![(day.people[0].id, Vec2::new(130.0, 0.0))], "beside the first city, with nothing taken there");
-        assert_eq!(day.place_people(&places), 1);
-        assert_eq!(day.people[0].position(), Some(Vec2::new(130.0, 0.0)));
-        assert!(day.people_to_place(&spot).is_empty(), "already on the map");
-        assert_eq!(day.place_people(&places), 0, "and not put there twice");
+        // Not inside a city, and not in a region of another country.
+        day.found_city("Port Aldor", 100.0, 0.0, Some(0x4001)).unwrap();
+        assert!(day.place_person(id, Vec2::new(100.0, 0.0), Some(0x4001)).unwrap_err().contains("inside Port Aldor"));
+        let brevon = day.countries[1].id;
+        day.select_country(brevon).unwrap();
+        day.found_city("Brevik", 2000.0, 0.0, Some(0x4002)).unwrap();
+        assert!(day.place_person(id, Vec2::new(2400.0, 0.0), Some(0x4002)).unwrap_err().contains("belongs to Brevon"));
+        assert!(day.place_person(id, Vec2::new(f32::NAN, 0.0), None).is_err());
+        assert!(day.place_person(PersonId::new(), Vec2::new(600.0, 0.0), None).is_err());
+        assert!(day.people[0].at.is_none(), "a refused place changes nothing");
 
-        // A second person of the country stands apart from the first, and one of a country with no city waits.
-        day.found_person("Tomas Rue", "Chancellor", "Head of State").unwrap();
-        let places = day.people_to_place(&spot);
-        assert_eq!(places, vec![(day.people[1].id, Vec2::new(155.0, 0.0))]);
-        day.people[1].country = day.countries[1].id;
-        assert!(day.people_to_place(&spot).is_empty(), "Brevon has no city");
-        // A place that can't be found leaves them where they were.
-        day.people[1].country = day.countries[0].id;
-        assert!(day.people_to_place(&|_, _| None).is_empty());
+        // Unowned land will do, as will their own country's.
+        assert_eq!(day.person_spot_problem(id, Vec2::new(600.0, 0.0), Some(0x4003)), None);
+        day.place_person(id, Vec2::new(600.0, 0.0), Some(0x4001)).unwrap();
+        assert_eq!((day.people[0].position(), day.people[0].points), (Some(Vec2::new(600.0, 0.0)), DAILY_POINTS));
+        assert!(day.place_person(id, Vec2::new(700.0, 0.0), None).unwrap_err().contains("on the map already"));
     }
 
     #[test]
