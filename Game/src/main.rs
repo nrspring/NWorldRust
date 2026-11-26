@@ -68,6 +68,7 @@ mod pieces;
 mod overlays;
 mod greyscale;
 mod people_dropdown;
+mod population_view;
 mod person;
 mod person_popup;
 mod person_view;
@@ -509,7 +510,8 @@ async fn main() {
             Some(label @ hud::FooterLabel::People) => unit_regions::with_people(&world, &day).into_iter().map(|r| (r, label.glow())).collect(),
             Some(label @ hud::FooterLabel::Enemy) => unit_regions::with_units(&world, &day, unit_regions::Whose::Enemy).into_iter().map(|r| (r, label.glow())).collect(),
             Some(label @ hud::FooterLabel::Alerts) => alerts::regions(&day, &day_failures, &region_map, &world).into_iter().map(|r| (r, label.glow())).collect(),
-            None => Vec::new(),
+            // Population lights up no region: it has circles over the cities, on a map that is grey all over.
+            Some(hud::FooterLabel::Population) | None => Vec::new(),
         };
         let shown: Vec<(u16, [u8; 3])> = glow.iter().map(|(r, c)| (r.raw(), *c)).collect();
         if shown != glowing {
@@ -993,6 +995,10 @@ async fn main() {
         unit_bubbles::draw(&world, &day, &walks, &eye, camera.pitch());
         // A flashing red warning over whatever an alert is about, under the interface.
         alerts::draw_marks(&day, &day_failures, &region_map, &world, &eye, time);
+        // While "Population" is hovered, a circle over each city for the number of its people.
+        if label_hovered == Some(hud::FooterLabel::Population) {
+            population_view::draw(&style, &day, &world, &eye);
+        }
         // The header and the footer are there behind a popup too, but the keys are only for when it isn't up.
         let header = hud::header(&style, &day, !modal, camera.yaw(), selected_person);
         if !modal && is_mouse_button_pressed(MouseButton::Left) {

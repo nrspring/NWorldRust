@@ -223,6 +223,8 @@ pub enum FooterLabel {
     Units,
     /// Lights up the regions that have a person in them, of any country.
     People,
+    /// Puts a circle over each city for the number of its people. It lights up no region.
+    Population,
     /// Lights up the regions that have an alert about something in them.
     Alerts,
     /// Lights up the regions that have units of other countries in them.
@@ -231,12 +233,13 @@ pub enum FooterLabel {
 
 impl FooterLabel {
     /// Every label, in the order they are drawn, from the left.
-    const ALL: [FooterLabel; 4] = [FooterLabel::Units, FooterLabel::People, FooterLabel::Alerts, FooterLabel::Enemy];
+    const ALL: [FooterLabel; 5] = [FooterLabel::Units, FooterLabel::People, FooterLabel::Population, FooterLabel::Alerts, FooterLabel::Enemy];
 
     fn text(self) -> &'static str {
         match self {
             Self::Units => "Units",
             Self::People => "People",
+            Self::Population => "Population",
             Self::Alerts => "Alerts",
             Self::Enemy => "Enemy",
         }
@@ -247,6 +250,8 @@ impl FooterLabel {
         match self {
             Self::Units => [255, 102, 255],
             Self::People => [255, 255, 255],
+            // It lights up no region, so this is not used.
+            Self::Population => [255, 255, 255],
             Self::Alerts => [245, 176, 51],
             Self::Enemy => [255, 71, 71],
         }
