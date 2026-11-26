@@ -51,6 +51,10 @@ pub const DAY_RULES: &[Rule] = &[
         apply: people_age,
     },
     Rule {
+        description: "Each person from 20 up to 40 years old has a 13.5% chance a year of having a child, which comes to about 2.5 children in a life.",
+        apply: people_have_children,
+    },
+    Rule {
         description: "Each country pays first for the militia picked to be paid, 1 coin a day for each member, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
         apply: militia_upkeep_first,
     },
@@ -136,6 +140,11 @@ fn people_rest(day: &mut DaySave) {
 /// Each person is a day older, and some of the older ones die (see [`DaySave::age_people`]).
 fn people_age(day: &mut DaySave) {
     day.age_people(ids::random_unit);
+}
+
+/// Some of the people of an age for it have a child (see [`DaySave::have_children`]). This is after the deaths.
+fn people_have_children(day: &mut DaySave) {
+    day.have_children(ids::random_unit);
 }
 
 fn ships_rest(day: &mut DaySave) {

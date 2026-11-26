@@ -173,6 +173,10 @@ fn check_city(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![city::clean_name(&typed[0])?])
 }
 
+fn check_child(typed: &[String]) -> Result<Vec<String>, String> {
+    Ok(vec![person::clean_name(&typed[0])?])
+}
+
 fn check_person(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![person::clean_name(&typed[0])?, person::clean_title(&typed[1])?, title_type::clean_name(&typed[2])?])
 }
@@ -356,6 +360,34 @@ impl Popup {
             ],
             check_person,
         )
+    }
+
+    /// Asks for the name of a newborn, the child of the person called `parent`, who belongs to `country`, or is a nomad with `None`.
+    pub fn child(parent: &str, country: Option<&str>) -> Self {
+        let who = match country {
+            Some(country) => format!("{parent} of {country}"),
+            None => format!("{parent}, a nomad,"),
+        };
+        Self::new(
+            "A child is born",
+            format!("{who} has a child. What is their name?"),
+            Icon::Person,
+            "Name the child",
+            vec![Field::new("NAME", "e.g. Ada Voss", person::MAX_NAME_CHARS)],
+            check_child,
+        )
+    }
+
+    /// Asks for another name, title and kind of title for the person who has these, which it starts as.
+    pub fn edit_person(name: &str, title: &str, title_type: &str, title_types: Vec<String>) -> Self {
+        let mut popup = Self::person("", title_types);
+        popup.heading = "Rename this person";
+        popup.subtitle = "Change their name, their title, or both.".to_owned();
+        popup.button = "Save";
+        for (field, value) in popup.fields.iter_mut().zip([name, title, title_type]) {
+            field.value = value.to_owned();
+        }
+        popup
     }
 
     fn new(heading: &'static str, subtitle: String, icon: Icon, button: &'static str, fields: Vec<Field>, check: Check) -> Self {

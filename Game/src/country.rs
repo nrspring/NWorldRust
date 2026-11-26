@@ -88,7 +88,8 @@ pub struct RegionOwner {
     pub country: CountryId,
 }
 
-/// A country that was deleted. Its name is kept so that the news of it, which stays, can still say who it was about.
+/// A country that was deleted. Its name is kept for the rest of that day, so that the day's news of it can still say who it was
+/// about.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct FormerCountry {
     pub id: CountryId,

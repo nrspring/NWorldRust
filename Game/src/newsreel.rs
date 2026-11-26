@@ -131,6 +131,13 @@ pub enum Event {
     /// The subject is a person who died of age: they were `title` `name`, `age` years old, of the country `country`, or a nomad
     /// with `None`. They are gone, so all that is said of them is here.
     PersonDied { name: String, title: String, age: u32, country: Option<CountryId> },
+    /// The subject is a newborn, called `name` then, the child of the person called `parent`, of the country `country`, or a nomad
+    /// with `None`.
+    PersonBorn { name: String, parent: String, country: Option<CountryId> },
+    /// The subject is a newborn, the child of the person called `parent`, who was named `name`.
+    ChildNamed { name: String, parent: String },
+    /// The subject is a person who was called `from` and is now `title` `name`.
+    PersonRenamed { from: String, name: String, title: String },
     /// The subject is a kind of title, called `name`, and it was added when the first person of the kind joined.
     TitleTypeAdded { name: String },
     /// The subject is a city, and the country `country` founded it with this many people, in the region numbered
@@ -514,6 +521,18 @@ impl News {
                 Some(country) => format!("{title} {name} of {} dies, aged {age}", day.country_name(country)),
                 None => format!("{title} {name}, a nomad, dies, aged {age}"),
             },
+            Event::PersonBorn { ref parent, country, .. } => match country {
+                Some(country) => format!("{parent} of {} has a child", day.country_name(country)),
+                None => format!("{parent}, a nomad, has a child"),
+            },
+            Event::ChildNamed { ref name, ref parent } => format!("{parent}'s child is named {name}"),
+            Event::PersonRenamed { ref from, ref name, ref title } => {
+                if from == name {
+                    format!("{name} takes the title {title}")
+                } else {
+                    format!("{from} is now known as {title} {name}")
+                }
+            }
             Event::TitleTypeAdded { ref name } => format!("A new kind of title, {name}, is added"),
             Event::CityFounded { population, region, country } => {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));

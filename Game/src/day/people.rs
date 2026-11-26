@@ -11,8 +11,6 @@ use crate::person::{self, Person};
 use crate::title_type::{self, TitleType};
 
 impl DaySave {
-    // For showing the kind of title a person has, which nothing shows yet.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn title_type(&self, id: TitleTypeId) -> Option<&TitleType> {
         self.title_types.iter().find(|t| t.id == id)
     }
@@ -29,18 +27,65 @@ impl DaySave {
         let country = self.player_country().ok_or("There is no country yet for them to belong to.")?.id;
         let (name, title) = (person::clean_name(name)?, person::clean_title(title)?);
         let type_name = title_type::clean_name(title_type)?;
-        let title_type = match self.title_type_named(&type_name) {
-            Some(existing) => existing.id,
-            None => {
-                let id = TitleTypeId::new();
-                self.title_types.push(TitleType { id, name: type_name.clone() });
-                self.newsreel.push(News::about(id, Event::TitleTypeAdded { name: type_name }));
-                id
-            }
-        };
+        let title_type = self.title_type_id(type_name);
         let id = PersonId::new();
-        self.people.push(Person { id, name: name.clone(), title: title.clone(), title_type, country: Some(country), at: None, points: DAILY_POINTS, age_days: 0 });
+        self.people.push(Person { id, name: name.clone(), title: title.clone(), title_type, country: Some(country), at: None, points: DAILY_POINTS, age_days: 0, parent: None, unnamed_child_of: None });
         self.newsreel.push(News::about(id, Event::PersonJoined { title, name, country: Some(country) }));
+        Ok(())
+    }
+
+    /// The id of the kind of title called `name`, which is added, and is news, if there is no such kind yet.
+    fn title_type_id(&mut self, name: String) -> TitleTypeId {
+        if let Some(existing) = self.title_type_named(&name) {
+            return existing.id;
+        }
+        let id = TitleTypeId::new();
+        self.title_types.push(TitleType { id, name: name.clone() });
+        self.newsreel.push(News::about(id, Event::TitleTypeAdded { name }));
+        id
+    }
+
+    /// Gives the person with this id the name `name`, the title `title` and the kind of title `title_type`, which is added if the
+    /// game doesn't have it yet. A change of name or title is reported in the newsreel. An error says why it can't be done.
+    pub fn edit_person(&mut self, id: PersonId, name: &str, title: &str, title_type: &str) -> Result<(), String> {
+        let old = self.person(id).ok_or("There is no such person.")?;
+        let (old_name, old_title) = (old.name.clone(), old.title.clone());
+        let (name, title) = (person::clean_name(name)?, person::clean_title(title)?);
+        let title_type = self.title_type_id(title_type::clean_name(title_type)?);
+        let person = self.people.iter_mut().find(|p| p.id == id).ok_or("There is no such person.")?;
+        (person.name, person.title, person.title_type) = (name.clone(), title.clone(), title_type);
+        if (&name, &title) != (&old_name, &old_title) {
+            self.newsreel.push(News::about(id, Event::PersonRenamed { from: old_name, name, title }));
+        }
+        Ok(())
+    }
+
+    /// Lets the people of an age for it have children: each with the chance their age gives (see [`person::daily_birth_chance`]),
+    /// which `random`, a number from 0 up to 1 for each, decides. A child is born where their parent stands (nowhere, if the parent
+    /// is not on the map), belongs where their parent does, and is in the newsreel.
+    pub fn have_children(&mut self, mut random: impl FnMut() -> f32) {
+        let parents: Vec<Person> = self.people.iter().filter(|p| random() < person::daily_birth_chance(p.age_days)).cloned().collect();
+        for parent in parents {
+            let title_type = self.title_type_id(person::CHILD_TITLE.to_owned());
+            let id = PersonId::new();
+            let name = person::child_name(&parent.name);
+            self.people.push(Person { id, name: name.clone(), title: person::CHILD_TITLE.to_owned(), title_type, country: parent.country, at: parent.at, points: DAILY_POINTS, age_days: 0, parent: Some(parent.id), unnamed_child_of: Some(parent.name.clone()) });
+            self.newsreel.push(News::about(id, Event::PersonBorn { name, parent: parent.name, country: parent.country }));
+        }
+    }
+
+    /// The first newborn who has not been named yet, if there is one.
+    pub fn unnamed_child(&self) -> Option<&Person> {
+        self.people.iter().find(|p| p.unnamed_child_of.is_some())
+    }
+
+    /// Gives the newborn with this id their name, which is reported in the newsreel. An error says why it can't be done.
+    pub fn name_child(&mut self, id: PersonId, name: &str) -> Result<(), String> {
+        let name = person::clean_name(name)?;
+        let person = self.people.iter_mut().find(|p| p.id == id).ok_or("There is no such person.")?;
+        let parent = person.unnamed_child_of.take().ok_or_else(|| format!("{} has a name already.", person.name))?;
+        person.name = name.clone();
+        self.newsreel.push(News::about(id, Event::ChildNamed { name, parent }));
         Ok(())
     }
 
@@ -288,6 +333,96 @@ mod tests {
         json["people"][0].as_object_mut().unwrap().remove("age_days");
         let old: DaySave = serde_json::from_value(json).unwrap();
         assert_eq!(old.people[0].age(), 25);
+    }
+
+    #[test]
+    fn a_child_is_born_where_their_parent_stands_and_belongs_where_they_do() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        day.have_children(|| 0.0);
+        assert_eq!(day.people.len(), 1, "too young, however the dice fall");
+        day.people[0].age_days = 30 * DAYS_PER_YEAR;
+        day.people[0].at = Some((5.0, 6.0));
+        day.have_children(|| 0.999);
+        assert_eq!(day.people.len(), 1, "not today");
+        day.have_children(|| 0.0);
+        assert_eq!(day.people.len(), 2, "one child: the newborn has none");
+        let child = day.people[1].clone();
+        assert_eq!((child.name.as_str(), child.title.as_str(), child.age_days), ("Child of Mara Voss", "Child", 0));
+        assert_eq!((child.country, child.at, child.points), (day.people[0].country, Some((5.0, 6.0)), DAILY_POINTS));
+        assert_eq!((child.parent, day.people[0].parent), (Some(day.people[0].id), None), "the child knows whose they are");
+        assert_eq!(day.title_type(child.title_type).unwrap().name, "Child");
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Mara Voss of Aldoria has a child");
+
+        // A nomad's child is a nomad, and one of somebody not on the map is not on it.
+        day.set_person_country(day.people[0].id, None).unwrap();
+        day.people[0].at = None;
+        day.have_children(|| 0.0);
+        assert_eq!((day.people[2].country, day.people[2].at), (None, None));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Mara Voss, a nomad, has a child");
+        assert_eq!(day.title_types.iter().filter(|t| t.name == "Child").count(), 1);
+    }
+
+    #[test]
+    fn each_newborn_waits_to_be_named_one_after_another_and_naming_them_is_news() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        day.people[0].age_days = 30 * DAYS_PER_YEAR;
+        assert_eq!(day.unnamed_child(), None);
+        day.have_children(|| 0.0);
+        day.have_children(|| 0.0);
+        let (first, second) = (day.people[1].id, day.people[2].id);
+        assert_eq!(day.unnamed_child().map(|c| (c.id, c.unnamed_child_of.as_deref())), Some((first, Some("Mara Voss"))));
+        // Waiting to be named is saved, and carries on into later days.
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap().unnamed_child().map(|c| c.id), Some(first));
+        assert_eq!(day.following(Date { year: 1, month: 1, day: 2 }).people[1].unnamed_child_of.as_deref(), Some("Mara Voss"));
+
+        let before = day.clone();
+        assert!(day.name_child(first, "  ").is_err());
+        assert!(day.name_child(day.people[0].id, "Ada").unwrap_err().contains("has a name already"));
+        assert!(day.name_child(PersonId::new(), "Ada").is_err());
+        assert_eq!(day, before);
+        day.name_child(first, " Ada  Voss ").unwrap();
+        assert_eq!((day.people[1].name.as_str(), day.people[1].title.as_str()), ("Ada Voss", "Child"));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Mara Voss's child is named Ada Voss");
+        assert_eq!(day.unnamed_child().map(|c| c.id), Some(second), "then the next");
+        day.name_child(second, "Ben Voss").unwrap();
+        assert_eq!(day.unnamed_child(), None);
+        // Naming them, saving them and a new day leave whose child they are, even once the parent is gone.
+        let mother = day.people[0].id;
+        assert_eq!(day.people[1].parent, Some(mother));
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap().people[1].parent, Some(mother));
+        assert_eq!(day.following(Date { year: 1, month: 1, day: 2 }).people[2].parent, Some(mother));
+        // A name can't be given twice, though it can be changed.
+        assert!(day.name_child(first, "Cara").is_err());
+        day.edit_person(first, "Cara Voss", "Child", "Child").unwrap();
+    }
+
+    #[test]
+    fn a_person_can_be_given_another_name_and_title_which_is_news() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        let id = day.people[0].id;
+        let before = day.clone();
+        assert!(day.edit_person(id, "", "President", "Head of State").is_err());
+        assert!(day.edit_person(id, "Mara", "President", " ").is_err());
+        assert!(day.edit_person(PersonId::new(), "Mara", "President", "Monarch").is_err());
+        assert_eq!(day, before, "a refused change changes nothing");
+        day.edit_person(id, "Mara Voss", "President", "Head of State").unwrap();
+        assert_eq!(day, before, "no change is no news");
+
+        day.edit_person(id, " Ilse  Brandt ", "Queen", "Monarch").unwrap();
+        let person = day.people[0].clone();
+        assert_eq!((person.name.as_str(), person.title.as_str()), ("Ilse Brandt", "Queen"));
+        assert_eq!(day.title_type(person.title_type).unwrap().name, "Monarch");
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Mara Voss is now known as Queen Ilse Brandt");
+        day.edit_person(id, "Ilse Brandt", "Empress", "Monarch").unwrap();
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Ilse Brandt takes the title Empress");
     }
 
     #[test]

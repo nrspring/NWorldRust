@@ -229,10 +229,13 @@ fn start() -> Result<Started, String> {
 enum Asking {
     Country,
     Person,
+    /// The name of a newborn.
+    Child(ids::PersonId),
 }
 
 impl Asking {
-    /// What is missing from `day`, if anything: first a country, then a first person to belong to it.
+    /// What is missing from `day`, if anything: first a country, then a first person to belong to it, and after that the name of
+    /// any child born who has none, one at a time.
     fn of(day: &DaySave) -> Option<Self> {
         if day.countries.is_empty() {
             Some(Self::Country)
@@ -240,7 +243,7 @@ impl Asking {
             // (There are kinds of title once there has been a person, who may since have died.)
             Some(Self::Person)
         } else {
-            None
+            day.unnamed_child().map(|child| Self::Child(child.id))
         }
     }
 
@@ -249,6 +252,11 @@ impl Asking {
             Self::Country => Popup::country(),
             // The person belongs to the player's country.
             Self::Person => Popup::person(day.player_country().map_or("your country", |c| c.name.as_str()), day.title_types.iter().map(|t| t.name.clone()).collect()),
+            Self::Child(id) => {
+                let child = day.person(*id);
+                let parent = child.and_then(|c| c.unnamed_child_of.as_deref()).unwrap_or("Someone");
+                Popup::child(parent, child.and_then(|c| c.country).map(|country| day.country_name(country)))
+            }
         }
     }
 
@@ -257,6 +265,7 @@ impl Asking {
         match self {
             Self::Country => day.found_country(&typed[0]),
             Self::Person => day.found_person(&typed[0], &typed[1], &typed[2]),
+            Self::Child(id) => day.name_child(*id, &typed[0]),
         }
     }
 }
@@ -343,6 +352,8 @@ async fn main() {
     let mut militia_popup = MilitiaPopup::default();
     // The popup for a new name for a militia: its id, and the popup.
     let mut naming_militia: Option<(ids::MilitiaId, Popup)> = None;
+    // The popup for a person's name and title, while they are being edited.
+    let mut editing_person: Option<(ids::PersonId, Popup)> = None;
     // The militia that was clicked, which shows where it can go, and why the last move couldn't be made.
     let mut selected_militia: Option<ids::MilitiaId> = None;
     // The popup for the ship that was clicked, the popup for a new name for a ship, and the ship that was clicked, which shows where it
@@ -408,8 +419,10 @@ async fn main() {
                 options_ui.close();
                 overlays_ui.close();
                 toolbar.close();
-            } else if asking.as_mut().is_some_and(|(_, popup)| popup.close_dropdown()) || introducing.as_mut().is_some_and(Popup::close_dropdown) {
+            } else if asking.as_mut().is_some_and(|(_, popup)| popup.close_dropdown()) || introducing.as_mut().is_some_and(Popup::close_dropdown) || editing_person.as_mut().is_some_and(|(_, popup)| popup.close_dropdown()) {
                 // A drop-down list was open, and is closed.
+            } else if matches!(asking, Some((Asking::Child(_), _))) {
+                // A newborn has to be named, and Esc, which would otherwise leave the game, does nothing meanwhile.
             } else if naming_city.is_some() {
                 naming_city = None;
             } else if naming_region.is_some() {
@@ -436,6 +449,8 @@ async fn main() {
                 noting = None;
             } else if introducing.is_some() {
                 introducing = None;
+            } else if editing_person.is_some() {
+                editing_person = None;
             } else if path_tool.is_active() {
                 path_tool.escape();
             } else if road_tool.is_active() {
@@ -474,7 +489,7 @@ async fn main() {
         }
 
         // While a popup is up, typing is for it and not for the camera.
-        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || naming_ship.is_some() || noting.is_some() || introducing.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || shipyard_popup.is_open() || barracks_popup.is_open() || person_popup.is_open() || militia_popup.is_open() || ship_popup.is_open() || upkeep_popup.is_open() || advance_popup.is_open();
+        let modal = asking.is_some() || naming_city.is_some() || naming_region.is_some() || naming_water.is_some() || naming_place.is_some() || naming_militia.is_some() || naming_ship.is_some() || noting.is_some() || introducing.is_some() || editing_person.is_some() || claim_prompt.is_open() || treasury.is_open() || country_menu.is_open() || city_popup.is_open() || gatherer_popup.is_open() || shipyard_popup.is_open() || barracks_popup.is_open() || person_popup.is_open() || militia_popup.is_open() || ship_popup.is_open() || upkeep_popup.is_open() || advance_popup.is_open();
         if modal {
             toolbar.close();
         }
@@ -1667,6 +1682,29 @@ async fn main() {
         }
         if noted {
             noting = None;
+        }
+
+        // "Rename" in the person popup closes it and opens the popup for their name and title.
+        if let Some(person) = person_popup.take_rename().and_then(|id| day.person(id)) {
+            let title_type = day.title_type(person.title_type).map_or("", |t| t.name.as_str());
+            editing_person = Some((person.id, Popup::edit_person(&person.name, &person.title, title_type, day.title_types.iter().map(|t| t.name.clone()).collect())));
+        }
+        let mut edited = false;
+        if let Some((id, popup)) = editing_person.as_mut() {
+            if let Some(typed) = popup.show(&style) {
+                // Only keep the change if it is saved too.
+                let mut updated = day.clone();
+                match updated.edit_person(*id, &typed[0], &typed[1], &typed[2]).and_then(|()| autosave.save_now(&saves, &updated)) {
+                    Ok(()) => {
+                        day = updated;
+                        edited = true;
+                    }
+                    Err(message) => popup.fail(message),
+                }
+            }
+        }
+        if edited {
+            editing_person = None;
         }
 
         let mut introduced = false;

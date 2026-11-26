@@ -51,6 +51,10 @@ pub fn shown_at(world: &World, day: &DaySave, walks: &Walks, person: &Person, ey
         return Some(at);
     }
     let own = Token::at(world, Look::Person, at.x, at.y, eye);
+    // Those who stand where somebody before them does, as a child does where they were born, stand beside them.
+    let width = own.look.reach() * own.radius * 2.0;
+    let before = day.people.iter().take_while(|other| other.id != person.id).filter(|other| other.position().is_some_and(|there| there.distance(at) < width * 0.5)).count();
+    let at = beside(at, before, width, vec2(eye.x, eye.z));
     let gatherers = day.gatherers.iter().map(|g| gatherer_view::token(world, g.kind, g.x, g.z, eye));
     let shipyards = day.shipyards.iter().map(|s| shipyard_view::token(world, s.kind, s.x, s.z, eye));
     let barracks = day.barracks.iter().map(|b| barracks_view::token(world, b.kind, b.x, b.z, eye));
@@ -61,6 +65,13 @@ pub fn shown_at(world: &World, day: &DaySave, walks: &Walks, person: &Person, ey
         .map(|token| (vec2(token.foot.x, token.foot.z), token.look.reach() * token.radius * PLOT_CORNERS + own.look.reach() * own.radius))
         .collect();
     Some(step_out(at, &buildings, vec2(eye.x, eye.z), |spot| world.water_class(spot.x, spot.y) == WaterClass::Dry))
+}
+
+/// Where the one with `before` others ahead of them in the same place stands: that many widths to the right of `at`, as seen from
+/// `camera`, which is where it is as seen from above.
+fn beside(at: Vec2, before: usize, width: f32, camera: Vec2) -> Vec2 {
+    let toward = (camera - at).try_normalize().unwrap_or(Vec2::Y);
+    at + vec2(toward.y, -toward.x) * width * before as f32
 }
 
 /// `at`, moved out of the way of `buildings` (each its middle and how far to keep from it) towards `camera`, which is where it is as
@@ -145,7 +156,7 @@ mod tests {
     use crate::test_support;
 
     fn person_at(at: Option<(f32, f32)>) -> Person {
-        Person { id: PersonId::new(), name: "Mara Voss".to_owned(), title: "President".to_owned(), title_type: TitleTypeId::new(), country: Some(CountryId::new()), at, points: 200, age_days: 0 }
+        Person { id: PersonId::new(), name: "Mara Voss".to_owned(), title: "President".to_owned(), title_type: TitleTypeId::new(), country: Some(CountryId::new()), at, points: 200, age_days: 0, parent: None, unnamed_child_of: None }
     }
 
     #[test]
@@ -166,6 +177,25 @@ mod tests {
         day.people = vec![person.clone(), person_at(None)];
         assert_eq!(under_ray((vec3(at.x, top, at.y), vec3(0.0, -1.0, 0.0)), &world, &day, &walks), Some(person.id));
         assert_eq!(under_ray((vec3(at.x + 500.0, top, at.y), vec3(0.0, -1.0, 0.0)), &world, &day, &walks), None);
+    }
+
+    #[test]
+    fn people_in_the_same_place_are_shown_side_by_side() {
+        let camera = vec2(0.0, 100.0);
+        assert_eq!(beside(Vec2::ZERO, 0, 4.0, camera), Vec2::ZERO);
+        // Looking north, the right of the screen is east.
+        assert!(beside(Vec2::ZERO, 2, 4.0, camera).distance(vec2(8.0, 0.0)) < 0.01);
+        let world = test_support::small_continent();
+        let at = test_support::inland_spot(&world, 40.0);
+        let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
+        day.people = vec![person_at(Some((at.x, at.y))), person_at(Some((at.x, at.y)))];
+        let walks = Walks::default();
+        let eye = vec3(at.x, world.surface_height(at.x, at.y) + 200.0, at.y + 200.0);
+        let first = shown_at(&world, &day, &walks, &day.people[0], eye).unwrap();
+        let second = shown_at(&world, &day, &walks, &day.people[1], eye).unwrap();
+        assert_eq!(first, at);
+        assert!(second.x > at.x + 4.0, "{second}");
+        assert_eq!(under_ray((eye, (vec3(second.x, world.surface_height(second.x, second.y) + 4.0, second.y) - eye).normalize()), &world, &day, &walks), Some(day.people[1].id), "and can be pointed at");
     }
 
     #[test]

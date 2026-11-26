@@ -1,6 +1,6 @@
 //! The person popup, opened by clicking a person who is already picked: what there is to know of them (their name, their title, the
 //! country they belong to, and the movement points they have left today), and a button to end their moves for the day. Clicking
-//! their country lists the countries, and "Nomad" for none, to move them to.
+//! their country lists the countries, and "Nomad" for none, to move them to, and "Rename" edits their name and title.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -51,6 +51,8 @@ pub struct PersonPopup {
     fresh: bool,
     /// Why the last change couldn't be made.
     error: Option<String>,
+    /// Set when "Rename" was clicked, to edit the name and title: whose, until `take_rename` takes it.
+    rename: Option<PersonId>,
     /// Whether the list of countries is showing, and how far down it is scrolled.
     choosing: bool,
     scroll: usize,
@@ -70,6 +72,11 @@ impl PersonPopup {
         if !std::mem::take(&mut self.choosing) {
             self.person = None;
         }
+    }
+
+    /// The person whose name and title the player asked to edit, which also closed the popup, told once.
+    pub fn take_rename(&mut self) -> Option<PersonId> {
+        self.rename.take()
     }
 
     /// Shows why the change that `show` gave couldn't be made.
@@ -94,7 +101,7 @@ impl PersonPopup {
         draw_rectangle(0.0, 0.0, screen_w, screen_h, Color::new(0.02, 0.03, 0.05, 0.6 * ease));
 
         let error_height = if self.error.is_some() { 24.0 } else { 0.0 };
-        let height = ROWS_TOP + ROW_HEIGHT * 4.0 + 16.0 + error_height + BUTTON_HEIGHT + 10.0 + BUTTON_HEIGHT + PADDING;
+        let height = ROWS_TOP + ROW_HEIGHT * 4.0 + 16.0 + error_height + (BUTTON_HEIGHT + 10.0) * 2.0 + BUTTON_HEIGHT + PADDING;
         let card = Rect::new((screen_w - CARD_WIDTH) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, CARD_WIDTH, height);
         style::card(card, 18.0, style::PANEL);
 
@@ -157,6 +164,12 @@ impl PersonPopup {
             change = Some(Change::EndMoves(person.id));
         }
 
+        // The button that edits their name and title, in a popup of its own.
+        let rename = Rect::new(inner_x, end.bottom() + 10.0, inner_w, BUTTON_HEIGHT);
+        let over_rename = rename.contains(mouse) && !self.choosing;
+        style::rounded_rect(rename, 8.0, if over_rename { style::BORDER_STRONG } else { style::HOVER });
+        style.text_centered("Rename", rename, 14, Weight::Semibold, style::TEXT);
+
         // The button that closes it.
         let close = Rect::new(inner_x, card.bottom() - PADDING - BUTTON_HEIGHT, inner_w, BUTTON_HEIGHT);
         let over_close = close.contains(mouse) && !self.choosing;
@@ -216,6 +229,12 @@ impl PersonPopup {
             self.scroll = 0;
             self.error = None;
             used_click = true;
+        }
+
+        if clicked && over_rename {
+            self.rename = Some(person.id);
+            self.person = None;
+            return change;
         }
 
         // A click on Close, or on the dimmed window outside the card, or Enter, closes the popup.

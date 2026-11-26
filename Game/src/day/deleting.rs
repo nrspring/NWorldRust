@@ -44,8 +44,8 @@ impl DaySave {
     }
 
     /// Removes the country with this id, which can only be done if it owns nothing (see
-    /// [`delete_problem`](Self::delete_problem)). Its people stay, as nomads. The news of it and of them stays, since it is
-    /// history, and so does its name, in `former_countries`; the deleting is reported in the newsreel. If it was the
+    /// [`delete_problem`](Self::delete_problem)). Its people stay, as nomads. The news of it and of them stays for the day, and
+    /// so does its name, in `former_countries`, for that news to be read by; the deleting is reported in the newsreel. If it was the
     /// country the player plays, the first country left is. An error says why it can't be done.
     pub fn delete_country(&mut self, id: CountryId) -> Result<(), String> {
         let name = self.country(id).ok_or("There is no such country.")?.name.clone();

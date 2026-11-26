@@ -24,6 +24,15 @@ const OLD_AGE_CHANCE: f32 = 0.002;
 /// How old a person saved before people had ages is taken to be, in years.
 const UNKNOWN_AGE: u32 = FIRST_RISK_AGE;
 
+/// The ages a person can have a child at, in years: from the first, up to but not at the last.
+pub const FIRST_CHILD_AGE: u32 = 20;
+pub const LAST_CHILD_AGE: u32 = 40;
+/// How many children somebody of those ages has in a year, on average: a 13.5% chance. Over the years they live of them, that
+/// comes to about 2.5 children. There are no couples: each person has children of their own.
+const CHILDREN_A_YEAR: f32 = 0.135;
+/// The title a newborn has.
+pub const CHILD_TITLE: &str = "Child";
+
 /// The longest a person's name or title can be, in characters.
 pub const MAX_NAME_CHARS: usize = 40;
 pub const MAX_TITLE_CHARS: usize = 32;
@@ -50,6 +59,14 @@ pub struct Person {
     /// How old they are, in days of the game. A new person is born that day, so it starts at nothing, and each day adds one.
     #[serde(default = "unknown_age")]
     pub age_days: u32,
+    /// The id of their parent, if they were born in the game. The parent may since have died, and so be found only in the files
+    /// of earlier days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<PersonId>,
+    /// For a newborn the player has not named yet, the name of their parent, whom the game says they are the child of when it asks
+    /// for the name, which it does before anything else is done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unnamed_child_of: Option<String>,
 }
 
 fn full_points() -> u32 {
@@ -74,6 +91,16 @@ pub fn yearly_death_chance(age: u32) -> f32 {
 /// [`yearly_death_chance`] over the days of a year.
 pub fn daily_death_chance(age_days: u32) -> f32 {
     1.0 - (1.0 - yearly_death_chance(age_days / DAYS_PER_YEAR)).powf(1.0 / DAYS_PER_YEAR as f32)
+}
+
+/// The chance that somebody `age_days` old has a child on a day.
+pub fn daily_birth_chance(age_days: u32) -> f32 {
+    if (FIRST_CHILD_AGE..LAST_CHILD_AGE).contains(&(age_days / DAYS_PER_YEAR)) { CHILDREN_A_YEAR / DAYS_PER_YEAR as f32 } else { 0.0 }
+}
+
+/// What a child of the person called `parent` is down as until the player names them: cut short if need be.
+pub fn child_name(parent: &str) -> String {
+    format!("Child of {parent}").chars().take(MAX_NAME_CHARS).collect::<String>().trim_end().to_owned()
 }
 
 impl Person {
@@ -153,6 +180,28 @@ mod tests {
         }
         assert!((49.0..51.0).contains(&years), "{years}");
         assert!(alive < 1e-6);
+    }
+
+    #[test]
+    fn children_come_between_20_and_40_and_about_two_and_a_half_to_each_person() {
+        assert_eq!(daily_birth_chance(20 * DAYS_PER_YEAR - 1), 0.0);
+        assert!(daily_birth_chance(20 * DAYS_PER_YEAR) > 0.0 && daily_birth_chance(40 * DAYS_PER_YEAR - 1) > 0.0);
+        assert_eq!(daily_birth_chance(40 * DAYS_PER_YEAR), 0.0);
+        // Counting that not all of them live to 40.
+        let (mut alive, mut children) = (1.0_f64, 0.0_f64);
+        for day in 1..=40 * DAYS_PER_YEAR {
+            alive *= 1.0 - daily_death_chance(day) as f64;
+            children += alive * daily_birth_chance(day) as f64;
+        }
+        assert!((2.4..2.6).contains(&children), "{children}");
+    }
+
+    #[test]
+    fn a_child_is_called_after_their_parent_and_no_longer_than_a_name_can_be() {
+        assert_eq!(child_name("Milo"), "Child of Milo");
+        let long = child_name(&child_name(&"a".repeat(MAX_NAME_CHARS)));
+        assert_eq!(long.chars().count(), MAX_NAME_CHARS);
+        assert!(clean_name(&long).is_ok());
     }
 
     #[test]

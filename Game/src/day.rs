@@ -84,7 +84,8 @@ pub struct DaySave {
     /// Carried forward from day to day.
     #[serde(default)]
     pub countries: Vec<Country>,
-    /// The countries that were deleted, which the news of them still names. Carried forward from day to day.
+    /// The countries that were deleted today, which today's news of them still names. Not carried forward: a day's file is a
+    /// snapshot of its day, and what went before is found in the files of the days before.
     #[serde(default)]
     pub former_countries: Vec<FormerCountry>,
     /// The country the player plays, which new people and cities belong to. The first country founded
@@ -160,10 +161,10 @@ impl DaySave {
         Self { version: DAY_VERSION, date, map: map.to_owned(), title_types: Vec::new(), countries: Vec::new(), former_countries: Vec::new(), player: None, people: Vec::new(), cities: Vec::new(), region_owners: Vec::new(), paths: Vec::new(), roads: Vec::new(), region_names: Vec::new(), river_names: Vec::new(), lake_names: Vec::new(), places: Vec::new(), failed: Vec::new(), bridges: Vec::new(), bridge_links: Vec::new(), road_links: Vec::new(), gatherers: Vec::new(), militias: Vec::new(), shipyards: Vec::new(), ships: Vec::new(), barracks: Vec::new(), newsreel: Vec::new() }
     }
 
-    /// The save of the day after this one, as it starts: with everything that carries forward, and
-    /// an empty newsreel.
+    /// The save of the day after this one, as it starts: with everything that is still there, an empty newsreel, and no
+    /// deleted countries, both of which are only about the day they happened on.
     pub fn following(&self, date: Date) -> Self {
-        Self { date, newsreel: Vec::new(), ..self.clone() }
+        Self { date, newsreel: Vec::new(), former_countries: Vec::new(), ..self.clone() }
     }
 
     /// The day after this one, as it starts: everything that carries forward (see [`following`](Self::following)),
@@ -229,6 +230,21 @@ mod tests {
         assert!(tomorrow.newsreel.is_empty());
         // Today's own newsreel is untouched.
         assert_eq!(today.newsreel.len(), 4, "the country, the kind of title, the person and the city");
+    }
+
+    #[test]
+    fn a_deleted_country_is_known_on_the_day_it_was_deleted_and_not_carried_forward() {
+        let mut today = day();
+        today.found_country("Aldoria").unwrap();
+        today.found_country("Brevon").unwrap();
+        let brevon = today.countries[1].id;
+        today.delete_country(brevon).unwrap();
+        assert_eq!(today.country_name(brevon), "Brevon", "today's news can still name it");
+        assert_eq!(today.former_countries.len(), 1);
+
+        let tomorrow = today.following(Date { year: 1, month: 1, day: 2 });
+        assert!(tomorrow.former_countries.is_empty());
+        assert_eq!(today.former_countries.len(), 1, "today is as it was");
     }
 
     #[test]
