@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use macroquad::models::{draw_mesh, Mesh};
+use macroquad::models::{draw_mesh, Mesh, Vertex};
 use macroquad::prelude::*;
 use nworld_map::world::World;
 use nworld_view::render::{self, AMBIENT, BACKGROUND, SUN_COLOR};
@@ -15,6 +15,7 @@ use crate::ids::{CityId, CountryId};
 use crate::city_layout;
 use crate::city_mesh;
 use crate::city_pick::{self, Bounds};
+use crate::greyscale;
 
 const VERTEX: &str = r#"#version 100
 #ifdef GL_ES
@@ -98,7 +99,9 @@ vec3 courses(vec2 at, bool brick, vec3 base, float fine) {
 
 void main() {
     vec3 n = normalize(v_normal.xyz);
-    float style = v_normal.w;
+    // 10 added to the style says to draw it in shades of grey.
+    float grey = step(9.5, v_normal.w);
+    float style = v_normal.w - 10.0 * grey;
 
     // Light from the sun, wrapped a little past the line where it stops, and from the sky above and the
     // ground around, which is a warmer, darker light that comes up from below.
@@ -201,7 +204,8 @@ void main() {
 
     col = mix(col, tint.rgb, tint.a);
     float fog = pow(smoothstep(fog_range.x, fog_range.y, dist), 0.6);
-    gl_FragColor = vec4(mix(col, fog_color, fog), 1.0);
+    vec3 shown = mix(col, fog_color, fog);
+    gl_FragColor = vec4(mix(shown, vec3(dot(shown, vec3(0.299, 0.587, 0.114))), grey), 1.0);
 }
 "#;
 
@@ -214,6 +218,8 @@ const HOVER_SLOP: f32 = 0.004;
 struct Shape {
     size: u32,
     meshes: Vec<Mesh>,
+    /// The same meshes to be drawn grey, made when they are first wanted.
+    grey: Vec<Mesh>,
     bounds: Option<Bounds>,
     buildings: Vec<Bounds>,
 }
@@ -223,10 +229,17 @@ fn shape(city: &City, world: &World) -> Shape {
     let buildings = city_layout::buildings(city, world);
     Shape {
         size: city.size().to_bits(),
+        grey: Vec::new(),
         bounds: city_pick::bounds(vec2(city.x, city.z), &buildings),
         buildings: city_pick::each(&buildings),
         meshes: city_mesh::build(&buildings).into_iter().map(|g| Mesh { vertices: g.vertices, indices: g.indices, texture: None }).collect(),
     }
+}
+
+/// A copy of a city's mesh that the shader draws grey, which it is told by 10 added to the style of each corner.
+fn greyed(mesh: &Mesh) -> Mesh {
+    let vertices = mesh.vertices.iter().map(|v| Vertex { normal: v.normal + vec4(0.0, 0.0, 0.0, 10.0), ..*v }).collect();
+    Mesh { vertices, indices: mesh.indices.clone(), texture: None }
 }
 
 /// How long may be spent in a frame building the shapes of cities whose shapes are out of date.
@@ -289,8 +302,15 @@ impl CityRenderer {
             if !built || (!current && started.elapsed() < REBUILD_BUDGET) {
                 self.shapes.insert(city.id, shape(city, world));
             }
-            for mesh in &self.shapes[&city.id].meshes {
-                draw_mesh(mesh);
+            // A city stands in one region, and so is all grey or all in color.
+            let grey = greyscale::greyed(world, city.x, city.z);
+            if let Some(shape) = self.shapes.get_mut(&city.id) {
+                if grey && shape.grey.is_empty() {
+                    shape.grey = shape.meshes.iter().map(greyed).collect();
+                }
+                for mesh in if grey { &shape.grey } else { &shape.meshes } {
+                    draw_mesh(mesh);
+                }
             }
         }
         gl_use_default_material();

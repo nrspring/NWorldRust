@@ -79,6 +79,8 @@ struct TerrainUniforms {
     region_highlight: Vec2,
     /// 1 to make the regions in the `region_glow` texture glow round their borders, 0 for none.
     region_glow_on: f32,
+    /// 1 to show everything but the regions in the `region_glow` texture in shades of grey, 0 for color.
+    greyscale: f32,
 }
 
 fn terrain_uniform_layout() -> UniformBlockLayout {
@@ -101,6 +103,7 @@ fn terrain_uniform_layout() -> UniformBlockLayout {
             U::new("region_overlay", Float1),
             U::new("region_highlight", Float2),
             U::new("region_glow_on", Float1),
+            U::new("greyscale", Float1),
         ],
     }
 }
@@ -133,6 +136,7 @@ pub struct TerrainRenderer {
     no_tints: Texture2D,
     /// The regions to make glow round their borders, which is none until [`Self::set_region_glow`].
     region_glow: Option<Texture2D>,
+    greyscale: bool,
     tints_visible: bool,
 }
 
@@ -172,6 +176,7 @@ impl TerrainRenderer {
             no_tints: empty(),
             region_tints: empty(),
             region_glow: None,
+            greyscale: false,
             tints_visible: true,
         }
     }
@@ -186,6 +191,16 @@ impl TerrainRenderer {
     /// color, pulsing slowly, or stops any glowing with `None`.
     pub fn set_region_glow(&mut self, texture: Option<Texture2D>) {
         self.region_glow = texture;
+    }
+
+    /// Shows everything but the glowing regions (see [`Self::set_region_glow`]) in shades of grey, or in color again.
+    pub fn set_greyscale(&mut self, greyscale: bool) {
+        self.greyscale = greyscale;
+    }
+
+    /// The colors the glowing regions are given in, which has none in it while no region glows.
+    pub(crate) fn glow_texture(&self) -> &Texture2D {
+        self.region_glow.as_ref().unwrap_or(&self.no_tints)
     }
 
     /// Whether the tints show at all. They are kept while hidden.
@@ -205,8 +220,7 @@ impl TerrainRenderer {
         let blocks = mesh.visible_blocks(ctx, &Frustum::from_matrix(view_projection), cam, view_distance);
 
         // Map world x/z to texel centers of the surface texture (one texel per heightmap sample).
-        let (nx, nz) = world.samples();
-        let texels = vec2(nx as f32, nz as f32);
+        let (surface_scale, surface_offset) = surface_mapping(world);
         // Heightmap cells spanned by one screen pixel per meter of distance from the camera.
         let pixel_angle = 2.0 * (FOV_DEGREES.to_radians() * 0.5).tan() / screen_height();
         let uniforms = TerrainUniforms {
@@ -218,8 +232,8 @@ impl TerrainRenderer {
             fog_color: BACKGROUND,
             fog_range: fog_range(view_distance),
             time,
-            surface_scale: Vec2::ONE / (texels * CELL_SIZE),
-            surface_offset: (world.half_extents() / CELL_SIZE + 0.5) / texels,
+            surface_scale,
+            surface_offset,
             pixel_cells: pixel_angle / CELL_SIZE,
             topo: if topo { 1.0 } else { 0.0 },
             region_overlay: match region_overlay {
@@ -230,6 +244,7 @@ impl TerrainRenderer {
             },
             region_highlight: region_highlight.map_or(vec2(-1.0, -1.0), |id| vec2((id & 0xFF) as f32, (id >> 8) as f32) / 255.0),
             region_glow_on: if self.region_glow.is_some() { 1.0 } else { 0.0 },
+            greyscale: if self.greyscale { 1.0 } else { 0.0 },
         };
 
         let (width, height) = miniquad::window::screen_size();
@@ -257,6 +272,13 @@ impl TerrainRenderer {
         }
         ctx.end_render_pass();
     }
+}
+
+/// What to multiply a world x and z by, and then add, to get where they are in a texture with one texel for each heightmap sample.
+pub(crate) fn surface_mapping(world: &World) -> (Vec2, Vec2) {
+    let (nx, nz) = world.samples();
+    let texels = vec2(nx as f32, nz as f32);
+    (Vec2::ONE / (texels * CELL_SIZE), (world.half_extents() / CELL_SIZE + 0.5) / texels)
 }
 
 /// Uploads the world's coast and elevation for the terrain shader.
@@ -427,6 +449,7 @@ pub fn load_backdrop_material() -> Material {
                 UniformDesc::new("sun_dir", UniformType::Float3),
                 UniformDesc::new("sun_color", UniformType::Float3),
                 UniformDesc::new("ambient", UniformType::Float3),
+                UniformDesc::new("greyscale", UniformType::Float1),
             ],
             ..Default::default()
         },
@@ -542,6 +565,8 @@ uniform vec2 world_half;
 uniform vec3 sun_dir;
 uniform vec3 sun_color;
 uniform vec3 ambient;
+// 1 shows it in shades of grey.
+uniform float greyscale;
 
 const vec3 WATER = vec3(0.02, 0.10, 0.26);
 "#,
@@ -562,7 +587,8 @@ void main() {
     vec3 col = mix(base, reflection, fresnel);
 
     float fog = pow(smoothstep(fog_range.x, fog_range.y, length(v_world - cam_pos)), 0.6);
-    gl_FragColor = vec4(mix(col, fog_color, fog), 1.0);
+    vec3 shown = mix(col, fog_color, fog);
+    gl_FragColor = vec4(mix(shown, vec3(dot(shown, vec3(0.299, 0.587, 0.114))), greyscale), 1.0);
 }
 "#
 );
@@ -685,6 +711,9 @@ uniform float topo;
 uniform float region_overlay;
 uniform vec2 region_highlight;
 uniform float region_glow_on;
+// 1 shows what isn't in a region with a color in `region_glow` in shades of grey.
+uniform float greyscale;
+const vec3 BRIGHTNESS = vec3(0.299, 0.587, 0.114);
 
 "#,
     sky_glsl!(),
@@ -1040,6 +1069,15 @@ void main() {
         }
     }
 
+    // While greying, only the ground of the regions that glow keeps its color, and the haze of the rest is grey too. The bands
+    // round the glowing regions go on after, in color.
+    vec3 haze = fog_color;
+    if (greyscale > 0.5) {
+        float colored = texture2D(region_glow, v_world.xz * surface_scale + surface_offset).a;
+        col = mix(vec3(dot(col, BRIGHTNESS)), col, colored);
+        haze = mix(vec3(dot(fog_color, BRIGHTNESS)), fog_color, colored);
+    }
+
     // The regions that glow: a bright band either side of their borders that is about as wide on screen at any distance, a little fainter
     // the farther it is from the border, with the whole of it pulsing slowly, and a faint wash inside.
     if (region_glow_on > 0.5) {
@@ -1079,7 +1117,7 @@ void main() {
     }
 
     float fog = pow(smoothstep(fog_range.x, fog_range.y, dist), 0.6);
-    gl_FragColor = vec4(mix(col, fog_color, fog), 1.0);
+    gl_FragColor = vec4(mix(col, haze, fog), 1.0);
 }
 "#
 );

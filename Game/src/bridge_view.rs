@@ -9,6 +9,7 @@ use nworld_map::world::World;
 use crate::bridge::{Bridge, End};
 use crate::day::DaySave;
 use crate::failure::Thing;
+use crate::greyscale;
 
 /// Half the width of the roadway between the walls, plus the walls, in meters.
 const HALF_WIDTH: f32 = 2.7;
@@ -36,6 +37,8 @@ pub struct BridgeRenderer {
     built: Vec<Bridge>,
     built_failed: Vec<Thing>,
     mesh: Option<Mesh>,
+    /// The mesh with what is greyed made grey, and what that was (see [`greyscale::version`]).
+    grey: Option<(u64, Mesh)>,
 }
 
 impl BridgeRenderer {
@@ -45,11 +48,21 @@ impl BridgeRenderer {
         if self.built != day.bridges || self.built_failed != day.failed {
             let bridges: Vec<(Bridge, bool)> = day.bridges.iter().map(|b| (*b, day.is_failed(Thing::Bridge(b.id)))).collect();
             self.mesh = build(world, &bridges);
+            self.grey = None;
             self.built = day.bridges.clone();
             self.built_failed = day.failed.clone();
         }
-        if let Some(mesh) = &self.mesh {
+        let Some(mesh) = &self.mesh else { return };
+        let Some(version) = greyscale::version() else {
+            self.grey = None;
             draw_mesh(mesh);
+            return;
+        };
+        if self.grey.as_ref().is_none_or(|(made_for, _)| *made_for != version) {
+            self.grey = Some((version, greyscale::mesh(mesh, |x, z| greyscale::greyed(world, x, z))));
+        }
+        if let Some((_, grey)) = &self.grey {
+            draw_mesh(grey);
         }
     }
 }

@@ -313,6 +313,15 @@ impl Model {
         }
     }
 
+    /// Has it drawn in shades of grey. (The shader is told by 10 added to the number of each corner's finish.)
+    pub fn grey(&mut self) {
+        for vertex in &mut self.vertices {
+            if vertex.normal.w < GREY_FINISH {
+                vertex.normal.w += GREY_FINISH;
+            }
+        }
+    }
+
     /// Draws it, as seen by the camera that is set, with the material from [`begin`].
     pub fn draw(self) {
         if !self.indices.is_empty() {
@@ -325,6 +334,9 @@ impl Model {
 pub fn shade(color: Color, by: f32) -> Color {
     Color::new((color.r * by).min(1.0), (color.g * by).min(1.0), (color.b * by).min(1.0), color.a)
 }
+
+/// What is added to the number of a corner's finish to have it drawn grey, which is more than any finish's number.
+const GREY_FINISH: f32 = 10.0;
 
 const VERTEX: &str = r#"#version 100
 #ifdef GL_ES
@@ -373,7 +385,9 @@ void main() {
     // A face is lit on the side that is seen: a sheet such as a sail has only the one side.
     vec3 n = normalize(v_normal.xyz);
     n = dot(n, to_eye) < 0.0 ? -n : n;
-    float finish = v_normal.w;
+    // 10 added to the finish says to draw it in shades of grey.
+    float grey = step(9.5, v_normal.w);
+    float finish = v_normal.w - 10.0 * grey;
     vec3 l = normalize(sun_dir);
     vec3 base = v_color.rgb;
 
@@ -400,7 +414,8 @@ void main() {
 
     col = mix(col, tint.rgb, tint.a);
     float fog = pow(smoothstep(fog_range.x, fog_range.y, length(v_world - cam_pos)), 0.6);
-    gl_FragColor = vec4(mix(col, fog_color, fog), 1.0);
+    vec3 shown = mix(col, fog_color, fog);
+    gl_FragColor = vec4(mix(shown, vec3(dot(shown, vec3(0.299, 0.587, 0.114))), grey), 1.0);
 }
 "#;
 

@@ -19,6 +19,7 @@ use nworld_map::world::{World, CELL_SIZE};
 use crate::bridge::{Bridge, BridgeLink};
 use crate::day::DaySave;
 use crate::failure::Thing;
+use crate::greyscale;
 use crate::ground::{clear, dry, line_clear, CHECK_EVERY};
 use crate::path::{Kind, PathPiece, PathSegment};
 
@@ -75,12 +76,14 @@ pub struct PathRenderer {
     /// worked out once.
     routes: HashMap<PathPiece, Vec<Vec<Vec2>>>,
     meshes: Vec<Mesh>,
+    /// The meshes with what is greyed made grey, and what that was (see [`greyscale::version`]).
+    grey: Option<(u64, Vec<Mesh>)>,
 }
 
 impl PathRenderer {
     /// A renderer of the paths or of the roads of a day.
     pub fn new(kind: Kind) -> Self {
-        Self { kind, built_paths: Vec::new(), built_links: Vec::new(), built_failed: Vec::new(), routes: HashMap::new(), meshes: Vec::new() }
+        Self { kind, built_paths: Vec::new(), built_links: Vec::new(), built_failed: Vec::new(), routes: HashMap::new(), meshes: Vec::new(), grey: None }
     }
 
     /// Draws the paths or roads of `day`, as seen by the camera that is set, which must still be the one the map was
@@ -103,13 +106,21 @@ impl PathRenderer {
             let mut meshes = build(world, &lines_of(&sound), look);
             meshes.extend(build(world, &lines_of(&ruined), &look.ruined()));
             self.meshes = meshes;
+            self.grey = None;
             self.built_paths = segments.to_vec();
             self.built_links = links.to_vec();
             self.built_failed = day.failed.clone();
         }
-        for mesh in &self.meshes {
-            draw_mesh(mesh);
+        let Some(version) = greyscale::version() else {
+            self.grey = None;
+            self.meshes.iter().for_each(draw_mesh);
+            return;
+        };
+        if self.grey.as_ref().is_none_or(|(made_for, _)| *made_for != version) {
+            let greyed = self.meshes.iter().map(|mesh| greyscale::mesh(mesh, |x, z| greyscale::greyed(world, x, z))).collect();
+            self.grey = Some((version, greyed));
         }
+        self.grey.iter().flat_map(|(_, meshes)| meshes).for_each(draw_mesh);
     }
 }
 

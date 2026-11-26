@@ -192,6 +192,9 @@ struct PropUniforms {
     time: f32,
     fade: Vec2,
     wind: f32,
+    greyscale: f32,
+    surface_scale: Vec2,
+    surface_offset: Vec2,
 }
 
 struct GpuMesh {
@@ -231,16 +234,27 @@ pub struct PropRenderer {
     /// The tiles in range of the camera, nearest first, and how far each is: as of the last
     /// refresh.
     in_range: Vec<(f32, (i32, i32))>,
+    /// While greying, the texture of the regions that keep their color, and where the world is in it (see [`Self::set_greyscale`]).
+    grey: Option<(Texture2D, Vec2, Vec2)>,
+    /// A texture with no region in it, which is bound while everything is in color.
+    no_regions: Texture2D,
 }
 
 impl PropRenderer {
+    /// Shows the props that don't stand in a region with a color in the texture in shades of grey, or all of them in color with
+    /// `None`. The texture has one texel for each heightmap sample, and the two are what to multiply a world x and z by, and then
+    /// add, to get there.
+    pub(crate) fn set_greyscale(&mut self, grey: Option<(Texture2D, Vec2, Vec2)>) {
+        self.grey = grey;
+    }
+
     pub fn new(kind: PropKind) -> Self {
         assert_eq!(kind.shapes.len(), kind.far_shapes.len(), "every shape needs a far version");
         let ctx = unsafe { get_internal_gl() }.quad_context;
         let shader = ctx
             .new_shader(
                 miniquad::ShaderSource::Glsl { vertex: PROP_VERTEX, fragment: PROP_FRAGMENT },
-                ShaderMeta { uniforms: uniform_layout(), images: vec![] },
+                ShaderMeta { uniforms: uniform_layout(), images: vec!["region_glow".to_owned()] },
             )
             .expect("prop shader failed to compile");
         let pipeline = ctx.new_pipeline(
@@ -269,7 +283,8 @@ impl PropRenderer {
         };
         let (near, far) = (upload(&kind.shapes), upload(&kind.far_shapes));
         let indices = ctx.new_buffer(BufferType::IndexBuffer, BufferUsage::Immutable, BufferSource::slice(&counting));
-        Self { kind, pipeline, near, far, indices, tiles: HashMap::new(), world_id: None, in_range: Vec::new() }
+        let no_regions = Texture2D::from_rgba8(1, 1, &[0, 0, 0, 0]);
+        Self { kind, pipeline, near, far, indices, tiles: HashMap::new(), world_id: None, in_range: Vec::new(), grey: None, no_regions }
     }
 
     /// Draws the props of `world` around the camera at `cam`, as seen by `camera`: only those in
@@ -312,14 +327,18 @@ impl PropRenderer {
             time,
             fade: vec2(self.kind.fade.0, self.kind.fade.1),
             wind: self.kind.wind,
+            greyscale: if self.grey.is_some() { 1.0 } else { 0.0 },
+            surface_scale: self.grey.as_ref().map_or(Vec2::ZERO, |g| g.1),
+            surface_offset: self.grey.as_ref().map_or(Vec2::ZERO, |g| g.2),
         };
+        let regions = self.grey.as_ref().map_or(&self.no_regions, |g| &g.0).raw_miniquad_id();
         let (width, height) = miniquad::window::screen_size();
         ctx.begin_default_pass(miniquad::PassAction::Nothing);
         ctx.apply_pipeline(&self.pipeline);
         ctx.apply_viewport(0, 0, width as i32, height as i32);
         ctx.apply_scissor_rect(0, 0, width as i32, height as i32);
         for (vertices, count, buffer, instances) in draws {
-            ctx.apply_bindings(&Bindings { vertex_buffers: vec![vertices, buffer], index_buffer: self.indices, images: vec![] });
+            ctx.apply_bindings(&Bindings { vertex_buffers: vec![vertices, buffer], index_buffer: self.indices, images: vec![regions] });
             ctx.apply_uniforms(UniformsSource::table(&uniforms));
             ctx.draw(0, count, instances as i32);
         }
@@ -454,6 +473,9 @@ fn uniform_layout() -> UniformBlockLayout {
             U::new("time", Float1),
             U::new("fade", Float2),
             U::new("wind", Float1),
+            U::new("greyscale", Float1),
+            U::new("surface_scale", Float2),
+            U::new("surface_offset", Float2),
         ],
     }
 }
@@ -472,6 +494,8 @@ attribute vec4 inst_look;
 varying vec3 v_color;
 varying vec3 v_normal;
 varying vec3 v_world;
+// Where the prop stands, so that the whole of it is grey or none of it is.
+varying vec2 v_foot;
 
 uniform mat4 view_projection;
 uniform vec3 cam_pos;
@@ -499,6 +523,7 @@ void main() {
     v_world = inst_at.xyz + turned - vec3(0.0, 0.3 * size, 0.0);
     v_normal = vec3(c * normal.x + s * normal.z, normal.y, -s * normal.x + c * normal.z);
     v_color = color * (0.82 + 0.36 * inst_look.y);
+    v_foot = inst_at.xz;
     gl_Position = view_projection * vec4(v_world, 1.0);
 }
 "#;
@@ -510,7 +535,12 @@ precision highp float;
 varying vec3 v_color;
 varying vec3 v_normal;
 varying vec3 v_world;
+varying vec2 v_foot;
 
+uniform float greyscale;
+uniform sampler2D region_glow;
+uniform vec2 surface_scale;
+uniform vec2 surface_offset;
 uniform vec3 cam_pos;
 uniform vec3 sun_dir;
 uniform vec3 sun_color;
@@ -523,7 +553,12 @@ void main() {
     float diffuse = max(dot(n, normalize(sun_dir)), 0.0);
     vec3 col = v_color * (ambient + sun_color * diffuse);
     float fog = pow(smoothstep(fog_range.x, fog_range.y, length(v_world - cam_pos)), 0.6);
-    gl_FragColor = vec4(mix(col, fog_color, fog), 1.0);
+    vec3 shown = mix(col, fog_color, fog);
+    if (greyscale > 0.5) {
+        float colored = texture2D(region_glow, v_foot * surface_scale + surface_offset).a;
+        shown = mix(vec3(dot(shown, vec3(0.299, 0.587, 0.114))), shown, colored);
+    }
+    gl_FragColor = vec4(shown, 1.0);
 }
 "#;
 

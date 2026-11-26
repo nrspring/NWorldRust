@@ -66,6 +66,7 @@ mod miniatures;
 mod model;
 mod pieces;
 mod overlays;
+mod greyscale;
 mod people_dropdown;
 mod person;
 mod person_popup;
@@ -515,6 +516,10 @@ async fn main() {
             view.set_glowing_regions(&world, &glow);
             glowing = shown;
         }
+        // While a label is hovered, all but the regions it lights up is shown in grey.
+        view.set_greyscale(label_hovered.is_some());
+        let lit: Vec<RegionId> = glow.iter().map(|(region, _)| *region).collect();
+        greyscale::set(label_hovered.map(|_| lit.as_slice()));
         view.draw(&world, &eye, time);
 
         // Once there is a country and a person, the first city has to be placed.

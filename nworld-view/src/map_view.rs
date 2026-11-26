@@ -43,6 +43,7 @@ pub struct MapView {
     has_regions: bool,
     show_regions: bool,
     show_region_colors: bool,
+    greyscale: bool,
 }
 
 impl MapView {
@@ -65,6 +66,7 @@ impl MapView {
             has_regions: world.regions().iter().any(|&r| r != 0),
             show_regions: false,
             show_region_colors: true,
+            greyscale: false,
         }
     }
 
@@ -91,6 +93,13 @@ impl MapView {
     pub fn set_glowing_regions(&mut self, world: &World, regions: &[(RegionId, [u8; 3])]) {
         let glow = (!regions.is_empty()).then(|| render::region_tints_texture(world, regions));
         self.terrain.set_region_glow(glow);
+    }
+
+    /// Shows the map in shades of grey, except for the regions that glow (see [`set_glowing_regions`](Self::set_glowing_regions)),
+    /// which keep their color, or all of it in color again. With no region glowing, all of the map is grey. The sky is left alone.
+    pub fn set_greyscale(&mut self, greyscale: bool) {
+        self.greyscale = greyscale;
+        self.terrain.set_greyscale(greyscale);
     }
 
     /// Shows the colors given by [`set_region_colors`](Self::set_region_colors), whether or not the lines of
@@ -128,11 +137,15 @@ impl MapView {
         set_camera(camera);
 
         render::apply_backdrop_uniforms(&self.backdrop_material, pos, view_distance, world.half_extents());
+        self.backdrop_material.set_uniform("greyscale", if self.greyscale { 1.0f32 } else { 0.0 });
         gl_use_material(&self.backdrop_material);
         draw_mesh(&self.backdrop);
 
         self.terrain.draw(&mut self.mesh, world, &self.surface, &self.resources, &self.regions, if self.show_regions { RegionOverlay::Borders } else if self.show_region_colors { RegionOverlay::Colors } else { RegionOverlay::Off }, None, camera, pos, view_distance, time, false);
+        let (scale, offset) = render::surface_mapping(world);
+        let grey = self.greyscale.then(|| (self.terrain.glow_texture().clone(), scale, offset));
         for kind in &mut self.props {
+            kind.set_greyscale(grey.clone());
             kind.draw(world, camera, pos, view_distance, time);
         }
         gl_use_default_material();

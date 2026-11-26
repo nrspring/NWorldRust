@@ -8,6 +8,7 @@
 use macroquad::prelude::*;
 use nworld_map::world::World;
 
+use crate::greyscale;
 use crate::miniatures::{self, Look, Moment};
 use crate::model::{self, Model};
 
@@ -37,6 +38,8 @@ pub struct Token {
     pub radius: f32,
     /// Whether it is far enough from the camera to be drawn simply, without its detail.
     pub simple: bool,
+    /// Whether it is shown in shades of grey (see [`crate::greyscale`]).
+    pub grey: bool,
 }
 
 impl Token {
@@ -45,7 +48,7 @@ impl Token {
     pub fn at(world: &World, look: Look, x: f32, z: f32, eye: Vec3) -> Self {
         let at = vec3(x, world.surface_height(x, z), z);
         let radius = radius_at(eye, at);
-        Self { look, foot: vec3(x, ground_under(world, x, z, radius * look.reach()), z), radius, simple: eye.distance(at) >= SIMPLE_FROM }
+        Self { look, foot: vec3(x, ground_under(world, x, z, radius * look.reach()), z), radius, simple: eye.distance(at) >= SIMPLE_FROM, grey: greyscale::greyed(world, x, z) }
     }
 
     /// The same token, lifted `by` meters (as a unit is, when it steps along).
@@ -73,6 +76,9 @@ impl Token {
             miniatures::build_simple(&mut m, self.look, country);
         } else {
             miniatures::build(&mut m, self.look, country, moment);
+        }
+        if self.grey {
+            m.grey();
         }
         m
     }
