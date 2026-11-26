@@ -24,6 +24,8 @@ const ROW_HEIGHT: f32 = 34.0;
 /// The most countries the list shows before it scrolls.
 const MAX_ROWS: usize = 10;
 const LIST_PADDING: f32 = 6.0;
+/// The most countries listed to send a deleted country's coins and resources to, before the list scrolls.
+const HEIR_ROWS: usize = 5;
 const BUTTON_HEIGHT: f32 = 40.0;
 /// Where the list starts, below the card's top: room for the title.
 const LIST_TOP: f32 = 84.0;
@@ -44,8 +46,8 @@ pub enum Choice {
     Rename(CountryId, String),
     /// Give this country this color.
     Recolor(CountryId, Rgb),
-    /// Delete this country, which owns nothing.
-    Delete(CountryId),
+    /// Delete this country, which owns nothing, and send its coins and resources to the second, if it has any.
+    Delete(CountryId, Option<CountryId>),
 }
 
 impl Choice {
@@ -56,7 +58,7 @@ impl Choice {
             Self::Add(name) => day.found_country(name),
             Self::Rename(id, name) => day.rename_country(*id, name),
             Self::Recolor(id, color) => day.recolor_country(*id, *color),
-            Self::Delete(id) => day.delete_country(*id),
+            Self::Delete(id, heir) => day.delete_country(*id, *heir),
         }
     }
 }
@@ -89,6 +91,10 @@ pub struct CountryMenu {
     /// The country whose card the player came from to rename it or change its color, which comes back when that is done, and not
     /// the list.
     from_card: Option<CountryId>,
+    /// While asking whether to delete a country: the country picked to get what it has, and how far down the list of them is
+    /// scrolled.
+    heir: Option<CountryId>,
+    heir_scroll: usize,
 }
 
 impl CountryMenu {
@@ -171,8 +177,8 @@ impl CountryMenu {
         match choice {
             Choice::Select(_) => self.screen = Screen::Closed,
             // With none left there is nothing to list, and the game asks for a new country.
-            Choice::Delete(_) if day.countries.is_empty() => self.screen = Screen::Closed,
-            Choice::Delete(_) => self.show_list(self.highlight.min(day.countries.len() - 1)),
+            Choice::Delete(..) if day.countries.is_empty() => self.screen = Screen::Closed,
+            Choice::Delete(..) => self.show_list(self.highlight.min(day.countries.len() - 1)),
             Choice::Add(_) => self.show_list(day.countries.len().saturating_sub(1)),
             Choice::Rename(id, _) | Choice::Recolor(id, _) => {
                 self.highlight = day.countries.iter().position(|c| c.id == *id).unwrap_or(0);
@@ -329,7 +335,18 @@ impl CountryMenu {
         let (screen_w, screen_h) = (screen_width(), screen_height());
         draw_rectangle(0.0, 0.0, screen_w, screen_h, Color::new(0.02, 0.03, 0.05, 0.6 * ease));
 
-        let height = 84.0 + 44.0 + BUTTON_HEIGHT + PADDING;
+        // What it has has to be sent to another country, if there is one, which is picked from a list.
+        let wealth = day.wealth(id);
+        let others: Vec<_> = day.countries.iter().filter(|c| c.id != id).collect();
+        let sending = !wealth.is_empty() && !others.is_empty();
+        let heir = self.heir.filter(|heir| others.iter().any(|c| c.id == *heir));
+        let shown = others.len().min(HEIR_ROWS);
+        let held: Vec<String> = wealth.iter().map(|(asset, amount)| format!("{} {}", thousands_u64(*amount), asset.name())).collect();
+        let held = held.join(", ");
+        let held_lines = if wealth.is_empty() { Vec::new() } else { hud::wrap(style, &format!("It has {held}."), 13, 400.0 - PADDING * 2.0) };
+        let wealth_height = if wealth.is_empty() { 0.0 } else { held_lines.len() as f32 * 18.0 + 8.0 };
+        let list_height = if sending { 26.0 + shown as f32 * ROW_HEIGHT + LIST_PADDING * 2.0 + 14.0 } else { 0.0 };
+        let height = 84.0 + 44.0 + wealth_height + list_height + BUTTON_HEIGHT + PADDING;
         let card = Rect::new((screen_w - 400.0) * 0.5, (screen_h - height) * 0.5 + (1.0 - ease) * 18.0, 400.0, height);
         style::card(card, 18.0, style::PANEL);
         let inner_x = card.x + PADDING;
@@ -349,23 +366,63 @@ impl CountryMenu {
             (0, 0) => "Nothing else belongs to it.".to_owned(),
             (p, 0) => format!("Its {} will become {}.", plural(p, "person", "people"), if p == 1 { "a nomad" } else { "nomads" }),
             (0, r) => format!("Its {} will be unowned.", plural(r, "region", "regions")),
-            (p, r) => format!("Its {} will become {}, and its {} unowned.", plural(p, "person", "people"), if p == 1 { "a nomad" } else { "nomads" }, plural(r, "region", "regions")),
+            // (Shorter, so that it fits beside the badge.)
+            (p, r) => format!("{} to be {}, {} unowned.", plural(p, "person", "people"), if p == 1 { "a nomad" } else { "nomads" }, plural(r, "region", "regions")),
         };
         style.text(&goes, text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
         style.text("This can't be undone.", inner_x, card.y + 84.0 + 14.0, 13, Weight::Regular, style::TEXT);
+        let mut y = card.y + 84.0 + 36.0;
+        for line in &held_lines {
+            style.text(line, inner_x, y + 12.0, 13, Weight::Regular, style::TEXT);
+            y += 18.0;
+        }
+        if !wealth.is_empty() && others.is_empty() {
+            style.text("There is no other country, so it is lost.", inner_x, y + 12.0, 12, Weight::Regular, style::ERROR);
+        }
+        if sending {
+            style.text("Send it all to", inner_x, y + 26.0, 12, Weight::Semibold, style::TEXT_MUTED);
+            let list = Rect::new(inner_x, y + 34.0, inner_w, shown as f32 * ROW_HEIGHT + LIST_PADDING * 2.0);
+            if list.contains(mouse) && mouse_wheel().1 != 0.0 {
+                self.heir_scroll = if mouse_wheel().1 > 0.0 { self.heir_scroll.saturating_sub(1) } else { self.heir_scroll + 1 };
+            }
+            self.heir_scroll = self.heir_scroll.min(others.len() - shown);
+            style::rounded_rect_lines(list, 10.0, 1.0, style::BORDER_STRONG);
+            for (row, other) in others.iter().skip(self.heir_scroll).take(shown).enumerate() {
+                let rect = Rect::new(list.x + LIST_PADDING, list.y + LIST_PADDING + row as f32 * ROW_HEIGHT, list.w - LIST_PADDING * 2.0, ROW_HEIGHT);
+                if rect.contains(mouse) {
+                    style::rounded_rect(rect, 6.0, style::HOVER);
+                    if clicked {
+                        self.heir = Some(other.id);
+                    }
+                }
+                let mark = vec2(rect.x + 14.0, rect.center().y);
+                if heir == Some(other.id) {
+                    draw_circle(mark.x, mark.y, 6.0, style::ACCENT);
+                    draw_circle(mark.x, mark.y, 2.4, WHITE);
+                } else {
+                    draw_circle_lines(mark.x, mark.y, 5.5, 1.5, style::BORDER_STRONG);
+                }
+                style::rounded_rect(Rect::new(rect.x + 30.0, rect.center().y - 6.0, 12.0, 12.0), 3.0, other.color.color());
+                let name = fit(style, &other.name, 14, Weight::Regular, rect.w - 60.0);
+                style.text_mid(&name, rect.x + 50.0, rect.center().y, 14, Weight::Regular, style::TEXT);
+            }
+        }
 
         // Cancel and Delete, side by side.
         let top = card.bottom() - PADDING - BUTTON_HEIGHT;
         let cancel = Rect::new(inner_x, top, (inner_w - 12.0) * 0.5, BUTTON_HEIGHT);
         let delete = Rect::new(cancel.right() + 12.0, top, cancel.w, BUTTON_HEIGHT);
-        let (over_cancel, over_delete) = (cancel.contains(mouse), delete.contains(mouse));
+        // Delete waits for a country to be picked, if there is something to send.
+        let can_delete = !sending || heir.is_some();
+        let (over_cancel, over_delete) = (cancel.contains(mouse), can_delete && delete.contains(mouse));
         style::rounded_rect(cancel, 8.0, if over_cancel { style::BORDER_STRONG } else { style::HOVER });
         style.text_centered("Cancel", cancel, 14, Weight::Semibold, style::TEXT);
-        style::rounded_rect(delete, 8.0, if over_delete { style::ERROR } else { Color::new(ERROR_SOFT.0, ERROR_SOFT.1, ERROR_SOFT.2, 0.85) });
-        style.text_centered("Delete", delete, 14, Weight::Semibold, WHITE);
+        let fill = if !can_delete { style::HOVER } else if over_delete { style::ERROR } else { Color::new(ERROR_SOFT.0, ERROR_SOFT.1, ERROR_SOFT.2, 0.85) };
+        style::rounded_rect(delete, 8.0, fill);
+        style.text_centered("Delete", delete, 14, Weight::Semibold, if can_delete { WHITE } else { style::TEXT_MUTED });
 
         if clicked && over_delete {
-            return Some(Choice::Delete(id));
+            return Some(Choice::Delete(id, heir.filter(|_| sending)));
         }
         // Cancel, or a click on the dimmed window outside the card, goes back to the list.
         if clicked && (over_cancel || !card.contains(mouse)) {
@@ -519,6 +576,8 @@ impl CountryMenu {
         if let Some((id, place)) = deleting {
             self.highlight = place;
             self.fresh = true;
+            self.heir = None;
+            self.heir_scroll = 0;
             self.screen = Screen::Deleting(id);
             return None;
         }
@@ -650,10 +709,10 @@ mod tests {
     fn deleting_a_country_is_a_choice() {
         let mut day = day();
         let brevon = day.countries[1].id;
-        Choice::Delete(brevon).apply(&mut day).unwrap();
+        Choice::Delete(brevon, None).apply(&mut day).unwrap();
         assert_eq!(day.countries.len(), 1);
         day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
-        assert!(Choice::Delete(day.countries[0].id).apply(&mut day).unwrap_err().contains("owns 1 city"));
+        assert!(Choice::Delete(day.countries[0].id, None).apply(&mut day).unwrap_err().contains("owns 1 city"));
     }
 
     #[test]

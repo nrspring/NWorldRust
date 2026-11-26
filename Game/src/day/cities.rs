@@ -23,6 +23,15 @@ impl DaySave {
         Some(format!("That region belongs to {}.", self.country_name(owner)))
     }
 
+    /// Why a new city of `country` can't go in `region` (`None` for a map with no regions): the region is another country's (see
+    /// [`Self::city_region_problem`]), or has a city already, since a region holds only one.
+    pub fn new_city_region_problem(&self, country: CountryId, region: Option<u16>) -> Option<String> {
+        self.city_region_problem(country, region).or_else(|| {
+            let there = self.cities.iter().find(|c| region.is_some() && c.region == region)?;
+            Some(format!("{} is in that region, and a region holds only one city.", there.name))
+        })
+    }
+
     /// Why `country` can't put a gatherer, a shipyard or a barracks in `region` (`None` for a map with no regions), or `None` if it can:
     /// such a thing belongs to whoever owns the region it stands in, so the region has to be the country's already.
     pub fn placement_region_problem(&self, country: CountryId, region: Option<u16>) -> Option<String> {
@@ -103,7 +112,7 @@ impl DaySave {
 
     /// Settles a new city called `typed` at (`x`, `z`) in the map region numbered `region` (`None` if the map has none), for
     /// the country being played, with 100 people taken from its city `from`. It costs 10,000 coins, 1,000 wood, 1,000 stone
-    /// and 100 iron. The region becomes the country's, unless another country owns it, which is an error. Whether the
+    /// and 100 iron. The region becomes the country's, unless another country owns it or it has a city already, which are errors. Whether the
     /// ground is fit for a city is for the caller to say. This is reported in the newsreel. An error says why it can't be
     /// done, and nothing changes.
     pub fn settle_city(&mut self, from: CityId, typed: &str, x: f32, z: f32, region: Option<u16>) -> Result<(), String> {
@@ -111,7 +120,7 @@ impl DaySave {
             return Err(problem);
         }
         let country = self.player_country().ok_or("There is no country yet to settle a city.")?.id;
-        if let Some(problem) = self.city_region_problem(country, region) {
+        if let Some(problem) = self.new_city_region_problem(country, region) {
             return Err(problem);
         }
         if !x.is_finite() || !z.is_finite() {
@@ -142,11 +151,11 @@ impl DaySave {
 
     /// Founds a city called `typed` at (`x`, `z`) in the map region numbered `region` (`None` if the map has
     /// none) with the starting population, for the player's country, and reports it in the newsreel. The
-    /// region becomes the country's, unless another country owns it, which is an error. Whether the ground
+    /// region becomes the country's, unless another country owns it or it has a city already, which are errors. Whether the ground
     /// is fit for a city is for the caller to say. An error says why it can't be done.
     pub fn found_city(&mut self, typed: &str, x: f32, z: f32, region: Option<u16>) -> Result<(), String> {
         let country = self.player_country().ok_or("There is no country yet for the city to belong to.")?.id;
-        if let Some(problem) = self.city_region_problem(country, region) {
+        if let Some(problem) = self.new_city_region_problem(country, region) {
             return Err(problem);
         }
         if !x.is_finite() || !z.is_finite() {
@@ -187,6 +196,22 @@ mod tests {
         day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
         day.cities[0].population = 1_000;
         day
+    }
+
+    #[test]
+    fn a_region_holds_only_one_city() {
+        let mut day = day_that_can_settle();
+        let (aldoria, port) = (day.countries[0].id, day.cities[0].id);
+        let before = day.clone();
+        // Not by founding, nor by settling, however far apart they would be.
+        assert_eq!(day.found_city("Highmark", 900.0, 0.0, Some(0x4005)).unwrap_err(), "Port Aldor is in that region, and a region holds only one city.");
+        assert!(day.settle_city(port, "Highmark", 900.0, 0.0, Some(0x4005)).unwrap_err().contains("only one city"));
+        assert_eq!(day, before);
+        assert_eq!(day.new_city_region_problem(aldoria, Some(0x4006)), None);
+        // A person can still be put in a region with a city, and a map with no regions has no such limit.
+        assert_eq!(day.city_region_problem(aldoria, Some(0x4005)), None);
+        day.found_city("Second", 900.0, 0.0, None).unwrap();
+        day.found_city("Third", 1_800.0, 0.0, None).unwrap();
     }
 
     #[test]
@@ -361,7 +386,9 @@ mod tests {
         day.found_country("Brevon").unwrap();
         let brevon = day.countries[1].id;
         day.found_city("Port Aldor", 0.0, 0.0, Some(0x4005)).unwrap();
-        day.found_city("Highmark", 10.0, 0.0, Some(0x4005)).unwrap();
+        // (A region holds only one city now, but a game saved before may have two in one.)
+        day.found_city("Highmark", 10.0, 0.0, None).unwrap();
+        day.cities[1].region = Some(0x4005);
         let before = day.clone();
         let err = day.set_city_country(day.cities[0].id, brevon).unwrap_err();
         assert!(err.contains("Highmark") && err.contains("Aldoria"), "{err}");

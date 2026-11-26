@@ -210,11 +210,11 @@ impl Popup {
 
     /// Asks for the name of a region of `kind` (land, shallow water and so on), which starts as `current`, and can be
     /// left blank, for no name, and which of the countries `countries` it belongs to, which starts as `owner`: one of
-    /// them or `NO_COUNTRY`. `locked` is why it can't be given to another, if it can't.
-    pub fn region(current: &str, kind: &str, owner: &str, countries: Vec<String>, locked: Option<&str>) -> Self {
+    /// them or `NO_COUNTRY`. `note` is something to know about giving it to another, such as why it can't be.
+    pub fn region(current: &str, kind: &str, owner: &str, countries: Vec<String>, note: Option<&str>) -> Self {
         let mut options = vec![NO_COUNTRY.to_owned()];
         options.extend(countries);
-        let about = match locked {
+        let about = match note {
             Some(reason) => format!("A region of {kind}. {reason}"),
             None => format!("A region of {kind}. Leave the name blank for none."),
         };

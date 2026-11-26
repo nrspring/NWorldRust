@@ -489,10 +489,12 @@ mod tests {
         day.claim_region(0x4008).unwrap();
         day.build_barracks(BarracksKind::Barracks, 300.0, 0.0, Some(0x4008)).unwrap();
         let before = day.clone();
-        let err = day.set_region_owner(0x4008, Some(brevon)).unwrap_err();
-        assert!(err.contains("barracks of Aldoria is") && err.contains("has to stay with Aldoria"), "{err}");
-        assert!(day.set_region_owner(0x4008, None).is_err());
+        // It can't be left with nobody, though it can be given to another, which gets what is in it.
+        assert!(day.set_region_owner(0x4008, None).unwrap_err().contains("no owner"));
         assert_eq!(day, before);
+        day.set_region_owner(0x4008, Some(brevon)).unwrap();
+        assert!(day.barracks.iter().any(|b| b.region == Some(0x4008) && b.country == brevon));
+        day.set_region_owner(0x4008, Some(aldoria)).unwrap();
         // When the region changes hands with its city, the barracks goes with it.
         day.build_barracks(BarracksKind::Barracks, 100.0, 0.0, HERE).unwrap();
         day.set_city_country(day.cities[0].id, brevon).unwrap();

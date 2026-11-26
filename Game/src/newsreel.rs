@@ -1053,7 +1053,7 @@ mod tests {
         day.recolor_country(aldoria, Rgb { r: 1, g: 2, b: 3 }).unwrap();
         day.select_country(aldoria).unwrap();
         day.select_country(brevon).unwrap();
-        day.delete_country(aldoria).unwrap();
+        day.delete_country(aldoria, None).unwrap();
         assert_eq!(
             since(&day, from),
             [
@@ -1079,7 +1079,7 @@ mod tests {
         let brevon = day.countries[1].id;
         day.select_country(brevon).unwrap();
         day.found_person("Tomas Rue", "King", "Monarch").unwrap();
-        day.delete_country(brevon).unwrap();
+        day.delete_country(brevon, None).unwrap();
         let joined = day.newsreel.iter().find(|n| matches!(n.event, Event::PersonJoined { .. })).unwrap();
         assert_eq!(joined.headline(&day), "King Tomas Rue joins Brevon");
     }

@@ -590,7 +590,7 @@ async fn main() {
         let problem = site.and_then(|at| {
             city::site_problem(&world, at.x, at.y).map(str::to_owned).or_else(|| {
                 let country = day.player_country()?.id;
-                day.city_region_problem(country, world.region_at(at.x, at.y).map(|r| r.raw()))
+                day.new_city_region_problem(country, world.region_at(at.x, at.y).map(|r| r.raw()))
             })
             .or_else(|| day.crowding_problem(at.x, at.y))
         });
@@ -972,7 +972,7 @@ async fn main() {
                     overlays_ui.close();
                     let owner = day.region_owner(region.raw()).map_or("", |id| day.country_name(id));
                     let countries = day.countries.iter().map(|c| c.name.clone()).collect();
-                    naming_region = Some((region.raw(), Popup::region(day.region_name(region.raw()).unwrap_or(""), region_name::kind_text(region), owner, countries, day.region_lock(region.raw()).as_deref())));
+                    naming_region = Some((region.raw(), Popup::region(day.region_name(region.raw()).unwrap_or(""), region_name::kind_text(region), owner, countries, day.region_owner_note(region.raw()).as_deref())));
                 }
             } else if options.show_named_places {
                 // Anywhere else on the map, with the named places showing, a click is for adding a place there.

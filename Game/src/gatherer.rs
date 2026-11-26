@@ -882,10 +882,10 @@ mod tests {
         old.as_object_mut().unwrap().remove("gatherers");
         assert!(serde_json::from_value::<DaySave>(old).unwrap().gatherers.is_empty());
         // The other country, which owns nothing, can go; the one that owns the gatherer can't.
-        day.delete_country(day.countries[1].id).unwrap();
+        day.delete_country(day.countries[1].id, None).unwrap();
         assert_eq!(day.gatherers.len(), 1);
         let before = day.clone();
-        assert_eq!(day.delete_country(day.countries[0].id).unwrap_err(), "Aldoria owns 1 woodcutter and 1 region, so it can't be deleted.");
+        assert_eq!(day.delete_country(day.countries[0].id, None).unwrap_err(), "Aldoria owns 1 woodcutter and 1 region, so it can't be deleted.");
         assert_eq!(day, before);
     }
 }

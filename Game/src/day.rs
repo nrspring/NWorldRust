@@ -238,7 +238,7 @@ mod tests {
         today.found_country("Aldoria").unwrap();
         today.found_country("Brevon").unwrap();
         let brevon = today.countries[1].id;
-        today.delete_country(brevon).unwrap();
+        today.delete_country(brevon, None).unwrap();
         assert_eq!(today.country_name(brevon), "Brevon", "today's news can still name it");
         assert_eq!(today.former_countries.len(), 1);
 
