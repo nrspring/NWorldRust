@@ -505,6 +505,7 @@ async fn main() {
                 let color = |region: &RegionId| if moving.contains(region) { hud::MOVES_GLOW } else { hud::FooterLabel::Units.glow() };
                 unit_regions::with_units(&world, &day, unit_regions::Whose::Mine).iter().map(|r| (*r, color(r))).collect()
             }
+            Some(label @ hud::FooterLabel::People) => unit_regions::with_people(&world, &day).into_iter().map(|r| (r, label.glow())).collect(),
             Some(label @ hud::FooterLabel::Enemy) => unit_regions::with_units(&world, &day, unit_regions::Whose::Enemy).into_iter().map(|r| (r, label.glow())).collect(),
             Some(label @ hud::FooterLabel::Alerts) => alerts::regions(&day, &day_failures, &region_map, &world).into_iter().map(|r| (r, label.glow())).collect(),
             None => Vec::new(),

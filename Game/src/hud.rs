@@ -221,6 +221,8 @@ pub const MOVES_GLOW: [u8; 3] = [89, 255, 89];
 pub enum FooterLabel {
     /// Lights up the regions that have units of the country played in them.
     Units,
+    /// Lights up the regions that have a person in them, of any country.
+    People,
     /// Lights up the regions that have an alert about something in them.
     Alerts,
     /// Lights up the regions that have units of other countries in them.
@@ -229,11 +231,12 @@ pub enum FooterLabel {
 
 impl FooterLabel {
     /// Every label, in the order they are drawn, from the left.
-    const ALL: [FooterLabel; 3] = [FooterLabel::Units, FooterLabel::Alerts, FooterLabel::Enemy];
+    const ALL: [FooterLabel; 4] = [FooterLabel::Units, FooterLabel::People, FooterLabel::Alerts, FooterLabel::Enemy];
 
     fn text(self) -> &'static str {
         match self {
             Self::Units => "Units",
+            Self::People => "People",
             Self::Alerts => "Alerts",
             Self::Enemy => "Enemy",
         }
@@ -243,6 +246,7 @@ impl FooterLabel {
     pub fn glow(self) -> [u8; 3] {
         match self {
             Self::Units => [255, 102, 255],
+            Self::People => [255, 255, 255],
             Self::Alerts => [245, 176, 51],
             Self::Enemy => [255, 71, 71],
         }
