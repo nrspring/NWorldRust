@@ -342,14 +342,14 @@ impl CountryMenu {
         let name = fit(style, &country.name, 20, Weight::Semibold, card.right() - PADDING - text_x - 60.0);
         style.text(&format!("Delete {name}?"), text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
         // What goes with it.
-        let people = day.people.iter().filter(|p| p.country == id).count();
+        let people = day.people.iter().filter(|p| p.country == Some(id)).count();
         let regions = day.region_owners.iter().filter(|o| o.country == id).count();
         let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let goes = match (people, regions) {
             (0, 0) => "Nothing else belongs to it.".to_owned(),
-            (p, 0) => format!("Its {} will be removed with it.", plural(p, "person", "people")),
+            (p, 0) => format!("Its {} will become {}.", plural(p, "person", "people"), if p == 1 { "a nomad" } else { "nomads" }),
             (0, r) => format!("Its {} will be unowned.", plural(r, "region", "regions")),
-            (p, r) => format!("Its {} will be removed, and its {} unowned.", plural(p, "person", "people"), plural(r, "region", "regions")),
+            (p, r) => format!("Its {} will become {}, and its {} unowned.", plural(p, "person", "people"), if p == 1 { "a nomad" } else { "nomads" }, plural(r, "region", "regions")),
         };
         style.text(&goes, text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
         style.text("This can't be undone.", inner_x, card.y + 84.0 + 14.0, 13, Weight::Regular, style::TEXT);

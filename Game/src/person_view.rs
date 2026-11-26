@@ -26,7 +26,7 @@ const PLOT_CORNERS: f32 = 1.2;
 /// The ways to step out from behind a building, as turns from the way to the camera, in the order they are tried.
 const WAYS_OUT: [f32; 5] = [0.0, 0.9, -0.9, 1.6, -1.6];
 
-/// A country that can't be found is shown in gray.
+/// A nomad, and a country that can't be found, are shown in gray.
 const NO_COUNTRY: Color = Color::new(0.6, 0.6, 0.6, 1.0);
 
 /// The token of `person`, standing at `at` for a camera at `eye`, stepping to the time `marching` if they are walking.
@@ -87,7 +87,7 @@ fn step_out(mut at: Vec2, buildings: &[(Vec2, f32)], camera: Vec2, dry: impl Fn(
 pub fn draw(world: &World, day: &DaySave, walks: &Walks, time: f32, eye: Vec3) {
     let models = day.people.iter().filter_map(|person| {
         let at = shown_at(world, day, walks, person, eye).filter(|at| pieces::within_view(eye, at.x, at.y))?;
-        let country = day.country(person.country).map_or(NO_COUNTRY, |c| c.color.color());
+        let country = person.country.and_then(|id| day.country(id)).map_or(NO_COUNTRY, |c| c.color.color());
         let marching = walks.is_walking(person.id).then_some(time);
         let turn = Mat3::from_rotation_y(walks.facing(person.id));
         Some(token(world, at, marching, eye).model(turn, country, Moment { time, busy: true }))
@@ -112,8 +112,9 @@ pub fn under_ray(ray: (Vec3, Vec3), world: &World, day: &DaySave, walks: &Walks)
 /// Draws the tooltip for `person`, beside the mouse.
 pub fn tooltip(style: &Style, day: &DaySave, person: &Person) {
     let rows = [
-        ("Country", day.country_name(person.country).to_owned()),
+        ("Country", day.person_country_name(person).to_owned()),
         ("Title", person.title.clone()),
+        ("Age", person.age_words()),
         ("Movement", format!("{} of {} points", person.points, DAILY_POINTS)),
     ];
     let label_w = rows.iter().map(|(label, _)| style.measure(label, 13, Weight::Regular).width).fold(0.0, f32::max);
@@ -144,7 +145,7 @@ mod tests {
     use crate::test_support;
 
     fn person_at(at: Option<(f32, f32)>) -> Person {
-        Person { id: PersonId::new(), name: "Mara Voss".to_owned(), title: "President".to_owned(), title_type: TitleTypeId::new(), country: CountryId::new(), at, points: 200 }
+        Person { id: PersonId::new(), name: "Mara Voss".to_owned(), title: "President".to_owned(), title_type: TitleTypeId::new(), country: Some(CountryId::new()), at, points: 200, age_days: 0 }
     }
 
     #[test]

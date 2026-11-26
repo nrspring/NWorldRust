@@ -1,6 +1,7 @@
-//! The people drop-down: beside the country in the header, a list of the people of the country being played. Picking one selects them on
-//! the map, and the camera goes to them; one who is not on the map yet is put there next. Nobody is picked until one is, and when another country is played nobody is picked again. The
-//! last row introduces another person to the country.
+//! The people drop-down: beside the country in the header, a list of the people of the country being played, and after them the
+//! nomads, who belong to no country, whichever is played. Picking one selects them on the map, and the camera goes to them; one who
+//! is not on the map yet is put there next. Nobody is picked until one is, and when another country is played nobody is picked again.
+//! The last row introduces another person to the country.
 
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
@@ -28,19 +29,48 @@ pub enum PeoplePick {
 /// The people of the country being played, in the order they joined.
 pub fn people_of(day: &DaySave) -> impl Iterator<Item = &Person> {
     let country = day.player_country().map(|c| c.id);
-    day.people.iter().filter(move |p| Some(p.country) == country)
+    // (A nomad belongs to no country, and is in no country's list.)
+    day.people.iter().filter(move |p| country.is_some() && p.country == country)
 }
 
-/// The person the drop-down shows as picked: the one `selected` on the map, if they belong to the country being played.
+/// The people who belong to no country, in the order they first joined one.
+fn nomads(day: &DaySave) -> impl Iterator<Item = &Person> {
+    day.people.iter().filter(|p| p.country.is_none())
+}
+
+/// A line of the list.
+#[derive(Debug, PartialEq)]
+enum Row<'a> {
+    Person(&'a Person),
+    /// Says that nobody belongs to the country being played.
+    Nobody,
+    /// What the nomads, who follow it, are listed under.
+    Nomads,
+}
+
+/// The lines of the list: the people of the country being played, or that there are none, and then the nomads, if there are any.
+fn lines(day: &DaySave) -> Vec<Row<'_>> {
+    let mut lines: Vec<Row> = people_of(day).map(Row::Person).collect();
+    if lines.is_empty() {
+        lines.push(Row::Nobody);
+    }
+    if nomads(day).next().is_some() {
+        lines.push(Row::Nomads);
+        lines.extend(nomads(day).map(Row::Person));
+    }
+    lines
+}
+
+/// The person the drop-down shows as picked: the one `selected` on the map, if they are in its list.
 pub fn shown(day: &DaySave, selected: Option<PersonId>) -> Option<&Person> {
-    people_of(day).find(|p| Some(p.id) == selected)
+    people_of(day).chain(nomads(day)).find(|p| Some(p.id) == selected)
 }
 
 /// What the header says in the drop-down's place.
 pub fn label(day: &DaySave, selected: Option<PersonId>) -> &str {
     match shown(day, selected) {
         Some(person) => &person.name,
-        None if people_of(day).next().is_none() => "No people",
+        None if people_of(day).chain(nomads(day)).next().is_none() => "No people",
         None => "Select a person",
     }
 }
@@ -98,11 +128,11 @@ impl PeopleDropdown {
         };
         let mouse = Vec2::from(mouse_position());
         let clicked = is_mouse_button_pressed(MouseButton::Left);
-        let people: Vec<&Person> = people_of(day).collect();
-        let rows = people.len().min(MAX_ROWS);
+        let lines = lines(day);
+        // (There is always one: a country with nobody in it has a line to say so.)
+        let rows = lines.len().min(MAX_ROWS);
 
-        // A country with nobody in it still has a row, to say so.
-        let height = (rows.max(1) + 1) as f32 * ROW_HEIGHT + PADDING * 2.0 + 9.0;
+        let height = (rows + 1) as f32 * ROW_HEIGHT + PADDING * 2.0 + 9.0;
         let panel = Rect::new(anchor.x, anchor.bottom() + 6.0, WIDTH, height);
         self.rect = panel;
         style::card(panel, 10.0, style::PANEL);
@@ -111,16 +141,26 @@ impl PeopleDropdown {
         if panel.contains(mouse) && mouse_wheel().1 != 0.0 {
             self.scroll = if mouse_wheel().1 > 0.0 { self.scroll.saturating_sub(1) } else { self.scroll + 1 };
         }
-        self.scroll = self.scroll.min(people.len() - rows);
+        self.scroll = self.scroll.min(lines.len() - rows);
 
-        if people.is_empty() {
-            let country = day.player_country().map_or("this country", |c| c.name.as_str());
-            let text = fit(style, &format!("Nobody belongs to {country} yet."), 13, Weight::Regular, panel.w - 36.0);
-            style.text_mid(&text, panel.x + 18.0, panel.y + PADDING + ROW_HEIGHT * 0.5, 13, Weight::Regular, style::TEXT_MUTED);
-        }
         let mut picked = None;
-        for (row, person) in people.iter().skip(self.scroll).take(rows).enumerate() {
+        for (row, line) in lines.iter().skip(self.scroll).take(rows).enumerate() {
             let rect = Rect::new(panel.x + PADDING, panel.y + PADDING + row as f32 * ROW_HEIGHT, panel.w - PADDING * 2.0, ROW_HEIGHT);
+            let person = match line {
+                Row::Person(person) => person,
+                Row::Nobody => {
+                    let country = day.player_country().map_or("this country", |c| c.name.as_str());
+                    let text = fit(style, &format!("Nobody belongs to {country} yet."), 13, Weight::Regular, rect.w - 24.0);
+                    style.text_mid(&text, rect.x + 12.0, rect.center().y, 13, Weight::Regular, style::TEXT_MUTED);
+                    continue;
+                }
+                Row::Nomads => {
+                    // A line above it, to part the nomads from the country's own.
+                    draw_line(panel.x + 12.0, rect.y + 4.0, panel.right() - 12.0, rect.y + 4.0, 1.0, style::BORDER);
+                    style.text_mid("NOMADS", rect.x + 12.0, rect.center().y + 3.0, 10, Weight::Semibold, style::TEXT_MUTED);
+                    continue;
+                }
+            };
             let hovered = rect.contains(mouse);
             if hovered {
                 style::rounded_rect(rect, 6.0, style::HOVER);
@@ -156,13 +196,13 @@ impl PeopleDropdown {
         if self.scroll > 0 {
             draw_triangle(vec2(panel.right() - 18.0, panel.y + 9.0), vec2(panel.right() - 10.0, panel.y + 9.0), vec2(panel.right() - 14.0, panel.y + 4.0), style::TEXT_MUTED);
         }
-        if self.scroll + rows < people.len() {
+        if self.scroll + rows < lines.len() {
             let bottom = panel.y + PADDING + rows as f32 * ROW_HEIGHT;
             draw_triangle(vec2(panel.right() - 18.0, bottom - 3.0), vec2(panel.right() - 10.0, bottom - 3.0), vec2(panel.right() - 14.0, bottom + 2.0), style::TEXT_MUTED);
         }
 
         // A line, and the row for introducing somebody.
-        let divider = panel.y + PADDING + rows.max(1) as f32 * ROW_HEIGHT + 4.0;
+        let divider = panel.y + PADDING + rows as f32 * ROW_HEIGHT + 4.0;
         draw_line(panel.x + 12.0, divider, panel.right() - 12.0, divider, 1.0, style::BORDER);
         let introduce = Rect::new(panel.x + PADDING, divider + 4.0, panel.w - PADDING * 2.0, ROW_HEIGHT);
         let over_introduce = introduce.contains(mouse);
@@ -209,6 +249,23 @@ mod tests {
         assert_eq!(people_of(&day).count(), 0);
         assert_eq!(shown(&day, Some(mara)), None, "they belong to another country");
         assert_eq!(label(&day, Some(mara)), "No people");
+    }
+
+    #[test]
+    fn nomads_are_listed_under_their_own_heading_whichever_country_is_played() {
+        let mut day = day();
+        day.found_person("Ilse Brandt", "General", "Military").unwrap();
+        let (mara, ilse) = (day.people[0].id, day.people[1].id);
+        assert!(!lines(&day).contains(&Row::Nomads), "there are none");
+        day.set_person_country(ilse, None).unwrap();
+        assert_eq!(lines(&day), vec![Row::Person(&day.people[0]), Row::Nomads, Row::Person(&day.people[1])]);
+        assert_eq!(label(&day, Some(ilse)), "Ilse Brandt");
+        let brevon = day.countries[1].id;
+        day.select_country(brevon).unwrap();
+        assert_eq!(lines(&day), vec![Row::Nobody, Row::Nomads, Row::Person(&day.people[1])]);
+        assert_eq!(label(&day, Some(mara)), "Select a person", "there is a nomad to pick");
+        assert_eq!(shown(&day, Some(ilse)).map(|p| p.id), Some(ilse));
+        assert_eq!(people_of(&day).count(), 0, "a nomad is still not the country's");
     }
 
     #[test]

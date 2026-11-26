@@ -47,6 +47,10 @@ pub const DAY_RULES: &[Rule] = &[
     Rule { description: "Each ship gets all of its movement points back: 200 a day. One at anchor gets none.", apply: ships_rest },
     Rule { description: "Each person gets all of their movement points back: 200 a day, as the army does.", apply: people_rest },
     Rule {
+        description: "Each person is a day older. From 25 years old they may die, with a chance that grows each year, and much faster after 60, so that on average a person lives to 50.",
+        apply: people_age,
+    },
+    Rule {
         description: "Each country pays first for the militia picked to be paid, 1 coin a day for each member, the oldest first. A member it can't pay for deserts, and does not go back to a city.",
         apply: militia_upkeep_first,
     },
@@ -127,6 +131,11 @@ fn militia_upkeep(day: &mut DaySave) {
 /// Each ship has all its movement points again.
 fn people_rest(day: &mut DaySave) {
     day.rest_people();
+}
+
+/// Each person is a day older, and some of the older ones die (see [`DaySave::age_people`]).
+fn people_age(day: &mut DaySave) {
+    day.age_people(ids::random_unit);
 }
 
 fn ships_rest(day: &mut DaySave) {
@@ -488,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn running_the_rules_changes_only_money_populations_and_the_newsreel() {
+    fn running_the_rules_changes_only_money_populations_peoples_ages_and_the_newsreel() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
         day.found_person("Mara Voss", "President", "Head of State").unwrap();
@@ -497,6 +506,8 @@ mod tests {
         run(&mut ran);
         ran.countries[0].money = day.countries[0].money;
         ran.cities[0].population = day.cities[0].population;
+        assert_eq!(ran.people[0].age_days, day.people[0].age_days + 1, "a day older");
+        ran.people[0].age_days = day.people[0].age_days;
         // The news is added to, and what was in it is as it was.
         assert_eq!(ran.newsreel.len(), day.newsreel.len() + 2, "income and population");
         ran.newsreel.truncate(day.newsreel.len());

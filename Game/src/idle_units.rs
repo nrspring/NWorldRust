@@ -50,7 +50,7 @@ pub fn current(day: &DaySave) -> Vec<Entry> {
     let militia = day.militias.iter().filter(|m| m.country == country && m.points > 0).map(|m| Entry { unit: Unit::Militia(m.id), name: m.title().to_owned(), kind: m.kind_label(), points: m.points });
     let ships = day.ships.iter().filter(|s| s.country == country && s.points > 0).map(|s| Entry { unit: Unit::Ship(s.id), name: s.title().to_owned(), kind: s.kind.label(), points: s.points });
     // The people on the map, who have the movement points the army has.
-    let people = day.people.iter().filter(|p| p.country == country && p.at.is_some() && p.points > 0).map(|p| Entry { unit: Unit::Person(p.id), name: p.name.clone(), kind: "Person", points: p.points });
+    let people = day.people.iter().filter(|p| p.country == Some(country) && p.at.is_some() && p.points > 0).map(|p| Entry { unit: Unit::Person(p.id), name: p.name.clone(), kind: "Person", points: p.points });
     militia.chain(ships).chain(people).collect()
 }
 

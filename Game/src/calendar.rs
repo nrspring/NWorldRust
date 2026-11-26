@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MONTHS_PER_YEAR: u32 = 10;
 pub const DAYS_PER_MONTH: u32 = 20;
+pub const DAYS_PER_YEAR: u32 = MONTHS_PER_YEAR * DAYS_PER_MONTH;
 
 /// A day of the game, written `year-month-day`: the first is 1-1-1 and the last of a year is 1-10-20.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]

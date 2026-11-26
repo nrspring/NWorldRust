@@ -232,11 +232,12 @@ enum Asking {
 }
 
 impl Asking {
-    /// What is missing from `day`, if anything: first a country, then a person to belong to it.
+    /// What is missing from `day`, if anything: first a country, then a first person to belong to it.
     fn of(day: &DaySave) -> Option<Self> {
         if day.countries.is_empty() {
             Some(Self::Country)
-        } else if day.people.is_empty() {
+        } else if day.people.is_empty() && day.title_types.is_empty() {
+            // (There are kinds of title once there has been a person, who may since have died.)
             Some(Self::Person)
         } else {
             None
@@ -622,7 +623,9 @@ async fn main() {
             person::ground_problem(&world, at.x, at.y).map(str::to_owned).or_else(|| day.person_spot_problem(id, at, world.region_at(at.x, at.y).map(|r| r.raw())))
         });
         if let Some((at, person)) = person_site.zip(person_to_place.and_then(|id| day.person(id))) {
-            let color = day.country(person.country).filter(|_| person_problem.is_none()).map_or(RED, |c| c.color.color());
+            // (A nomad is gray.)
+            let own = person.country.and_then(|id| day.country(id)).map_or(GRAY, |c| c.color.color());
+            let color = if person_problem.is_none() { own } else { RED };
             person_view::draw_ghost(&world, at, color, time, eye.position);
         }
         // The city under the mouse, if there is one, which the tooltip tells about. One that isn't shown is not in the way of what is in it.

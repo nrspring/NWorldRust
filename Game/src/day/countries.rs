@@ -58,7 +58,7 @@ impl DaySave {
             cities: cities.clone().count(),
             population: cities.map(|c| c.population as u64).sum(),
             regions: self.region_owners.iter().filter(|o| o.country == id).count(),
-            people: self.people.iter().filter(|p| p.country == id).count(),
+            people: self.people.iter().filter(|p| p.country == Some(id)).count(),
         }
     }
 
@@ -179,7 +179,7 @@ mod tests {
         day.select_country(brevon).unwrap();
         day.found_person("Mara Voss", "President", "Head of State").unwrap();
         day.found_city("Port Aldor", 0.0, 0.0, None).unwrap();
-        assert_eq!(day.people[0].country, brevon);
+        assert_eq!(day.people[0].country, Some(brevon));
         assert_eq!(day.cities[0].country, brevon);
     }
 
@@ -201,7 +201,7 @@ mod tests {
         day.rename_country(id, "  New   Aldoria ").unwrap();
         assert_eq!(day.countries[0].name, "New Aldoria");
         assert_eq!(day.countries[0].id, id);
-        assert_eq!(day.country_name(day.people[0].country), "New Aldoria");
+        assert_eq!(day.person_country_name(&day.people[0]), "New Aldoria");
         // Just the capitals, or the very same name, is allowed.
         day.rename_country(id, "NEW ALDORIA").unwrap();
         assert_eq!(day.countries[0].name, "NEW ALDORIA");
@@ -373,7 +373,7 @@ mod tests {
         // Rename the country: the person, the city and the news still find it.
         let id = day.countries[0].id;
         day.rename_country(id, "New Aldoria").unwrap();
-        assert_eq!(day.country_name(day.people[0].country), "New Aldoria");
+        assert_eq!(day.person_country_name(&day.people[0]), "New Aldoria");
         assert_eq!(day.country_name(day.cities[0].country), "New Aldoria");
         assert_eq!(day.newsreel[0].headline(&day), "The nation of New Aldoria is founded");
     }

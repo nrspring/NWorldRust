@@ -130,7 +130,7 @@ impl Alert {
         match self {
             Alert::CountryWithoutCities(id) => format!("{} has no cities", day.country_name(*id)),
             Alert::PersonUnplaced(id) => match day.person(*id) {
-                Some(person) => format!("{} ({}) is not on the map. Click to place them", person.name, day.country_name(person.country)),
+                Some(person) => format!("{} ({}) is not on the map. Click to place them", person.name, day.person_country_name(person)),
                 None => "A person is not on the map".to_owned(),
             },
             Alert::CityUnderSiege(id) => match day.city(*id) {

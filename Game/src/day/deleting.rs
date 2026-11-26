@@ -44,7 +44,7 @@ impl DaySave {
     }
 
     /// Removes the country with this id, which can only be done if it owns nothing (see
-    /// [`delete_problem`](Self::delete_problem)). Its people go with it. The news of it and of them stays, since it is
+    /// [`delete_problem`](Self::delete_problem)). Its people stay, as nomads. The news of it and of them stays, since it is
     /// history, and so does its name, in `former_countries`; the deleting is reported in the newsreel. If it was the
     /// country the player plays, the first country left is. An error says why it can't be done.
     pub fn delete_country(&mut self, id: CountryId) -> Result<(), String> {
@@ -52,8 +52,11 @@ impl DaySave {
         if let Some(problem) = self.delete_problem(id) {
             return Err(problem);
         }
+        let people: Vec<_> = self.people.iter().filter(|p| p.country == Some(id)).map(|p| p.id).collect();
+        for person in people {
+            self.set_person_country(person, None)?;
+        }
         self.countries.retain(|c| c.id != id);
-        self.people.retain(|p| p.country != id);
         self.former_countries.push(FormerCountry { id, name: name.clone() });
         if self.player == Some(id) {
             self.player = self.countries.first().map(|c| c.id);
@@ -69,7 +72,7 @@ mod tests {
     use crate::day::day;
 
     #[test]
-    fn a_country_that_owns_nothing_can_be_deleted_with_its_people() {
+    fn a_country_that_owns_nothing_can_be_deleted_and_its_people_become_nomads() {
         let mut day = day();
         day.found_country("Aldoria").unwrap();
         day.found_country("Brevon").unwrap();
@@ -84,8 +87,8 @@ mod tests {
         day.delete_country(brevon).unwrap();
         assert_eq!(day.countries.len(), 1);
         assert!(day.country(brevon).is_none());
-        assert_eq!(day.people.len(), 1, "its people go with it");
-        assert_eq!(day.people[0].name, "Mara Voss");
+        assert_eq!(day.people.len(), 2, "its people stay");
+        assert_eq!((day.people[0].country, day.people[1].country), (Some(aldoria), None), "as nomads");
         assert_eq!(day.region_owner(0x4006), Some(aldoria), "other countries' regions are not touched");
         // Its news stays, since it is history, and still names it and them; the deleting is news too.
         assert_eq!(day.former_countries, [FormerCountry { id: brevon, name: "Brevon".to_owned() }]);
@@ -93,6 +96,7 @@ mod tests {
         let headlines: Vec<String> = day.newsreel.iter().map(|n| n.headline(&day)).collect();
         assert!(headlines.contains(&"The nation of Brevon is founded".to_owned()), "{headlines:?}");
         assert!(headlines.contains(&"King Tomas Rue joins Brevon".to_owned()), "{headlines:?}");
+        assert!(headlines.contains(&"Tomas Rue leaves Brevon and becomes a nomad".to_owned()), "{headlines:?}");
         assert_eq!(headlines.last().unwrap(), "The nation of Brevon is deleted");
         // It was the country that was played, so the one left is.
         assert_eq!(day.player_country().unwrap().id, aldoria);

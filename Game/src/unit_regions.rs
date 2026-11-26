@@ -43,7 +43,8 @@ fn regions_of(world: &World, day: &DaySave, whose: Whose, moving_only: bool) -> 
     let theirs = |owner| (owner == country) == (whose == Whose::Mine);
     let militia = day.militias.iter().filter(|m| theirs(m.country) && (!moving_only || m.points > 0)).map(|m| (m.x, m.z));
     let ships = day.ships.iter().filter(|s| theirs(s.country) && (!moving_only || s.points > 0)).map(|s| (s.x, s.z));
-    let people = day.people.iter().filter(|p| theirs(p.country) && (!moving_only || p.points > 0)).filter_map(|p| p.at);
+    // A nomad is nobody's: not the player's, and not the enemy's.
+    let people = day.people.iter().filter(|p| p.country.is_some_and(theirs) && (!moving_only || p.points > 0)).filter_map(|p| p.at);
     let mut regions: Vec<RegionId> = militia.chain(ships).chain(people).filter_map(|(x, z)| world.region_at(x, z)).collect();
     regions.sort_by_key(|r| r.raw());
     regions.dedup();
@@ -115,9 +116,12 @@ mod tests {
         day.people[0].points = 0;
         assert_eq!(with_units(&world, &day, Whose::Mine), vec![here]);
         assert!(with_units_that_can_move(&world, &day, Whose::Mine).is_empty());
-        day.people[0].country = day.countries[1].id;
+        day.people[0].country = Some(day.countries[1].id);
         assert!(with_units(&world, &day, Whose::Mine).is_empty());
         assert_eq!(with_units(&world, &day, Whose::Enemy), vec![here]);
+        day.people[0].country = None;
+        assert!(with_units(&world, &day, Whose::Mine).is_empty() && with_units(&world, &day, Whose::Enemy).is_empty(), "a nomad is nobody's");
+        assert_eq!(with_people(&world, &day), vec![here], "but is still a person");
     }
 
     #[test]
@@ -135,7 +139,7 @@ mod tests {
         assert_eq!(with_people(&world, &day), vec![here], "moves left or not");
         day.found_person("Tomas Rue", "Chancellor", "Head of State").unwrap();
         day.people[1].at = Some((spot.x, spot.y));
-        day.people[1].country = day.countries[1].id;
+        day.people[1].country = Some(day.countries[1].id);
         assert_eq!(with_people(&world, &day), vec![here], "once, though two of two countries are there");
         day.people.remove(0);
         assert_eq!(with_people(&world, &day), vec![here], "another country's alone counts too");

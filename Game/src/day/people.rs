@@ -4,7 +4,7 @@ use macroquad::math::Vec2;
 
 use super::DaySave;
 use crate::city_layout;
-use crate::ids::{PersonId, TitleTypeId};
+use crate::ids::{CountryId, PersonId, TitleTypeId};
 use crate::movement::DAILY_POINTS;
 use crate::newsreel::{Event, News};
 use crate::person::{self, Person};
@@ -39,8 +39,28 @@ impl DaySave {
             }
         };
         let id = PersonId::new();
-        self.people.push(Person { id, name: name.clone(), title: title.clone(), title_type, country, at: None, points: DAILY_POINTS });
+        self.people.push(Person { id, name: name.clone(), title: title.clone(), title_type, country: Some(country), at: None, points: DAILY_POINTS, age_days: 0 });
         self.newsreel.push(News::about(id, Event::PersonJoined { title, name, country: Some(country) }));
+        Ok(())
+    }
+
+    /// The name of the country `person` belongs to, for showing: "Nomad" if they belong to none.
+    pub fn person_country_name(&self, person: &Person) -> &str {
+        person.country.map_or(person::NOMAD, |id| self.country_name(id))
+    }
+
+    /// Makes the person with this id belong to the country `to`, or to none, as a nomad, which is reported in the newsreel unless
+    /// it is no change. An error says why it can't be done.
+    pub fn set_person_country(&mut self, id: PersonId, to: Option<CountryId>) -> Result<(), String> {
+        if let Some(to) = to {
+            self.country(to).ok_or("There is no such country.")?;
+        }
+        let person = self.people.iter_mut().find(|p| p.id == id).ok_or("There is no such person.")?;
+        let from = std::mem::replace(&mut person.country, to);
+        if from != to {
+            let name = person.name.clone();
+            self.newsreel.push(News::about(id, Event::PersonChangedCountry { name, from, to }));
+        }
         Ok(())
     }
 
@@ -55,7 +75,8 @@ impl DaySave {
         if !at.x.is_finite() || !at.y.is_finite() {
             return Some("That is not a place on the map.".to_owned());
         }
-        self.city_region_problem(person.country, region).or_else(|| {
+        // A nomad belongs to no country, so no country's region is closed to them.
+        person.country.and_then(|country| self.city_region_problem(country, region)).or_else(|| {
             let city = self.cities.iter().find(|c| Vec2::new(c.x, c.z).distance(at) < city_layout::radius(c))?;
             Some(format!("That is inside {}: place them beside it.", city.name))
         })
@@ -98,6 +119,25 @@ impl DaySave {
         Ok(())
     }
 
+    /// Makes every person a day older, and lets those who die of age die: each of them with the chance their age gives (see
+    /// [`person::daily_death_chance`]), which `random`, a number from 0 up to 1 for each, decides. The dead are gone, and each
+    /// is in the newsreel.
+    pub fn age_people(&mut self, mut random: impl FnMut() -> f32) {
+        let mut died = Vec::new();
+        for person in &mut self.people {
+            person.age_days = person.age_days.saturating_add(1);
+            if random() < person::daily_death_chance(person.age_days) {
+                died.push(person.id);
+            }
+        }
+        for id in died {
+            let Some(at) = self.people.iter().position(|p| p.id == id) else { continue };
+            let person = self.people.remove(at);
+            let (age, name, title, country) = (person.age(), person.name, person.title, person.country);
+            self.newsreel.push(News::about(id, Event::PersonDied { name, title, age, country }));
+        }
+    }
+
     /// Gives every person all their movement points again, for a new day.
     pub fn rest_people(&mut self) {
         for person in &mut self.people {
@@ -109,7 +149,7 @@ impl DaySave {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::calendar::Date;
+    use crate::calendar::{Date, DAYS_PER_YEAR};
     use crate::day::day;
 
     #[test]
@@ -121,7 +161,7 @@ mod tests {
 
         let aldoria = day.countries[0].id;
         let person = &day.people[0];
-        assert_eq!((person.name.as_str(), person.title.as_str(), person.country), ("Mara Voss", "President", aldoria));
+        assert_eq!((person.name.as_str(), person.title.as_str(), person.country), ("Mara Voss", "President", Some(aldoria)));
         assert_eq!(day.title_type(person.title_type).unwrap().name, "Head of State");
         assert_eq!(day.newsreel.last(), Some(&News::about(person.id, Event::PersonJoined { title: "President".to_owned(), name: "Mara Voss".to_owned(), country: Some(aldoria) })));
         // The first person of a kind of title makes the kind news too, just before.
@@ -171,6 +211,83 @@ mod tests {
         day.place_person(id, Vec2::new(600.0, 0.0), Some(0x4001)).unwrap();
         assert_eq!((day.people[0].position(), day.people[0].points), (Some(Vec2::new(600.0, 0.0)), DAILY_POINTS));
         assert!(day.place_person(id, Vec2::new(700.0, 0.0), None).unwrap_err().contains("on the map already"));
+    }
+
+    #[test]
+    fn a_person_can_change_country_or_become_a_nomad_who_can_go_anywhere_and_it_is_news() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_country("Brevon").unwrap();
+        let (aldoria, brevon) = (day.countries[0].id, day.countries[1].id);
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        let id = day.people[0].id;
+        assert!(day.set_person_country(id, Some(CountryId::new())).is_err(), "no such country");
+        assert!(day.set_person_country(PersonId::new(), None).is_err(), "no such person");
+        let news = day.newsreel.len();
+        day.set_person_country(id, Some(aldoria)).unwrap();
+        assert_eq!(day.newsreel.len(), news, "no change is no news");
+
+        day.set_person_country(id, Some(brevon)).unwrap();
+        assert_eq!(day.people[0].country, Some(brevon));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Mara Voss leaves Aldoria for Brevon");
+        day.set_person_country(id, None).unwrap();
+        assert_eq!((day.people[0].country, day.person_country_name(&day.people[0])), (None, "Nomad"));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Mara Voss leaves Brevon and becomes a nomad");
+        // A nomad can be put in a country's region.
+        day.found_city("Port Aldor", 0.0, 0.0, Some(0x4001)).unwrap();
+        assert_eq!(day.person_spot_problem(id, Vec2::new(600.0, 0.0), Some(0x4001)), None);
+        day.set_person_country(id, Some(brevon)).unwrap();
+        assert!(day.person_spot_problem(id, Vec2::new(600.0, 0.0), Some(0x4001)).unwrap().contains("belongs to Aldoria"));
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Mara Voss the nomad joins Brevon");
+        // The news of their joining still names the country they joined then.
+        assert!(day.newsreel.iter().any(|n| n.headline(&day) == "President Mara Voss joins Aldoria"));
+        // And a nomad is saved and read back as one.
+        day.set_person_country(id, None).unwrap();
+        let json = serde_json::to_value(&day).unwrap();
+        assert_eq!(serde_json::from_value::<DaySave>(json).unwrap().people[0].country, None);
+    }
+
+    #[test]
+    fn a_person_is_born_new_grows_older_each_day_and_may_die_of_age_which_is_news() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        day.found_person("Tomas Rue", "Chancellor", "Head of State").unwrap();
+        assert_eq!((day.people[0].age_days, day.people[0].age()), (0, 0));
+        // However the dice fall, the young don't die.
+        day.age_people(|| 0.0);
+        assert_eq!((day.people.len(), day.people[0].age_days), (2, 1));
+
+        let old = 60 * DAYS_PER_YEAR - 1;
+        day.people[0].age_days = old;
+        day.people[1].age_days = old;
+        day.age_people(|| 0.999);
+        assert_eq!((day.people.len(), day.people[0].age()), (2, 60), "lucky today");
+        // The first rolls low and dies, and the second doesn't.
+        let mut rolls = [0.0, 0.999].into_iter();
+        day.set_person_country(day.people[1].id, None).unwrap();
+        let mara = day.people[0].id;
+        day.age_people(|| rolls.next().unwrap());
+        assert_eq!(day.people.len(), 1);
+        assert_eq!(day.people[0].name, "Tomas Rue");
+        assert!(day.person(mara).is_none());
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "President Mara Voss of Aldoria dies, aged 60");
+        day.age_people(|| 0.0);
+        assert_eq!(day.newsreel.last().unwrap().headline(&day), "Chancellor Tomas Rue, a nomad, dies, aged 60");
+        assert!(day.people.is_empty());
+        // The news of them stays and still says who they were.
+        assert!(day.newsreel.iter().any(|n| n.headline(&day) == "President Mara Voss joins Aldoria"));
+    }
+
+    #[test]
+    fn somebody_saved_before_ages_is_25() {
+        let mut day = day();
+        day.found_country("Aldoria").unwrap();
+        day.found_person("Mara Voss", "President", "Head of State").unwrap();
+        let mut json = serde_json::to_value(&day).unwrap();
+        json["people"][0].as_object_mut().unwrap().remove("age_days");
+        let old: DaySave = serde_json::from_value(json).unwrap();
+        assert_eq!(old.people[0].age(), 25);
     }
 
     #[test]

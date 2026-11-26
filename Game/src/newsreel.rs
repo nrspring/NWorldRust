@@ -125,6 +125,12 @@ pub enum Event {
         #[serde(default)]
         country: Option<CountryId>,
     },
+    /// The subject is a person, called `name`, who left the country `from` for the country `to`, either of which is `None` for
+    /// a nomad, who belongs to none.
+    PersonChangedCountry { name: String, from: Option<CountryId>, to: Option<CountryId> },
+    /// The subject is a person who died of age: they were `title` `name`, `age` years old, of the country `country`, or a nomad
+    /// with `None`. They are gone, so all that is said of them is here.
+    PersonDied { name: String, title: String, age: u32, country: Option<CountryId> },
     /// The subject is a kind of title, called `name`, and it was added when the first person of the kind joined.
     TitleTypeAdded { name: String },
     /// The subject is a city, and the country `country` founded it with this many people, in the region numbered
@@ -489,13 +495,24 @@ impl News {
         match self.event {
             Event::CountryFounded => format!("The nation of {} is founded", day.country_name(CountryId::from(self.subject))),
             Event::PersonJoined { ref title, ref name, country } => match day.person(PersonId::from(self.subject)) {
-                Some(person) => format!("{} {} joins {}", person.title, person.name, day.country_name(person.country)),
+                // The country they joined then, which they may have left since.
+                Some(person) => format!("{} {} joins {}", person.title, person.name, country.or(person.country).map_or("a country", |c| day.country_name(c))),
                 // Gone with their country: what was kept says who they were.
                 None if !name.is_empty() => match country {
                     Some(country) => format!("{title} {name} joins {}", day.country_name(country)),
                     None => format!("{title} {name} joins a country"),
                 },
                 None => "Someone joins a country".to_owned(),
+            },
+            Event::PersonChangedCountry { ref name, from, to } => match (from, to) {
+                (Some(from), Some(to)) => format!("{name} leaves {} for {}", day.country_name(from), day.country_name(to)),
+                (Some(from), None) => format!("{name} leaves {} and becomes a nomad", day.country_name(from)),
+                (None, Some(to)) => format!("{name} the nomad joins {}", day.country_name(to)),
+                (None, None) => format!("{name} remains a nomad"),
+            },
+            Event::PersonDied { ref name, ref title, age, country } => match country {
+                Some(country) => format!("{title} {name} of {} dies, aged {age}", day.country_name(country)),
+                None => format!("{title} {name}, a nomad, dies, aged {age}"),
             },
             Event::TitleTypeAdded { ref name } => format!("A new kind of title, {name}, is added"),
             Event::CityFounded { population, region, country } => {
