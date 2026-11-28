@@ -8,6 +8,7 @@
 use macroquad::prelude::*;
 use nworld_view::style::{self, Style, Weight};
 
+use crate::fort;
 use crate::transfer::Asset;
 use crate::{city, country, militia, newsreel, person, place, region_name, ship, text, title_type};
 
@@ -169,6 +170,10 @@ fn check_ship(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![ship::clean_name(&typed[0])?])
 }
 
+fn check_fort(typed: &[String]) -> Result<Vec<String>, String> {
+    Ok(vec![fort::clean_name(&typed[0])?])
+}
+
 fn check_city(typed: &[String]) -> Result<Vec<String>, String> {
     Ok(vec![city::clean_name(&typed[0])?])
 }
@@ -291,6 +296,20 @@ impl Popup {
             "Save name",
             vec![Field::new("SHIP NAME", "e.g. Sea Wolf", ship::MAX_NAME_CHARS)],
             check_ship,
+        );
+        popup.fields[0].value = current.to_owned();
+        popup
+    }
+
+    /// Asks for a name for a fort that is called `current`, which is nothing if it has no name yet.
+    pub fn fort(current: &str) -> Self {
+        let mut popup = Self::new(
+            "Name this fort",
+            "Choose a name for it.".to_owned(),
+            Icon::Person,
+            "Save name",
+            vec![Field::new("FORT NAME", "e.g. Highwatch", fort::MAX_NAME_CHARS)],
+            check_fort,
         );
         popup.fields[0].value = current.to_owned();
         popup

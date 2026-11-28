@@ -17,7 +17,7 @@ use crate::day::DaySave;
 use crate::failure::Thing;
 use crate::format;
 use crate::hud;
-use crate::ids::{BridgeId, CityId, CountryId, GathererId, MilitiaId, PersonId};
+use crate::ids::{FortId, BridgeId, CityId, CountryId, GathererId, MilitiaId, PersonId};
 use crate::path::PathPiece;
 use crate::pieces;
 use crate::upkeep;
@@ -42,6 +42,8 @@ const GATHERER_MARK_CLEARANCE: f32 = 3.0;
 /// How high over the middle of a city under siege, which has buildings, and over a militia under siege, its warning icon is held.
 const CITY_MARK_HOLD: f32 = 40.0;
 const MILITIA_MARK_HOLD: f32 = 12.0;
+/// How high over a fort its mark is held: over the top of its keep.
+const FORT_MARK_HOLD: f32 = 20.0;
 const MARK_WIDTH: f32 = 24.0;
 const MARK_HEIGHT: f32 = 21.0;
 /// The least a warning icon shrinks to, against its full size, from far out.
@@ -57,6 +59,8 @@ pub enum Alert {
     CityUnderSiege(CityId),
     /// A militia that is under siege, and so is losing members.
     MilitiaUnderSiege(MilitiaId),
+    /// A fort that is under siege, and so is using up its supplies, or has none left.
+    FortUnderSiege(FortId),
     /// A country that can't afford the upkeep of all its units, and will lose some unless it picks which to pay for.
     UpkeepShort(CountryId),
     /// A path, a road or a bridge that has failed.
@@ -80,6 +84,7 @@ pub enum AlertTarget {
     City(CityId),
     /// A militia, which the camera goes to.
     Militia(MilitiaId),
+    Fort(FortId),
     /// The region, by its number, that something failed in, which the camera goes to.
     Region(u16),
     /// A bridge, which the camera goes to the region of.
@@ -95,7 +100,8 @@ impl Alert {
         let mut alerts: Vec<Alert> = day.countries.iter().filter(|c| !day.cities.iter().any(|city| city.country == c.id)).map(|c| Alert::CountryWithoutCities(c.id)).collect();
         alerts.extend(day.people.iter().filter(|p| p.at.is_none()).map(|p| Alert::PersonUnplaced(p.id)));
         alerts.extend(day.cities.iter().filter(|c| c.under_siege).map(|c| Alert::CityUnderSiege(c.id)));
-        alerts.extend(day.militias.iter().filter(|m| m.under_siege).map(|m| Alert::MilitiaUnderSiege(m.id)));
+        alerts.extend(day.militias.iter().filter(|m| day.is_besieged(m)).map(|m| Alert::MilitiaUnderSiege(m.id)));
+        alerts.extend(day.forts.iter().filter(|f| f.under_siege).map(|f| Alert::FortUnderSiege(f.id)));
         alerts.extend(upkeep::short_countries(day).into_iter().map(Alert::UpkeepShort));
         // Whether a gatherer has a route is kept up to date on it (see `RouteWatch`), which is far cheaper than working the
         // routes out again, which this is asked for every frame.
@@ -118,6 +124,7 @@ impl Alert {
             Alert::GathererCutOff(id) => AlertTarget::Gatherer(*id),
             Alert::CityUnderSiege(id) => AlertTarget::City(*id),
             Alert::MilitiaUnderSiege(id) => AlertTarget::Militia(*id),
+            Alert::FortUnderSiege(id) => AlertTarget::Fort(*id),
             // A segment of path or road is in the region it is named for.
             Alert::Failed(Thing::Path(segment) | Thing::Road(segment)) => AlertTarget::Region(segment.region),
             Alert::Failed(Thing::PathLink(link) | Thing::RoadLink(link)) => AlertTarget::Region(link.region),
@@ -141,6 +148,11 @@ impl Alert {
                 Some(militia) => format!("{} ({}) is under siege and is losing members", militia.title(), day.country_name(militia.country)),
                 None => "A militia is under siege".to_owned(),
             },
+            Alert::FortUnderSiege(id) => match day.fort(*id) {
+                Some(fort) if fort.starved() => format!("{} ({}) is under siege and out of supplies", fort.title(), day.country_name(fort.country)),
+                Some(fort) => format!("{} ({}) is under siege, with {}% of its supplies left", fort.title(), day.country_name(fort.country), fort.supplies_percent()),
+                None => "A fort is under siege".to_owned(),
+            },
             Alert::UpkeepShort(id) => {
                 let outlook = upkeep::outlook(day, *id);
                 format!("{} can't pay to keep all its units: {} coins a day, and {} coins to pay it with. Click to pick which to pay for", day.country_name(*id), format::money(outlook.needed), format::money(outlook.available))
@@ -161,6 +173,7 @@ impl Alert {
             Alert::CountryWithoutCities(_) | Alert::PersonUnplaced(_) | Alert::UpkeepShort(_) => return None,
             Alert::CityUnderSiege(id) => return day.city(*id).map(|c| (vec2(c.x, c.z), CITY_MARK_HOLD)),
             Alert::MilitiaUnderSiege(id) => return day.militia(*id).map(|m| (vec2(m.x, m.z), MILITIA_MARK_HOLD)),
+            Alert::FortUnderSiege(id) => return day.fort(*id).map(|f| (vec2(f.x, f.z), FORT_MARK_HOLD)),
             Alert::GathererCutOff(id) => return day.gatherer(*id).map(|w| (vec2(w.x, w.z), gatherer_mark_hold(w.kind))),
             Alert::Failed(Thing::Path(segment) | Thing::Road(segment)) => PathPiece::Segment(*segment),
             Alert::Failed(Thing::PathLink(link) | Thing::RoadLink(link)) => PathPiece::Link(*link),
@@ -408,6 +421,32 @@ mod tests {
 
     fn day() -> DaySave {
         DaySave::new(Date::FIRST, "Assets/map.nworld")
+    }
+
+    #[test]
+    fn a_besieged_fort_is_an_alert_and_its_garrison_one_only_once_the_supplies_are_gone() {
+        use nworld_map::world::Resource;
+        let mut day = DaySave::new(crate::calendar::Date::FIRST, "Assets/map.nworld");
+        day.found_country("Aldoria").unwrap();
+        let country = day.countries[0].id;
+        day.add_money(country, 20_000).unwrap();
+        day.add_resource(country, Resource::Stone, 500).unwrap();
+        day.add_resource(country, Resource::Forest, 500).unwrap();
+        day.claim_region(0x4005).unwrap();
+        day.build_fort(0.0, 0.0, Some(0x4005)).unwrap();
+        day.found_city("Port Aldor", 500.0, 0.0, Some(0x4005)).unwrap();
+        day.cities[0].population = 2_000;
+        day.raise_militia(day.cities[0].id, 100, macroquad::math::vec2(30.0, 0.0)).unwrap();
+        let (fort, militia) = (day.forts[0].id, day.militias[0].id);
+        day.enter_fort(fort, militia, Some(0x4005)).unwrap();
+        day.set_fort_under_siege(fort, true).unwrap();
+        let sieges = |day: &DaySave| Alert::current(day, &[]).into_iter().filter(|a| matches!(a, Alert::FortUnderSiege(_) | Alert::MilitiaUnderSiege(_))).collect::<Vec<_>>();
+        assert_eq!(sieges(&day), [Alert::FortUnderSiege(fort)]);
+        assert_eq!(sieges(&day)[0].text(&day), "Small fort (Aldoria) is under siege, with 100% of its supplies left");
+        assert_eq!(sieges(&day)[0].target(), AlertTarget::Fort(fort));
+        day.forts[0].supplies_used = 500;
+        assert_eq!(sieges(&day), [Alert::MilitiaUnderSiege(militia), Alert::FortUnderSiege(fort)]);
+        assert_eq!(sieges(&day)[1].text(&day), "Small fort (Aldoria) is under siege and out of supplies");
     }
 
     #[test]

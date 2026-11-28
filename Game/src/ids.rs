@@ -144,6 +144,10 @@ id_type!(
     ShipyardId
 );
 id_type!(
+    /// The id of a fort.
+    FortId
+);
+id_type!(
     /// The id of a ship.
     ShipId
 );

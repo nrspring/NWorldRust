@@ -56,7 +56,8 @@ fn token(world: &World, militia: &Militia, at: Vec2, marching: Option<f32>, eye:
 /// Draws the militia of `day`, as seen by the camera that is set, which must still be the one the map was drawn with, and
 /// is at `eye`.
 pub fn draw(world: &World, day: &DaySave, walks: &Walks, time: f32, eye: Vec3) {
-    let models = day.militias.iter().filter_map(|militia| {
+    // A militia in a fort is not seen for itself.
+    let models = day.militias.iter().filter(|m| m.in_fort.is_none()).filter_map(|militia| {
         let at = walks.position(militia);
         if !pieces::within_view(eye, at.x, at.y) {
             return None;
@@ -74,6 +75,7 @@ pub fn draw(world: &World, day: &DaySave, walks: &Walks, time: f32, eye: Vec3) {
 pub fn under_ray(ray: (Vec3, Vec3), world: &World, militias: &[Militia], walks: &Walks) -> Option<MilitiaId> {
     militias
         .iter()
+        .filter(|m| m.in_fort.is_none())
         .filter_map(|militia| Some((token(world, militia, walks.position(militia), None, ray.0).hit(ray)?, militia.id)))
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, id)| id)
@@ -120,7 +122,7 @@ mod tests {
     use crate::test_support;
 
     fn militia(members: u32, at: Vec2) -> Militia {
-        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false }
+        Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members, x: at.x, z: at.y, points: 100, under_siege: false, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false, in_fort: None }
     }
 
     fn eye_over(at: Vec2, world: &World, distance: f32) -> Vec3 {

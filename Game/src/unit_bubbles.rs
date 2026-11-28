@@ -2,6 +2,8 @@
 //! a small round bubble held over it, in the color of the country it belongs to, so that whose it is can be told from the
 //! side, where its base can't be seen. Round the bubble is a green ring for the movement points it has left today, full when
 //! it has not moved and gone when it can move no more, and a militia under siege has a red badge with a tower on it. The
+//! A fort with militia in it has a bubble in their country's color, in their place, and a fort under siege has one with the
+//! badge. The
 //! bubbles are drawn on the screen, over the map and under the interface, the same size however far off the unit is. This
 //! is the game's own drawing, and not part of drawing the map.
 
@@ -13,7 +15,7 @@ use crate::movement::DAILY_POINTS;
 use crate::pieces::{self, Token};
 use crate::region_labels::to_screen;
 use crate::walk::Walks;
-use crate::{militia_view, person_view, ship_view};
+use crate::{fort_view, militia_view, person_view, ship_view};
 
 /// How steeply the camera may look down and still show the bubbles: they are all there below the first pitch, fade out
 /// between the two, and are gone above the second, where the map is seen from straight above and a unit's base shows its
@@ -68,7 +70,7 @@ fn over(token: &Token) -> Vec3 {
 /// and sail.
 pub fn bubbles(world: &World, day: &DaySave, walks: &Walks, eye: Vec3) -> Vec<Bubble> {
     let country = |id| day.country(id).map_or(NO_COUNTRY, |c| c.color.color());
-    let militias = day.militias.iter().filter_map(|militia| {
+    let militias = day.militias.iter().filter(|m| m.in_fort.is_none()).filter_map(|militia| {
         let at = walks.position(militia);
         pieces::within_view(eye, at.x, at.y).then(|| Bubble {
             over: over(&Token::at(world, militia_view::look(militia), at.x, at.y, eye)),
@@ -90,7 +92,16 @@ pub fn bubbles(world: &World, day: &DaySave, walks: &Walks, eye: Vec3) -> Vec<Bu
         let at = person_view::shown_at(world, day, walks, person, eye).filter(|at| pieces::within_view(eye, at.x, at.y))?;
         Some(Bubble { over: over(&person_view::token(world, at, None, eye)), country: person.country.map_or(NO_COUNTRY, country), moves: share(person.points, DAILY_POINTS), under_siege: false })
     });
-    militias.chain(ships).chain(people).collect()
+    let forts = day.forts.iter().filter(|f| pieces::within_view(eye, f.x, f.z)).filter_map(|fort| {
+        let inside = day.garrison_of(fort.id);
+        (!inside.is_empty() || fort.under_siege).then(|| Bubble {
+            over: over(&fort_view::token(world, fort.size, fort.x, fort.z, eye)),
+            country: country(fort.country),
+            moves: 0.0,
+            under_siege: fort.under_siege,
+        })
+    });
+    militias.chain(ships).chain(people).chain(forts).collect()
 }
 
 /// Draws the bubbles over the units of `day`, as `camera` sees them, which looks down at `pitch` radians. Nothing is drawn
@@ -189,7 +200,7 @@ mod tests {
         let at = test_support::inland_spot(&world, 50.0);
         let mut day = DaySave::new(Date::FIRST, "Assets/map.nworld");
         let country = CountryId::new();
-        day.militias.push(Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country, city: CityId::new(), raised: Date::FIRST, members: 300, x: at.x, z: at.y, points: 0, under_siege: true, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false });
+        day.militias.push(Militia { id: MilitiaId::new(), name: "Test Militia".to_owned(), country, city: CityId::new(), raised: Date::FIRST, members: 300, x: at.x, z: at.y, points: 0, under_siege: true, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false, in_fort: None });
         let eye = vec3(at.x + 200.0, world.surface_height(at.x, at.y) + 150.0, at.y);
         let bubbles = bubbles(&world, &day, &Walks::default(), eye);
         assert_eq!(bubbles.len(), 1);

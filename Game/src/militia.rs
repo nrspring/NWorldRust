@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::calendar::Date;
 use crate::city::{self, City};
 use crate::city_layout;
-use crate::ids::{CityId, CountryId, MilitiaId};
+use crate::ids::{CityId, CountryId, FortId, MilitiaId};
 use crate::movement::DAILY_POINTS;
 use crate::text;
 
@@ -96,6 +96,15 @@ impl Class {
     }
 }
 
+/// That a militia is in a fort's garrison (see [`crate::fort`]).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct InFort {
+    pub fort: FortId,
+    /// Where it stood before it went in, which is where it comes out to.
+    pub from_x: f32,
+    pub from_z: f32,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Militia {
     /// Tells it apart from the other militia, and stays with it whatever else changes.
@@ -143,6 +152,10 @@ pub struct Militia {
     /// Whether it is a garrison: it stays where it is, and so gets no movement points back each day. The player switches it on and off.
     #[serde(default)]
     pub garrison: bool,
+    /// The fort it is in the garrison of, if it is in one. It is then where the fort is, isn't shown on the map for itself, and can't
+    /// move until it has marched out.
+    #[serde(default)]
+    pub in_fort: Option<InFort>,
 }
 
 fn full_points() -> u32 {

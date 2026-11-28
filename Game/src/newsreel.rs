@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::barracks::BarracksKind;
+use crate::fort::FortSize;
 use crate::calendar::Date;
 use crate::day::DaySave;
 use crate::failure::Thing;
@@ -400,6 +401,75 @@ pub enum Event {
         #[serde(default)]
         region: Option<u16>,
     },
+    /// The subject is a fort of `size`, which the country `country` built, in the region numbered `region` if the map has
+    /// regions, for `cost`.
+    FortBuilt {
+        size: FortSize,
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+        cost: Vec<Cost>,
+    },
+    /// The subject is a fort, which the country `country` upgraded from `from` to `to` in the region numbered `region` for `cost`.
+    FortUpgraded {
+        /// The name the fort had, if it had one.
+        #[serde(default)]
+        name: String,
+        from: FortSize,
+        to: FortSize,
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+        cost: Vec<Cost>,
+    },
+    /// The subject is a fort of `size`, which belonged to the country `country`, and it was destroyed. It is gone, so what the news
+    /// says of it is kept here.
+    FortDestroyed {
+        #[serde(default)]
+        name: String,
+        size: FortSize,
+        country: CountryId,
+        #[serde(default)]
+        region: Option<u16>,
+    },
+    /// The subject is a fort of `size`, which was called `from` (nothing, if it had no name) and is now called `to`.
+    FortRenamed { from: String, size: FortSize, to: String },
+    /// The subject is a fort of `size`, called `name` if it has a name, which was put under siege or whose siege was lifted.
+    FortSiegeChanged {
+        name: String,
+        size: FortSize,
+        under_siege: bool,
+        #[serde(default)]
+        region: Option<u16>,
+    },
+    /// The subject is a fort under siege that has used up its supplies.
+    FortOutOfSupplies {
+        name: String,
+        size: FortSize,
+        #[serde(default)]
+        region: Option<u16>,
+    },
+    /// The subject is a militia called `name` of `members` people, which went into the garrison of a fort of `size`, in the region
+    /// numbered `region` if the map has regions.
+    MilitiaEnteredFort {
+        name: String,
+        members: u32,
+        /// The name the fort had, if it had one.
+        #[serde(default)]
+        fort: String,
+        size: FortSize,
+        #[serde(default)]
+        region: Option<u16>,
+    },
+    /// The subject is a militia called `name`, which came out of a fort of `size`: marched out, or turned out of it.
+    MilitiaLeftFort {
+        name: String,
+        #[serde(default)]
+        fort: String,
+        size: FortSize,
+        #[serde(default)]
+        region: Option<u16>,
+    },
     /// The subject is a militia called `name` of `members` people, which the country `country` trained as soldiers at a barracks (or
     /// as archers at an archery range, as `kind` says) in the region numbered `region` if the map has regions, for `cost`.
     MilitiaTrained {
@@ -744,6 +814,51 @@ impl News {
             Event::BarracksDestroyed { kind, country, region } => {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
                 format!("{}'s {}{place} is destroyed", day.country_name(country), kind.noun())
+            }
+            Event::FortBuilt { size, country, region, ref cost } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                format!("{} builds {}{place}{}", day.country_name(country), size.a_noun(), for_cost(cost))
+            }
+            Event::FortUpgraded { ref name, from, to, country, region, ref cost } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let fort = if name.is_empty() { format!("its {}", from.noun()) } else { name.clone() };
+                format!("{} upgrades {fort}{place} to {}{}", day.country_name(country), to.a_noun(), for_cost(cost))
+            }
+            Event::FortDestroyed { ref name, size, country, region } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let fort = if name.is_empty() { size.noun() } else { name };
+                format!("{}'s {fort}{place} is destroyed", day.country_name(country))
+            }
+            Event::FortRenamed { ref from, size, ref to } => {
+                if from.is_empty() {
+                    format!("{} is named {to}", size.a_noun_capital())
+                } else {
+                    format!("{from} is renamed {to}")
+                }
+            }
+            Event::FortSiegeChanged { ref name, size, under_siege, region } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let fort = if name.is_empty() { size.a_noun() } else { name.clone() };
+                if under_siege {
+                    format!("{}{place} is put under siege", crate::format::capitalized(&fort))
+                } else {
+                    format!("The siege of {fort}{place} is lifted")
+                }
+            }
+            Event::FortOutOfSupplies { ref name, size, region } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let fort = if name.is_empty() { size.a_noun_capital() } else { name.clone() };
+                format!("{fort}{place} runs out of supplies")
+            }
+            Event::MilitiaEnteredFort { ref name, members, ref fort, size, region } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let fort = if fort.is_empty() { size.a_noun() } else { fort.clone() };
+                format!("{name}, a militia of {}, garrisons {fort}{place}", thousands(members))
+            }
+            Event::MilitiaLeftFort { ref name, ref fort, size, region } => {
+                let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));
+                let fort = if fort.is_empty() { size.a_noun() } else { fort.clone() };
+                format!("{name} comes out of {fort}{place}")
             }
             Event::MilitiaTrained { ref name, kind, country, members, region, ref cost } => {
                 let place = region.map_or_else(String::new, |region| format!(" in {}", day.region_label(region)));

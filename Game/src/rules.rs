@@ -44,6 +44,10 @@ pub const DAY_RULES: &[Rule] = &[
         description: "A militia under siege loses 5 to 10 percent of its members, each by a random amount, rounded up so that it loses at least one, and is never left with fewer than 1.",
         apply: militia_siege,
     },
+    Rule {
+        description: "A fort under siege uses up one of its supplies for each member of its garrison. Once they are gone, its garrison is under siege.",
+        apply: fort_supplies,
+    },
     Rule { description: "Each ship gets all of its movement points back: 200 a day. One at anchor gets none.", apply: ships_rest },
     Rule { description: "Each person gets all of their movement points back: 200 a day, as the army does.", apply: people_rest },
     Rule {
@@ -119,6 +123,12 @@ fn militia_rest(day: &mut DaySave) {
 /// that a country pays only for the members that are left.
 fn militia_siege(day: &mut DaySave) {
     day.shrink_besieged_militia(ids::random_unit);
+}
+
+/// Each fort under siege feeds its garrison (see [`DaySave::eat_fort_supplies`]). This comes after the militia siege, so that a
+/// garrison starts losing members the day after the last of the supplies are eaten.
+fn fort_supplies(day: &mut DaySave) {
+    day.eat_fort_supplies();
 }
 
 /// Each country pays to keep the militia it picked to be paid (see [`DaySave::pay_militia_round`]). This comes after the income,

@@ -9,7 +9,8 @@
 //!   the woodcutter's pines, the red roof and the water wheel of the sawmill, the pale cut stone of the stonecutter and the
 //!   stepped face of the quarry, the headframe and the rust red ore of the iron mine, the chimney and the green ore and bright
 //!   ingots of the copper mine, the yellow crater of the sulphur pit, the tall derrick, the red pump and the black tank of the
-//!   oil well, the blue slip and the ribs of a ship being built in a shipyard, and the walls and corner towers of a barracks.
+//!   oil well, the blue slip and the ribs of a ship being built in a shipyard, the walls and corner towers of a barracks, and the
+//!   palisade, square towers or bastions of a small, medium or large fort.
 //! - **Militia and soldiers** are figures, more of them the more members there are: militia in brown, with straw hats, spears
 //!   and a pennant, on a gold rim; soldiers in their country's color, with steel helmets, pikes and shields and a square banner,
 //!   on a steel rim.
@@ -30,6 +31,7 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2, TAU};
 
 use macroquad::prelude::*;
 
+use crate::fort::FortSize;
 use crate::model::{shade, Finish, Model};
 
 /// What a thing looks like.
@@ -58,6 +60,8 @@ pub enum Look {
     Barracks,
     ArcheryRange,
     Stable,
+    /// A fort of one of its three sizes.
+    Fort { size: FortSize },
 }
 
 impl Look {
@@ -73,6 +77,11 @@ impl Look {
             Look::Barracks => 1.35,
             Look::ArcheryRange => 1.3,
             Look::Stable => 1.4,
+            Look::Fort { size } => match size {
+                FortSize::Small => 1.2,
+                FortSize::Medium => 1.45,
+                FortSize::Large => 1.7,
+            },
         }
     }
 
@@ -96,6 +105,11 @@ impl Look {
             Look::Barracks => 1.85,
             Look::ArcheryRange => 1.62,
             Look::Stable => 1.7,
+            Look::Fort { size } => match size {
+                FortSize::Small => 1.65,
+                FortSize::Medium => 1.9,
+                FortSize::Large => 2.25,
+            },
         }
     }
 }
@@ -131,6 +145,7 @@ pub fn build(m: &mut Model, look: Look, country: Color, moment: Moment) {
         Look::Barracks => barracks(m, country, moment.time),
         Look::ArcheryRange => archery_range(m, country, moment.time),
         Look::Stable => stable(m, country, moment.time),
+        Look::Fort { size } => fort(m, size, country, moment.time),
     }
 }
 
@@ -265,6 +280,28 @@ pub fn build_simple(m: &mut Model, look: Look, country: Color) {
             m.ball(v(0.45, f + 0.3, 0.0), v(0.3, 0.14, 0.12), 6, HORSE_COATS[0], Finish::Matte);
             m.rod(v(0.45, f + 0.3, 0.0), v(0.8, f + 0.6, 0.0), 0.05, HORSE_COATS[0]);
             m.rod(v(-0.2, f, 0.0), v(-0.2, f + 1.1, 0.0), 0.03, WOOD_DARK);
+        }
+        Look::Fort { size } => {
+            let half = look.reach();
+            let f = plot(m, half, if size == FortSize::Small { DIRT } else { GRAVEL }, country);
+            let w = half * 0.74;
+            let (wall_color, tall) = if size == FortSize::Small { (WOOD, 0.34) } else { (STONE, 0.4) };
+            m.block(v(0.0, f, 0.0), v(w * 2.0, tall, w * 2.0), wall_color);
+            // The keep or watchtower in the middle, and a pole up to the top with the country's pennant.
+            let (keep, keep_height) = match size {
+                FortSize::Small => (0.36, 0.9),
+                FortSize::Medium => (0.8, 1.0),
+                FortSize::Large => (0.95, 1.35),
+            };
+            m.block(v(0.0, f, 0.0), v(keep, keep_height, keep), if size == FortSize::Small { WOOD_DARK } else { STONE_LIGHT });
+            let top = look.height() - 0.05;
+            m.rod(v(0.0, f + keep_height, 0.0), v(0.0, top, 0.0), 0.03, WOOD_DARK);
+            m.cuboid(v(0.18, top - 0.14, 0.0), v(0.36, 0.24, 0.02), country, Finish::Matte);
+            if size != FortSize::Small {
+                for (x, z) in [(-w, -w), (w, -w), (-w, w), (w, w)] {
+                    m.block(v(x, f, z), v(0.34, 0.66, 0.34), STONE_DARK);
+                }
+            }
         }
         Look::ArcheryRange => {
             let half = Look::ArcheryRange.reach();
@@ -1202,6 +1239,19 @@ fn shipyard(m: &mut Model, large: bool, country: Color) {
 // ---------------------------------------------------------------------------------------------------------------------------
 // Barracks.
 
+/// A stretch of wall of `size` standing on `foot`, along whichever of x and z is the longer, with battlements along its top.
+fn wall(m: &mut Model, foot: Vec3, size: Vec3, color: Color) {
+    m.block(foot, size, color);
+    let along_x = size.x > size.z;
+    let (length, thick) = (size.x.max(size.z), size.x.min(size.z));
+    let count = (length / 0.17).floor() as usize;
+    for k in (0..count).step_by(2) {
+        let at = -length * 0.5 + (k as f32 + 0.5) * length / count as f32;
+        let offset = if along_x { v(at, 0.0, 0.0) } else { v(0.0, 0.0, at) };
+        m.block(foot + offset + Vec3::Y * size.y, if along_x { v(0.085, 0.08, thick * 1.1) } else { v(thick * 1.1, 0.08, 0.085) }, shade(color, 1.06));
+    }
+}
+
 fn barracks(m: &mut Model, country: Color, time: f32) {
     let half = Look::Barracks.reach();
     let f = plot(m, half, GRAVEL, country);
@@ -1217,18 +1267,7 @@ fn barracks(m: &mut Model, country: Color, time: f32) {
         (v(w, f, (w + gate) * 0.5), v(thick, tall, w - gate)),
     ];
     for (foot, size) in walls {
-        m.block(foot, size, STONE);
-        let along_x = size.x > size.z;
-        let length = size.x.max(size.z);
-        let count = (length / 0.17).floor() as usize;
-        for k in 0..count {
-            if k % 2 == 1 {
-                continue;
-            }
-            let at = -length * 0.5 + (k as f32 + 0.5) * length / count as f32;
-            let offset = if along_x { v(at, 0.0, 0.0) } else { v(0.0, 0.0, at) };
-            m.block(foot + offset + Vec3::Y * tall, if along_x { v(0.085, 0.08, thick * 1.1) } else { v(thick * 1.1, 0.08, 0.085) }, shade(STONE, 1.06));
-        }
+        wall(m, foot, size, STONE);
     }
     // The gatehouse, and its gate.
     for z in [-1.0, 1.0] {
@@ -1256,6 +1295,100 @@ fn barracks(m: &mut Model, country: Color, time: f32) {
     }
     // The great banner.
     flag(m, v(0.32, f, -0.38), 1.55, country, time, true, 1.25);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Forts.
+
+/// A square of walls reaching `w` out from the middle, `tall` high, standing at height `f`, with a gap of `gate` on each side of
+/// the middle of the +x side.
+fn walls_round(m: &mut Model, f: f32, w: f32, tall: f32, gate: f32, color: Color) {
+    let thick = 0.12;
+    wall(m, v(-w, f, 0.0), v(thick, tall, w * 2.0), color);
+    wall(m, v(0.0, f, -w), v(w * 2.0, tall, thick), color);
+    wall(m, v(0.0, f, w), v(w * 2.0, tall, thick), color);
+    wall(m, v(w, f, -(w + gate) * 0.5), v(thick, tall, w - gate), color);
+    wall(m, v(w, f, (w + gate) * 0.5), v(thick, tall, w - gate), color);
+    m.cuboid(v(w, f + tall * 0.4, 0.0), v(0.05, tall * 0.8, gate * 2.0), WOOD_DARK, Finish::Matte);
+}
+
+/// A square tower `side` across and `tall` high standing on `foot`, with a battlement at each corner of its top.
+fn square_tower(m: &mut Model, foot: Vec3, side: f32, tall: f32, color: Color) {
+    m.block(foot, v(side, tall, side), color);
+    m.block(foot + Vec3::Y * tall, v(side * 1.14, 0.06, side * 1.14), shade(color, 0.85));
+    let reach = side * 0.45;
+    for (x, z) in [(-reach, -reach), (reach, -reach), (-reach, reach), (reach, reach)] {
+        m.block(foot + v(x, tall + 0.06, z), v(side * 0.24, 0.09, side * 0.24), color);
+    }
+}
+
+fn fort(m: &mut Model, size: FortSize, country: Color, time: f32) {
+    let half = Look::Fort { size }.reach();
+    let f = plot(m, half, if size == FortSize::Small { DIRT } else { GRAVEL }, country);
+    match size {
+        FortSize::Small => {
+            // A palisade of pointed stakes on a footing of stones, with a gate in the +x side.
+            let w = half * 0.74;
+            let count = (w * 2.0 / 0.14).round() as usize;
+            for k in 0..=count {
+                let at = -w + w * 2.0 * k as f32 / count as f32;
+                for (x, z) in [(at, -w), (at, w), (-w, at), (w, at)] {
+                    if x == w && z.abs() < 0.22 {
+                        continue;
+                    }
+                    m.column(v(x, f, z), 0.06, 0.055, 0.34, 6, WOOD, Finish::Matte);
+                    m.column(v(x, f + 0.34, z), 0.055, 0.0, 0.1, 6, PLANK, Finish::Matte);
+                }
+            }
+            for (x, z, sx, sz) in [(0.0, -w, w * 2.0, 0.16), (0.0, w, w * 2.0, 0.16), (-w, 0.0, 0.16, w * 2.0)] {
+                m.block(v(x, f, z), v(sx, 0.08, sz), STONE);
+            }
+            // A watchtower of timber on four legs, with a thatched roof, and the banner of the country.
+            for (x, z) in [(-0.2, -0.2), (0.2, -0.2), (-0.2, 0.2), (0.2, 0.2)] {
+                m.rod(v(x - 0.15, f, z), v(x * 0.8 - 0.15, f + 0.7, z * 0.8), 0.03, WOOD_DARK);
+            }
+            m.block(v(-0.15, f + 0.7, 0.0), v(0.5, 0.05, 0.5), PLANK);
+            for (x, z) in [(-0.22, -0.22), (0.22, -0.22), (-0.22, 0.22), (0.22, 0.22)] {
+                m.rod(v(x - 0.15, f + 0.75, z), v(x - 0.15, f + 1.02, z), 0.018, WOOD);
+            }
+            m.column(v(-0.15, f + 1.02, 0.0), 0.4, 0.0, 0.3, 4, THATCH, Finish::Matte);
+            flag(m, v(0.42, f, -0.45), 1.36, country, time, true, 0.9);
+        }
+        FortSize::Medium => {
+            // Stone walls with a square tower at each corner, and a square keep in the middle.
+            let w = half * 0.74;
+            walls_round(m, f, w, 0.42, 0.22, STONE);
+            for (x, z) in [(-w, -w), (w, -w), (-w, w), (w, w)] {
+                square_tower(m, v(x, f, z), 0.36, 0.62, STONE_DARK);
+                m.cuboid(v(x, f + 0.69, z), v(0.14, 0.02, 0.14), country, Finish::Gloss);
+            }
+            square_tower(m, v(-0.2, f, 0.0), 0.72, 0.85, STONE_LIGHT);
+            m.cuboid(v(0.17, f + 0.18, 0.0), v(0.03, 0.34, 0.2), WOOD_DARK, Finish::Matte);
+            flag(m, v(-0.2, f + 0.85, 0.0), 0.75, country, time, true, 1.0);
+        }
+        FortSize::Large => {
+            // A low outer wall with a bastion jutting from each corner, a higher inner wall with round towers, and a tall keep
+            // with a turret at each of its corners.
+            let outer = half * 0.8;
+            walls_round(m, f, outer, 0.3, 0.24, STONE_DARK);
+            for (x, z) in [(-outer, -outer), (outer, -outer), (-outer, outer), (outer, outer)] {
+                m.frustum(v(x, f, z), v(x, f + 0.4, z), 0.34, 0.28, 4, 0.0, STONE, Finish::Matte);
+                m.column(v(x, f + 0.4, z), 0.12, 0.12, 0.05, 4, country, Finish::Gloss);
+            }
+            let inner = half * 0.5;
+            walls_round(m, f, inner, 0.55, 0.2, STONE);
+            for (x, z) in [(-inner, -inner), (inner, -inner), (-inner, inner), (inner, inner)] {
+                m.column(v(x, f, z), 0.2, 0.18, 0.8, 12, STONE, Finish::Matte);
+                m.column(v(x, f + 0.8, z), 0.23, 0.0, 0.36, 12, country, Finish::Gloss);
+            }
+            square_tower(m, v(0.0, f, 0.0), 0.8, 1.15, STONE_LIGHT);
+            for (x, z) in [(-0.4, -0.4), (0.4, -0.4), (-0.4, 0.4), (0.4, 0.4)] {
+                m.column(v(x, f + 0.8, z), 0.1, 0.1, 0.55, 10, STONE, Finish::Matte);
+                m.column(v(x, f + 1.35, z), 0.13, 0.0, 0.26, 10, ROOF_SLATE, Finish::Gloss);
+            }
+            flag(m, v(0.0, f + 1.15, 0.0), 0.8, country, time, true, 1.2);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -1326,7 +1459,7 @@ mod tests {
     use super::*;
 
     const COUNTRY: Color = Color::new(0.2, 0.4, 0.9, 1.0);
-    const ALL: [Look; 23] = [
+    const ALL: [Look; 26] = [
         Look::Militia { figures: 1, trained: false },
         Look::Militia { figures: 5, trained: false },
         Look::Militia { figures: 3, trained: true },
@@ -1350,6 +1483,9 @@ mod tests {
         Look::Barracks,
         Look::ArcheryRange,
         Look::Stable,
+        Look::Fort { size: FortSize::Small },
+        Look::Fort { size: FortSize::Medium },
+        Look::Fort { size: FortSize::Large },
     ];
 
     fn built(look: Look) -> Model {

@@ -152,7 +152,7 @@ mod tests {
     use macroquad::math::vec2;
 
     fn militia(at: Vec2) -> Militia {
-        Militia { id: MilitiaId::new(), name: String::new(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members: 10, x: at.x, z: at.y, points: 0, under_siege: false, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false }
+        Militia { id: MilitiaId::new(), name: String::new(), country: CountryId::new(), city: CityId::new(), raised: Date::FIRST, members: 10, x: at.x, z: at.y, points: 0, under_siege: false, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false, in_fort: None }
     }
 
     fn straight() -> Vec<Vec2> {

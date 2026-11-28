@@ -25,7 +25,8 @@ impl DaySave {
         let gatherers = self.gatherers.iter().filter(|g| g.region == region).map(|g| (format!("{} of {} is", g.kind.a_noun_capital(), self.country_name(g.country)), g.country));
         let shipyards = self.shipyards.iter().filter(|s| s.region == Some(region)).map(|s| (format!("{} of {} is", s.kind.a_noun_capital(), self.country_name(s.country)), s.country));
         let barracks = self.barracks.iter().filter(|b| b.region == Some(region)).map(|b| (format!("{} of {} is", b.kind.a_noun_capital(), self.country_name(b.country)), b.country));
-        cities.chain(gatherers).chain(shipyards).chain(barracks).collect()
+        let forts = self.forts.iter().filter(|f| f.region == Some(region)).map(|f| (format!("{} of {} is", f.size.a_noun_capital(), self.country_name(f.country)), f.country));
+        cities.chain(gatherers).chain(shipyards).chain(barracks).chain(forts).collect()
     }
 
     /// The first city standing in the region numbered `region`, as a phrase, "Port Aldor stands", and whose it is.
@@ -71,7 +72,7 @@ impl DaySave {
     }
 
     /// Makes `owner` the owner of the region numbered `region`, or leaves it unowned if `owner` is `None`. A region with a city
-    /// in it can only be the city's country's. Any other can go to any country, and the gatherers, shipyards and barracks in it go
+    /// in it can only be the city's country's. Any other can go to any country, and the gatherers, shipyards, barracks and forts in it go
     /// with it, so that a region with one of those can't be left unowned. An error says why it can't be done.
     pub fn set_region_owner(&mut self, region: u16, owner: Option<CountryId>) -> Result<(), String> {
         if let Some(owner) = owner {
@@ -112,6 +113,11 @@ impl DaySave {
             for barracks in self.barracks.iter_mut().filter(|b| b.region == Some(region)) {
                 barracks.country = country;
             }
+            for fort in self.forts.iter_mut().filter(|f| f.region == Some(region)) {
+                fort.country = country;
+            }
+            // A fort that changes hands turns out the militia of other countries.
+            self.turn_out_strangers();
         }
         if let Some(subject) = owner.or(from) {
             self.newsreel.push(News::about(subject, Event::RegionOwnerChanged { region, from, to: owner }));

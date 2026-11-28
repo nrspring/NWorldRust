@@ -8,7 +8,7 @@ use nworld_map::world::{WaterClass, World};
 use nworld_view::style::{self, Style, Weight};
 
 use crate::day::DaySave;
-use crate::{barracks_view, gatherer_view, shipyard_view};
+use crate::{barracks_view, fort_view, gatherer_view, shipyard_view};
 use crate::hud;
 use crate::ids::PersonId;
 use crate::miniatures::{Look, Moment};
@@ -43,7 +43,7 @@ pub fn position(walks: &Walks, person: &Person) -> Option<Vec2> {
 }
 
 /// Where `person` is drawn, and pointed at, for a camera at `eye`: where they are (see [`position`]), except that one standing where a
-/// gatherer, a shipyard or a barracks would hide them is drawn just clear of it, on the camera's side. That is only how they are shown:
+/// gatherer, a shipyard, a barracks or a fort would hide them is drawn just clear of it, on the camera's side. That is only how they are shown:
 /// where they stand in the game is not changed. One who is walking is shown on their way.
 pub fn shown_at(world: &World, day: &DaySave, walks: &Walks, person: &Person, eye: Vec3) -> Option<Vec2> {
     let at = position(walks, person)?;
@@ -58,10 +58,12 @@ pub fn shown_at(world: &World, day: &DaySave, walks: &Walks, person: &Person, ey
     let gatherers = day.gatherers.iter().map(|g| gatherer_view::token(world, g.kind, g.x, g.z, eye));
     let shipyards = day.shipyards.iter().map(|s| shipyard_view::token(world, s.kind, s.x, s.z, eye));
     let barracks = day.barracks.iter().map(|b| barracks_view::token(world, b.kind, b.x, b.z, eye));
+    let forts = day.forts.iter().map(|f| fort_view::token(world, f.size, f.x, f.z, eye));
     // Each building as its middle, and how far from it a person has to be to be clear of it.
     let buildings: Vec<(Vec2, f32)> = gatherers
         .chain(shipyards)
         .chain(barracks)
+        .chain(forts)
         .map(|token| (vec2(token.foot.x, token.foot.z), token.look.reach() * token.radius * PLOT_CORNERS + own.look.reach() * own.radius))
         .collect();
     Some(step_out(at, &buildings, vec2(eye.x, eye.z), |spot| world.water_class(spot.x, spot.y) == WaterClass::Dry))

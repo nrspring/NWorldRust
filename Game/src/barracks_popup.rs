@@ -54,7 +54,7 @@ fn region_of(world: &World, militia: &Militia) -> Option<u16> {
 /// The militia that could be trained at `barracks` if it were not resting and the country could pay: those of its country that stand
 /// in its region and are not soldiers already.
 pub fn candidates<'a>(day: &'a DaySave, barracks: &Barracks, region_of: &dyn Fn(&Militia) -> Option<u16>) -> Vec<&'a Militia> {
-    day.militias.iter().filter(|m| m.country == barracks.country && !m.trained && barracks.region.is_some() && region_of(m) == barracks.region).collect()
+    day.militias.iter().filter(|m| m.country == barracks.country && !m.trained && m.in_fort.is_none() && barracks.region.is_some() && region_of(m) == barracks.region).collect()
 }
 
 #[derive(Default)]

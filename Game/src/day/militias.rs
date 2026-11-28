@@ -4,10 +4,15 @@ use macroquad::math::{vec2, Vec2};
 
 use super::{DaySave, Round};
 use crate::format;
-use crate::ids::{CityId, CountryId, MilitiaId};
-use crate::militia::{self, Militia};
+use crate::ids::{CityId, CountryId, FortId, MilitiaId};
+use crate::militia::{self, InFort, Militia};
 use crate::movement::DAILY_POINTS;
 use crate::newsreel::{Cost, Event, News};
+
+/// The fort `militia` is in, if it is in one.
+fn fort_of(militia: &Militia) -> Option<FortId> {
+    militia.in_fort.map(|inside| inside.fort)
+}
 
 impl DaySave {
     /// The militia with this id.
@@ -85,7 +90,7 @@ impl DaySave {
         }
         let id = MilitiaId::new();
         let name = militia::default_name(&name, id);
-        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS, under_siege: false, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false });
+        self.militias.push(Militia { id, name: name.clone(), country, city, raised: self.date, members, x: camp.x, z: camp.y, points: DAILY_POINTS, under_siege: false, trained: false, archers: false, cavalry: false, pay_first: false, garrison: false, in_fort: None });
         self.newsreel.push(News::about(id, Event::MilitiaRaised { name, country, city, members, cost: vec![Cost::coins(cost)] }));
         Ok(())
     }
@@ -110,6 +115,9 @@ impl DaySave {
             return Err("That is not a place on the map.".to_owned());
         }
         let militia = self.militias.iter_mut().find(|m| m.id == id).ok_or("There is no such militia.")?;
+        if militia.in_fort.is_some() {
+            return Err(format!("{} is in a fort, and has to march out before it can move.", militia.title()));
+        }
         if cost > militia.points {
             return Err(format!("{} has only {} movement points left, and that takes {cost}.", militia.title(), militia.points));
         }
@@ -121,12 +129,13 @@ impl DaySave {
     }
 
     /// The militia that the one with this id could be combined with, or could be if there were room: the others of its
-    /// country that stand in the same map region as it, where `region` says which region a militia is in. Nothing if
+    /// country that stand in the same map region as it, where `region` says which region a militia is in, and are in the same fort
+    /// as it, or like it in none. Nothing if
     /// the map has no region where it stands. Soldiers can only be combined with soldiers, archers with archers, cavalry with cavalry, and militia with militia.
     pub fn merge_partners(&self, id: MilitiaId, region: &dyn Fn(&Militia) -> Option<u16>) -> Vec<&Militia> {
         let Some(unit) = self.militia(id) else { return Vec::new() };
         let Some(here) = region(unit) else { return Vec::new() };
-        self.militias.iter().filter(|m| m.id != id && m.country == unit.country && m.class() == unit.class() && region(m) == Some(here)).collect()
+        self.militias.iter().filter(|m| m.id != id && m.country == unit.country && m.class() == unit.class() && fort_of(m) == fort_of(unit) && region(m) == Some(here)).collect()
     }
 
     /// Combines the militia `absorb` into the militia `keep`: they must belong to the same country and stand in the same
@@ -153,6 +162,10 @@ impl DaySave {
         }
         if regions.0.is_none() || regions.0 != regions.1 {
             return Err(format!("{} and {} are not in the same region.", first.title(), second.title()));
+        }
+        // So that a fort never ends up with more than it holds, or a militia half in it.
+        if fort_of(first) != fort_of(second) {
+            return Err(format!("{} and {} can only be combined if both are in the same fort, or neither is in one.", first.title(), second.title()));
         }
         let members = u64::from(first.members) + u64::from(second.members);
         if members > u64::from(militia::MAX_MEMBERS) {
@@ -195,7 +208,10 @@ impl DaySave {
         let new_id = MilitiaId::new();
         let new_name = militia::default_name(self.city(city).map_or("Militia", |c| c.name.as_str()), new_id);
         let unit = self.militias.iter().find(|m| m.id == id).ok_or("There is no such militia.")?;
-        let new = Militia { id: new_id, name: new_name.clone(), x: at.x, z: at.y, members, ..unit.clone() };
+        // A group split off in a fort is in the fort too, and comes out to `at` when it marches out.
+        let (x, z) = if unit.in_fort.is_some() { (unit.x, unit.z) } else { (at.x, at.y) };
+        let in_fort = unit.in_fort.map(|inside| InFort { from_x: at.x, from_z: at.y, ..inside });
+        let new = Militia { id: new_id, name: new_name.clone(), x, z, members, in_fort, ..unit.clone() };
         self.militias.push(new);
         self.newsreel.push(News::about(id, Event::MilitiaSplit { name, new_name, members, remaining }));
         Ok(())
@@ -215,6 +231,9 @@ impl DaySave {
     /// An error says why it can't be done.
     pub fn set_militia_under_siege(&mut self, id: MilitiaId, under_siege: bool) -> Result<(), String> {
         let unit = self.militias.iter_mut().find(|m| m.id == id).ok_or("There is no such militia.")?;
+        if unit.in_fort.is_some() {
+            return Err(format!("{} is in a fort, and is besieged only if the fort is.", unit.title()));
+        }
         let changed = std::mem::replace(&mut unit.under_siege, under_siege) != under_siege;
         let (name, members) = (unit.title().to_owned(), unit.members);
         if changed {
@@ -223,10 +242,11 @@ impl DaySave {
         Ok(())
     }
 
-    /// Each militia under siege loses members: the same 5 to 10 percent a day a besieged city loses (see [`militia::after_siege`]),
+    /// Each militia under siege (see [`DaySave::is_besieged`]) loses members: the same 5 to 10 percent a day a besieged city loses (see [`militia::after_siege`]),
     /// `unit` giving the random numbers (each from 0 up to 1, one for each militia under siege). Each is in the newsreel.
     pub fn shrink_besieged_militia(&mut self, mut unit: impl FnMut() -> f32) {
-        for militia in self.militias.iter_mut().filter(|m| m.under_siege) {
+        let besieged: Vec<MilitiaId> = self.militias.iter().filter(|m| self.is_besieged(m)).map(|m| m.id).collect();
+        for militia in self.militias.iter_mut().filter(|m| besieged.contains(&m.id)) {
             let from = militia.members;
             militia.members = militia::after_siege(from, unit());
             if militia.members != from {
@@ -235,10 +255,10 @@ impl DaySave {
         }
     }
 
-    /// Gives every militia all its movement points again, for a new day, except a garrison, which gets none.
+    /// Gives every militia all its movement points again, for a new day, except a garrison, and one in a fort, which get none.
     pub fn rest_militia(&mut self) {
         for militia in &mut self.militias {
-            militia.points = if militia.garrison { 0 } else { militia.daily_points() };
+            militia.points = if militia.garrison || militia.in_fort.is_some() { 0 } else { militia.daily_points() };
         }
     }
 
@@ -268,6 +288,8 @@ impl DaySave {
         let (from, members) = (std::mem::replace(&mut militia.country, country), militia.members);
         if from != country {
             self.newsreel.push(News::about(id, Event::MilitiaTransferred { from, to: country, members }));
+            // It can't stay in the fort of the country it has left.
+            self.turn_out_strangers();
         }
         Ok(())
     }

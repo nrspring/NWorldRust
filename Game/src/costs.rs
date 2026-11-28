@@ -17,6 +17,7 @@ use crate::hud;
 use crate::path::{Kind, PATH_COST, ROAD_COST};
 use crate::barracks::BarracksKind;
 use crate::shipyard::ShipyardKind;
+use crate::fort::FortSize;
 
 /// A thing that can be built, and so has a cost.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,6 +29,8 @@ pub enum Buildable {
     Shipyard(ShipyardKind),
     /// A barracks or an archery range.
     Barracks(BarracksKind),
+    /// A fort, which is built small.
+    Fort,
 }
 
 impl Buildable {
@@ -40,6 +43,7 @@ impl Buildable {
             Self::Gatherer(kind) => kind.label(),
             Self::Shipyard(kind) => kind.label(),
             Self::Barracks(kind) => kind.label(),
+            Self::Fort => "Fort",
         }
     }
 
@@ -52,6 +56,7 @@ impl Buildable {
             Self::Gatherer(kind) => kind.cost(),
             Self::Shipyard(kind) => kind.cost(),
             Self::Barracks(kind) => kind.cost(),
+            Self::Fort => FortSize::Small.cost(),
         }
     }
 
@@ -63,6 +68,7 @@ impl Buildable {
             Self::Gatherer(kind) => kind.materials(),
             Self::Shipyard(kind) => kind.materials(),
             Self::Barracks(kind) => kind.materials(),
+            Self::Fort => FortSize::Small.materials(),
         }
     }
 
@@ -110,6 +116,12 @@ impl Buildable {
                 resource_name(kind.training_resource()),
                 crate::barracks::MEMBERS_PER_REST_DAY
             ),
+            Self::Fort => format!(
+                "Holds a garrison of militia from its region: {} members when small, {} medium, {} large.",
+                format::thousands(FortSize::Small.capacity()),
+                format::thousands(FortSize::Medium.capacity()),
+                format::thousands(FortSize::Large.capacity())
+            ),
         }
     }
 
@@ -126,6 +138,12 @@ impl Buildable {
                 }
             }
             Self::Barracks(_) => lines.push(("Has to stand on dry land, not in the mountains, in a region you own.".to_owned(), style::TEXT_MUTED)),
+            Self::Fort => {
+                lines.push(("Has to stand on dry land, not in the mountains, in a region you own.".to_owned(), style::TEXT_MUTED));
+                for to in FortSize::ALL.into_iter().skip(1) {
+                    lines.push((format!("Upgrading to {} costs {}.", to.a_noun(), crate::newsreel::cost_text(&to.full_cost())), style::TEXT_MUTED));
+                }
+            }
             _ => lines.push(("A failed one is mended by building it again, for the same.".to_owned(), style::TEXT_MUTED)),
         }
         lines
@@ -196,6 +214,12 @@ mod tests {
         assert_eq!(range.cost_text(), "5,000 coins, 800 wood and 200 stone");
         assert_eq!(range.label(), "Archery range");
         assert!(range.output().contains("into archers, for 20 coins and 2 wood a member"), "{}", range.output());
+    }
+
+    #[test]
+    fn a_fort_costs_coins_stone_and_wood() {
+        assert_eq!(Buildable::Fort.cost(), crate::fort::COST);
+        assert_eq!(Buildable::Fort.cost_text(), "5,000 coins, 500 stone and 500 wood");
     }
 
     #[test]

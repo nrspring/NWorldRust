@@ -354,6 +354,9 @@ impl DaySave {
         if unit.country != found.country {
             return Some(format!("{} belongs to {}, and this {noun} to {}.", unit.title(), self.country_name(unit.country), self.country_name(found.country)));
         }
+        if unit.in_fort.is_some() {
+            return Some(format!("{} is in a fort, and has to march out before it can be trained.", unit.title()));
+        }
         if unit.trained {
             return Some(format!("{} is {} already.", unit.title(), unit.kind_label().to_lowercase()));
         }

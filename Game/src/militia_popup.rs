@@ -171,7 +171,8 @@ impl MilitiaPopup {
         let text_x = badge.right() + 14.0;
         style.text(unit.title(), text_x, card.y + PADDING + 17.0, 20, Weight::Semibold, style::TEXT);
         let origin = day.city(unit.city).map_or("a city", |c| c.name.as_str());
-        style.text(&format!("{} raised in {origin}", unit.kind_label()), text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
+        let inside = if unit.in_fort.is_some() { ", in a fort" } else { "" };
+        style.text(&format!("{} raised in {origin}{inside}", unit.kind_label()), text_x, card.y + PADDING + 36.0, 12, Weight::Regular, style::TEXT_MUTED);
 
         // What there is to know, a row each. The country's can be clicked, to change it.
         let inner_x = card.x + PADDING;
@@ -245,9 +246,11 @@ impl MilitiaPopup {
         }
 
         // The siege switch, which is for the lists to cover while one is open. A militia under siege loses members each day.
-        let mut under_siege = unit.under_siege;
-        options::toggle(style, Rect::new(siege_row.x - 12.0, siege_row.y, siege_row.w + 24.0, siege_row.h), "Under siege", None, &mut under_siege, !listing);
-        if under_siege != unit.under_siege {
+        // (In a fort, it is the fort's siege that counts, which is set in the fort's popup.)
+        let mut under_siege = day.is_besieged(unit);
+        let was = under_siege;
+        options::toggle(style, Rect::new(siege_row.x - 12.0, siege_row.y, siege_row.w + 24.0, siege_row.h), "Under siege", None, &mut under_siege, !listing && unit.in_fort.is_none());
+        if under_siege != was {
             change = Some(Change::Siege(unit.id, under_siege));
         }
 
